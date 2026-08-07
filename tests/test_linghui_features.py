@@ -1,3 +1,4 @@
+import base64
 import importlib
 import io
 import json
@@ -267,6 +268,34 @@ class DashboardRegistrationTest(unittest.TestCase):
         ])
         self.assertEqual(renamed[0]["api_keys"], "existing-key")
         self.assertEqual(cleared[0]["api_keys"], "")
+        self.assertEqual(renamed[0]["__template_key"], "drawing_channel")
+        self.assertEqual(cleared[0]["__template_key"], "drawing_channel")
+
+
+class DashboardReferencePreviewTest(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.DashboardApi = _load_module("dashboard_api", with_quart=True).LinghuiDashboardApi
+        cls.DataManager = _load_module("data_manager").DataManager
+
+    async def test_persona_preview_is_inlined_for_the_authenticated_plugin_page(self):
+        output = io.BytesIO()
+        Image.new("RGBA", (900, 640), (20, 180, 240, 180)).save(output, "PNG")
+
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.DataManager(pathlib.Path(directory), {})
+            await manager.save_preset_ref_image("_persona_", output.getvalue())
+            plugin = types.SimpleNamespace(conf={}, data_mgr=manager)
+
+            payload = await self.DashboardApi(plugin).get_config()
+            preview = payload["persona"]["reference_images"][0]
+            self.assertTrue(preview.startswith("data:image/jpeg;base64,"))
+            self.assertNotIn(str(manager.preset_ref_images_dir), preview)
+
+            image_data = base64.b64decode(preview.split(",", 1)[1])
+            with Image.open(io.BytesIO(image_data)) as image:
+                self.assertEqual(image.format, "JPEG")
+                self.assertLessEqual(max(image.size), 560)
 
 
 class ReferenceImageStorageTest(unittest.IsolatedAsyncioTestCase):

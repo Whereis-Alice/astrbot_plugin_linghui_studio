@@ -19,6 +19,8 @@ const state = {
   usage: { users: [], groups: [], daily_stats: {} },
 };
 
+const THEME_STORAGE_KEY = "linghui-studio-theme";
+
 const titles = {
   overview: ["概览", "查看当前绘图服务状态和今日用量。"],
   channels: ["绘图渠道", "配置主渠道、模型和失败后的回退顺序。"],
@@ -35,6 +37,31 @@ const escapeHtml = (value) => String(value ?? "")
   .replaceAll(">", "&gt;")
   .replaceAll('"', "&quot;")
   .replaceAll("'", "&#039;");
+
+function storedTheme() {
+  try {
+    const theme = window.localStorage.getItem(THEME_STORAGE_KEY);
+    return theme === "light" || theme === "dark" ? theme : "dark";
+  } catch {
+    return "dark";
+  }
+}
+
+function setTheme(theme, persist = true) {
+  const nextTheme = theme === "light" ? "light" : "dark";
+  document.documentElement.dataset.theme = nextTheme;
+  const button = byId("theme-toggle");
+  if (button) {
+    const isDark = nextTheme === "dark";
+    button.textContent = isDark ? "☀" : "☾";
+    button.title = isDark ? "切换到浅色模式" : "切换到夜间模式";
+    button.setAttribute("aria-label", button.title);
+    button.setAttribute("aria-pressed", String(isDark));
+  }
+  if (persist) {
+    try { window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme); } catch { /* Storage may be disabled. */ }
+  }
+}
 
 function bool(value) {
   return value === true || value === 1 || String(value).toLowerCase() === "true";
@@ -254,7 +281,14 @@ function renderReferenceSelector() {
 
 function imageTiles(images, preset) {
   if (!images?.length) return '<p class="empty">暂无参考图。</p>';
-  return images.map((url, index) => `<div class="image-tile"><img src="${escapeHtml(url)}" alt="参考图 ${index + 1}" /><button type="button" data-delete-reference="${escapeHtml(preset)}" data-index="${index}" title="删除参考图" aria-label="删除参考图">×</button></div>`).join("");
+  return images.map((url, index) => {
+    const source = typeof url === "string" ? url : "";
+    const failed = !source;
+    const preview = source
+      ? `<img src="${escapeHtml(source)}" alt="参考图 ${index + 1}" loading="lazy" />`
+      : "";
+    return `<div class="image-tile${failed ? " failed" : ""}">${preview}<span class="image-index">${index + 1}</span><span class="image-failure">预览不可用</span><button type="button" data-delete-reference="${escapeHtml(preset)}" data-index="${index}" title="删除参考图" aria-label="删除参考图">×</button></div>`;
+  }).join("");
 }
 
 function renderPersonaImages() {
@@ -414,6 +448,10 @@ function switchTab(tab) {
 
 document.addEventListener("click", async (event) => {
   try {
+    if (event.target.closest("#theme-toggle")) {
+      setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+      return;
+    }
     const tab = event.target.closest("[data-tab]");
     if (tab) { switchTab(tab.dataset.tab); return; }
     if (event.target.closest("#save-button")) { await saveConfig(); return; }
@@ -449,6 +487,14 @@ document.addEventListener("click", async (event) => {
   }
 });
 
+document.addEventListener("error", (event) => {
+  const image = event.target;
+  if (!(image instanceof HTMLImageElement) || !image.matches(".image-tile img")) return;
+  const tile = image.closest(".image-tile");
+  tile?.classList.add("failed");
+  image.alt = "参考图预览不可用";
+}, true);
+
 byId("reference-preset").addEventListener("change", renderReferenceImages);
 byId("persona-upload").addEventListener("change", async (event) => {
   try { await uploadReferences(event.target.files, "_persona_"); event.target.value = ""; } catch (error) { showToast(error.message || "上传失败", true); }
@@ -456,6 +502,8 @@ byId("persona-upload").addEventListener("change", async (event) => {
 byId("reference-upload").addEventListener("change", async (event) => {
   try { await uploadReferences(event.target.files, value("reference-preset")); event.target.value = ""; } catch (error) { showToast(error.message || "上传失败", true); }
 });
+
+setTheme(storedTheme(), false);
 
 try {
   await bridge.ready();

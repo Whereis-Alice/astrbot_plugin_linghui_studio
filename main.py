@@ -18,7 +18,7 @@ from .image_manager import ImageManager
 from .access_control import AccessPolicy
 from .channel_router import DrawingChannelRouter
 from .context_manager import ContextManager, LLMTaskAnalyzer
-from .dashboard_api import LinghuiDashboardApi, PLUGIN_NAME
+from .dashboard_api import DRAWING_CHANNEL_TEMPLATE_KEY, LinghuiDashboardApi, PLUGIN_NAME
 from .utils import (
     extract_image_urls_from_text,
     is_custom_drawing_command,
@@ -138,7 +138,7 @@ def _direct_command_only(handler):
     PLUGIN_NAME,
     "Whereis-Alice",
     "灵绘工坊：多渠道回退、受控群白名单与可视化管理的文生图/图生图插件",
-    "3.1.1",
+    "3.2.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_linghui_studio",
 )
 class LinghuiStudioPlugin(Star):
@@ -388,6 +388,30 @@ class LinghuiStudioPlugin(Star):
                     pass
 
         return removed
+
+    def _migrate_drawing_channel_template_keys(self) -> bool:
+        """Repair channel entries created before template_list metadata was saved."""
+        channels = self.conf.get("drawing_channels", []) or []
+        if not isinstance(channels, list):
+            return False
+
+        migrated = []
+        changed = False
+        for channel in channels:
+            if not isinstance(channel, dict):
+                migrated.append(channel)
+                continue
+            if channel.get("__template_key") == DRAWING_CHANNEL_TEMPLATE_KEY:
+                migrated.append(channel)
+                continue
+            repaired = dict(channel)
+            repaired["__template_key"] = DRAWING_CHANNEL_TEMPLATE_KEY
+            migrated.append(repaired)
+            changed = True
+
+        if changed:
+            self.conf["drawing_channels"] = migrated
+        return changed
 
     def _get_schema_defaults(self) -> Dict[str, Any]:
         """读取配置 schema 默认值，用于判断 dynamic_config 是否会覆盖用户面板保存的新配置。"""
@@ -910,6 +934,10 @@ class LinghuiStudioPlugin(Star):
         return await self.data_mgr.load_preset_ref_images_bytes("_persona_")
 
     async def initialize(self):
+        if self._migrate_drawing_channel_template_keys():
+            self._save_config(["drawing_channels"])
+            logger.info("LinghuiStudio: 已修复旧版绘图渠道缺少的 template_list 标识")
+
         removed_from_runtime = self._purge_deprecated_config_keys()
         if removed_from_runtime > 0:
             logger.info(f"LinghuiStudio: 已从运行时配置中清理 {removed_from_runtime} 个废弃强力模式字段")
@@ -1001,7 +1029,7 @@ class LinghuiStudioPlugin(Star):
 
         auto_detect_status = "已启用" if self._llm_auto_detect else "未启用"
         logger.info(
-            f"LinghuiStudio 已加载 v3.1.1 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
+            f"LinghuiStudio 已加载 v3.2.0 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
 
     def is_admin(self, event: AstrMessageEvent) -> bool:
         sender_id = norm_id(event.get_sender_id())

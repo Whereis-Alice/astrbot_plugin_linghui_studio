@@ -5,21 +5,25 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import io
 import mimetypes
 import re
 from pathlib import Path
 from typing import Any, Dict, List
-from urllib.parse import quote
 
 from astrbot import logger
 from quart import jsonify, request, send_file
+from PIL import Image as PILImage
+from PIL import ImageOps
 
 from .utils import norm_id
 
 
 PLUGIN_NAME = "astrbot_plugin_linghui_studio"
+DRAWING_CHANNEL_TEMPLATE_KEY = "drawing_channel"
 _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
+_PREVIEW_MAX_BYTES = 300 * 1024
 _INTERFACE_MODES = {"openai_image", "openai_chat", "gemini_official", "custom_endpoint"}
 
 
@@ -86,10 +90,6 @@ class LinghuiDashboardApi:
             return ""
         return "\n".join(f"{key[:4]}...{key[-4:]}" if len(key) > 8 else "已配置" for key in keys)
 
-    @staticmethod
-    def _asset_url(preset: str, index: int) -> str:
-        return f"/api/plug/{PLUGIN_NAME}/asset?preset={quote(str(preset), safe='')}&index={index}"
-
     def _public_channel(self, channel: Dict[str, Any], index: int) -> Dict[str, Any]:
         result = {
             "id": str(channel.get("id", f"channel_{index + 1}") or f"channel_{index + 1}"),
@@ -128,20 +128,77 @@ class LinghuiDashboardApi:
                     rows[name] = prompt
         return [{"name": name, "prompt": prompt} for name, prompt in sorted(rows.items())]
 
-    def _reference_summary(self) -> Dict[str, Any]:
+    def _safe_reference_path(self, raw_path: str | Path) -> Path | None:
+        """Return a stored reference image only when it stays under the data root."""
+        try:
+            root = self.plugin.data_mgr.preset_ref_images_dir.resolve()
+            path = Path(raw_path).resolve()
+        except (OSError, TypeError, ValueError):
+            return None
+        if root not in path.parents or not path.is_file():
+            return None
+        return path
+
+    @staticmethod
+    def _reference_preview_data_url(path: Path) -> str:
+        """Make a small inline JPEG preview for a Bridge-authenticated page response."""
+        try:
+            with PILImage.open(path) as source:
+                image = ImageOps.exif_transpose(source)
+                if image.mode != "RGB":
+                    if "A" in image.getbands():
+                        background = PILImage.new("RGB", image.size, "#111827")
+                        background.paste(image, mask=image.getchannel("A"))
+                        image = background
+                    else:
+                        image = image.convert("RGB")
+
+                encoded = b""
+                for max_edge, quality in ((560, 82), (448, 76), (336, 70)):
+                    preview = image.copy()
+                    preview.thumbnail((max_edge, max_edge), PILImage.Resampling.LANCZOS)
+                    buffer = io.BytesIO()
+                    preview.save(
+                        buffer,
+                        format="JPEG",
+                        quality=quality,
+                        optimize=True,
+                        progressive=True,
+                    )
+                    encoded = buffer.getvalue()
+                    if len(encoded) <= _PREVIEW_MAX_BYTES:
+                        break
+        except Exception as exc:
+            logger.warning("Linghui dashboard could not create a reference preview: %s", exc)
+            return ""
+
+        return f"data:image/jpeg;base64,{base64.b64encode(encoded).decode('ascii')}"
+
+    async def _reference_previews(self, paths: List[str]) -> List[str]:
+        previews: List[str] = []
+        # Decode sequentially to avoid a large batch of source images occupying
+        # memory while an administrator opens a reference-heavy configuration.
+        for raw_path in paths:
+            path = self._safe_reference_path(raw_path)
+            if path is None:
+                previews.append("")
+                continue
+            previews.append(await asyncio.to_thread(self._reference_preview_data_url, path))
+        return previews
+
+    async def _reference_summary(self) -> Dict[str, Any]:
         manager = self.plugin.data_mgr
         items: List[Dict[str, Any]] = []
         for preset in sorted(manager.preset_ref_images):
+            if preset == "_persona_":
+                continue
             paths = manager.get_preset_ref_image_paths(preset)
             if not paths:
                 continue
             items.append({
                 "preset": preset,
                 "count": len(paths),
-                "images": [
-                    self._asset_url(preset, index)
-                    for index, _ in enumerate(paths)
-                ],
+                "images": await self._reference_previews(paths),
             })
         return {"items": items, "stats": manager.get_preset_ref_stats()}
 
@@ -156,6 +213,10 @@ class LinghuiDashboardApi:
         if not isinstance(persona_keywords, list):
             persona_keywords = []
         persona_paths = self.plugin.data_mgr.get_preset_ref_image_paths("_persona_")
+        persona_previews, reference_summary = await asyncio.gather(
+            self._reference_previews(persona_paths),
+            self._reference_summary(),
+        )
         return jsonify({
             "success": True,
             "settings": {
@@ -212,13 +273,10 @@ class LinghuiDashboardApi:
                 "trigger_keywords": persona_keywords,
                 "default_prompt": str(self.plugin.conf.get("persona_default_prompt", "") or ""),
                 "scene_prompts": persona_scenes,
-                "reference_images": [
-                    self._asset_url("_persona_", index)
-                    for index, _ in enumerate(persona_paths)
-                ],
+                "reference_images": persona_previews,
             },
             "presets": self._preset_rows(),
-            "references": self._reference_summary(),
+            "references": reference_summary,
         })
 
     def _existing_channels(self) -> Dict[str, Dict[str, Any]]:
@@ -255,6 +313,8 @@ class LinghuiDashboardApi:
             if not api_keys and not self._as_bool(raw.get("clear_api_keys", False)):
                 api_keys = str(old.get("api_keys", "") or "")
             result.append({
+                # AstrBot validates template_list entries by this internal key.
+                "__template_key": DRAWING_CHANNEL_TEMPLATE_KEY,
                 "id": channel_id,
                 "name": str(raw.get("name", "") or "").strip()[:80],
                 "enabled": self._as_bool(raw.get("enabled", True)),
@@ -522,8 +582,7 @@ class LinghuiDashboardApi:
         paths = self.plugin.data_mgr.get_preset_ref_image_paths(preset)
         if not preset or index < 0 or index >= len(paths):
             return jsonify({"success": False, "message": "未找到参考图。"}), 404
-        path = Path(paths[index]).resolve()
-        root = self.plugin.data_mgr.preset_ref_images_dir.resolve()
-        if root not in path.parents or not path.is_file():
+        path = self._safe_reference_path(paths[index])
+        if path is None:
             return jsonify({"success": False, "message": "参考图路径无效。"}), 404
         return await send_file(path, mimetype=mimetypes.guess_type(path.name)[0] or "application/octet-stream")

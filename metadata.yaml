@@ -1,6 +1,6 @@
 name: astrbot_plugin_linghui_studio
 display_name: 灵绘工坊
-desc: 带群白名单、独立无限额度名单、多渠道回退和 Dashboard 的 AstrBot 文生图/图生图插件。
+desc: 带受控群白名单、独立无限额度名单、多渠道回退和夜间 Dashboard 的 AstrBot 文生图/图生图插件。
 help: |
   灵绘工坊
   #画 <提示词>：自定义绘图；带图片时为图生图，无图片时为文生图。
@@ -13,7 +13,7 @@ help: |
   #帮助：查看完整命令说明。
 
   需要与其他插件共存时，在 Dashboard 设置命名空间并关闭直接命令；例如 #绘图 文生图 <提示词>、#绘图 bnn <提示词>。
-version: v3.1.1
+version: v3.2.0
 author: Whereis-Alice
 repo: https://github.com/Whereis-Alice/astrbot_plugin_linghui_studio
 astrbot_version: ">=4.16,<5"
