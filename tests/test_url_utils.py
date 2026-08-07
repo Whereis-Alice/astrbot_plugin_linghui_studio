@@ -1,6 +1,6 @@
 import unittest
 
-from utils import normalize_api_root, normalize_model_list
+from utils import is_custom_drawing_command, normalize_api_root, normalize_model_list
 
 
 class UrlNormalizationTest(unittest.TestCase):
@@ -45,6 +45,14 @@ class ModelListNormalizationTest(unittest.TestCase):
             ]),
             ["model-a", "model-b", "model-c", "model-d"],
         )
+
+
+class CustomDrawingCommandTest(unittest.TestCase):
+    def test_bnn_remains_available_when_the_configured_command_changes(self):
+        self.assertTrue(is_custom_drawing_command("bnn", "画"))
+        self.assertTrue(is_custom_drawing_command("bnn(2)".split("(")[0], "生成"))
+        self.assertTrue(is_custom_drawing_command("生成", "生成"))
+        self.assertFalse(is_custom_drawing_command("手办化", "生成"))
 
 
 if __name__ == "__main__":

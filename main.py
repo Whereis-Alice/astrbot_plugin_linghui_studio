@@ -1,6 +1,7 @@
 ﻿import re
 import asyncio
 import json
+from functools import wraps
 from datetime import datetime
 from typing import Optional, List, Tuple, Any, Dict
 
@@ -18,7 +19,12 @@ from .access_control import AccessPolicy
 from .channel_router import DrawingChannelRouter
 from .context_manager import ContextManager, LLMTaskAnalyzer
 from .dashboard_api import LinghuiDashboardApi, PLUGIN_NAME
-from .utils import extract_image_urls_from_text, norm_id, normalize_model_list
+from .utils import (
+    extract_image_urls_from_text,
+    is_custom_drawing_command,
+    norm_id,
+    normalize_model_list,
+)
 
 # 内置叛逆词库 - 用于LLM判断时增加个性化回复
 # 注意：避免使用"画"字，因为人设拍照等场景不适合
@@ -101,12 +107,39 @@ _CLOTHING_KEYWORDS = [
 ]
 
 
+class _CommandEventView:
+    """Delegate an event while exposing normalized command text to a handler."""
+
+    def __init__(self, event: AstrMessageEvent, message_str: str, command_text: str, command_args: str):
+        self._event = event
+        self.message_str = message_str
+        self._linghui_namespaced_command = True
+        self._linghui_command_text = command_text
+        self._linghui_command_args = command_args
+
+    def __getattr__(self, name: str):
+        return getattr(self._event, name)
+
+
+def _direct_command_only(handler):
+    """Let a configured namespace work without reserving direct commands."""
+
+    @wraps(handler)
+    async def guarded(self, event: AstrMessageEvent, *args, **kwargs):
+        if not getattr(event, "_linghui_namespaced_command", False) and not self._direct_commands_enabled():
+            return
+        async for result in handler(self, event, *args, **kwargs):
+            yield result
+
+    return guarded
+
+
 @register(
     PLUGIN_NAME,
-    "Huli3",
+    "Whereis-Alice",
     "灵绘工坊：多渠道回退、受控群白名单与可视化管理的文生图/图生图插件",
-    "3.0.0",
-    "https://github.com/Huli3/astrbot_plugin_linghui_studio",
+    "3.1.0",
+    "https://github.com/Whereis-Alice/astrbot_plugin_linghui_studio",
 )
 class LinghuiStudioPlugin(Star):
     _DEPRECATED_CONFIG_KEYS = [
@@ -164,6 +197,45 @@ class LinghuiStudioPlugin(Star):
         "text_to_image_api_url",
         "base_url",
     }
+    _COMMAND_ROUTES = (
+        (("预设参考图添加", "lmref添加", "添加参考图"), "on_add_preset_ref", "灵绘预设参考图添加"),
+        (("预设参考图查看", "lmref查看", "查看参考图"), "on_view_preset_ref", "灵绘预设参考图查看"),
+        (("预设参考图清除", "lmref清除", "清除参考图"), "on_clear_preset_ref", "灵绘预设参考图清除"),
+        (("预设参考图删除", "lmref删除", "删除参考图"), "on_remove_preset_ref", "灵绘预设参考图删除"),
+        (("预设参考图统计", "lmref统计", "参考图统计"), "on_preset_ref_stats", "灵绘预设参考图统计"),
+        (("预设参考图列表", "lmref列表", "参考图列表"), "on_list_preset_refs", "灵绘预设参考图列表"),
+        (("人设参考图添加", "添加人设图"), "on_add_persona_ref", "灵绘人设参考图添加"),
+        (("人设参考图查看", "查看人设图"), "on_view_persona_ref", "灵绘人设参考图查看"),
+        (("人设参考图清除", "清除人设图"), "on_clear_persona_ref", "灵绘人设参考图清除"),
+        (("人设场景列表", "场景列表"), "on_list_persona_scenes", "灵绘人设场景列表"),
+        (("人设状态",), "on_persona_status", "灵绘人设状态"),
+        (("人设拍照",), "on_persona_photo_cmd", "灵绘人设拍照"),
+        (("预设图片清理",), "on_cleanup_presets", "灵绘预设图片清理"),
+        (("预设图片统计",), "on_preset_stats", "灵绘预设图片统计"),
+        (("预设添加", "lm添加", "lma"), "on_add_preset", "灵绘预设添加"),
+        (("预设删除", "lm删除", "lmd", "lm删", "删除预设"), "on_delete_preset", "灵绘预设删除"),
+        (("预设查看", "lm查看", "lmv", "lm预览"), "on_view_preset", "灵绘预设查看"),
+        (("预设列表", "lm列表", "lmlist"), "on_preset_list", "灵绘预设列表"),
+        (("头像图生图",), "on_avatar_image_to_image", "灵绘头像图生图"),
+        (("文生图",), "on_txt2img", "灵绘文生图"),
+        (("加用户额度", "手办化增加用户次数"), "on_add_user_counts", "灵绘加用户额度"),
+        (("加群额度", "手办化增加群组次数"), "on_add_group_counts", "灵绘加群额度"),
+        (("添加密钥", "手办化添加key"), "on_add_key", "灵绘添加密钥"),
+        (("密钥列表", "手办化key列表"), "on_list_keys", "灵绘密钥列表"),
+        (("删除密钥", "手办化删除key"), "on_delete_key", "灵绘删除密钥"),
+        (("接口模式", "切换API模式"), "on_switch_mode", "灵绘接口模式"),
+        (("模型", "切换模型"), "on_switch_model", "灵绘模型"),
+        (("通道", "渠道"), "on_switch_channel", "灵绘通道"),
+        (("统计", "今日统计", "手办化今日统计"), "on_daily_stats", "灵绘统计"),
+        (("签到", "手办化签到"), "on_checkin", "灵绘签到"),
+        (("额度", "查询次数", "手办化查询次数"), "on_query_count", "灵绘额度"),
+        (("上下文状态",), "on_context_status", "灵绘上下文状态"),
+        (("清除上下文",), "on_clear_context", "灵绘清除上下文"),
+        (("测试智能判断",), "on_test_smart_detect", "灵绘测试智能判断"),
+        (("打包PDF", "图片转PDF", "合成PDF"), "on_pack_pdf_cmd", "灵绘打包PDF"),
+        (("批量处理", "批量手办化", "全部处理"), "on_batch_process_cmd", "批量处理"),
+        (("帮助", "手办化帮助", "lmh", "lm帮助"), "on_help", "灵绘帮助"),
+    )
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -238,6 +310,63 @@ class LinghuiStudioPlugin(Star):
         # 会话级任务进度表（用于催促时优先返回当前任务状态，避免重复开新任务）
         self._session_task_status: Dict[str, Dict[str, Any]] = {}
         self._session_task_status_lock = asyncio.Lock()
+
+    def _command_namespace(self) -> str:
+        """Return the optional, deployment-specific command namespace."""
+        return re.sub(r"\s+", " ", str(self.conf.get("command_namespace", "") or "")).strip()
+
+    def _direct_commands_enabled(self) -> bool:
+        value = self.conf.get("enable_direct_commands", True)
+        if isinstance(value, str):
+            return value.strip().lower() not in {"0", "false", "no", "off"}
+        return bool(value)
+
+    @staticmethod
+    def _strip_command_marker(text: str) -> str:
+        return re.sub(r"^[#/！!]+", "", str(text or "")).strip()
+
+    def _namespaced_command_text(self, event: AstrMessageEvent) -> Optional[str]:
+        namespace = self._command_namespace()
+        if not namespace:
+            return None
+        compact = self._strip_command_marker(event.message_str)
+        if compact == namespace:
+            return ""
+        if not compact.startswith(namespace):
+            return None
+        remainder = compact[len(namespace):]
+        if not remainder or not remainder[0].isspace():
+            return None
+        return remainder.strip()
+
+    def _resolve_known_command(self, text: str) -> Optional[Tuple[str, str, str]]:
+        normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+        candidates = []
+        for triggers, method_name, legacy_name in self._COMMAND_ROUTES:
+            for trigger in triggers:
+                candidates.append((trigger, method_name, legacy_name))
+        for trigger, method_name, legacy_name in sorted(candidates, key=lambda item: len(item[0]), reverse=True):
+            if normalized == trigger:
+                return method_name, legacy_name, ""
+            if normalized.startswith(f"{trigger} "):
+                return method_name, legacy_name, normalized[len(trigger):].strip()
+        return None
+
+    def _command_args(self, event: AstrMessageEvent, *command_names: str) -> str:
+        supplied = getattr(event, "_linghui_command_args", None)
+        if supplied is not None:
+            return str(supplied).strip()
+        raw = self._strip_command_marker(event.message_str)
+        for command_name in sorted(command_names, key=len, reverse=True):
+            if raw == command_name:
+                return ""
+            if raw.startswith(command_name) and len(raw) > len(command_name) and raw[len(command_name)].isspace():
+                return raw[len(command_name):].strip()
+        return ""
+
+    def _command_example(self, command: str) -> str:
+        namespace = self._command_namespace()
+        return f"#{namespace} {command}" if namespace else f"#{command}"
 
     def _purge_deprecated_config_keys(self, config_obj=None) -> int:
         """清理已经废弃的旧配置字段，避免面板继续显示历史残留项。"""
@@ -3189,6 +3318,26 @@ class LinghuiStudioPlugin(Star):
 
     # ================= 传统指令触发 =================
 
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=20)
+    async def on_namespaced_command(self, event: AstrMessageEvent, ctx=None):
+        """Route configurable namespace commands without reserving global names."""
+        if self.conf.get("prefix", True) and not event.is_at_or_wake_command:
+            return
+        command_text = self._namespaced_command_text(event)
+        if command_text is None:
+            return
+        route = self._resolve_known_command(command_text)
+        if route is None:
+            return
+
+        method_name, legacy_name, command_args = route
+        normalized_message = f"#{legacy_name}{' ' + command_args if command_args else ''}"
+        proxy = _CommandEventView(event, normalized_message, command_text, command_args)
+        event.stop_event()
+        handler = getattr(self, method_name)
+        async for result in handler(proxy):
+            yield result
+
     @filter.event_message_type(filter.EventMessageType.ALL, priority=5)
     async def on_figurine_request(self, event: AstrMessageEvent, ctx=None):
         if self.conf.get("prefix", True) and not event.is_at_or_wake_command:
@@ -3197,19 +3346,25 @@ class LinghuiStudioPlugin(Star):
         text = event.message_str.strip()
         if not text: return
 
-        # The upstream plugin listened for broad preset words such as
-        # "手办化" and "bnn".  Require Linghui's namespace so both plugins can
-        # be installed without competing for the same user messages.
-        # Keep the passive shortcut on the same fixed namespace as every
-        # decorated command so this plugin cannot reintroduce upstream clashes.
-        namespace = "灵绘"
-        compact = re.sub(r"^[#/！!]+", "", text).strip()
-        if not compact.startswith(namespace):
-            return
-        text = compact[len(namespace):].strip()
+        namespaced_text = self._namespaced_command_text(event)
+        if namespaced_text is not None:
+            text = namespaced_text
+        else:
+            if not self._direct_commands_enabled():
+                return
+            text = self._strip_command_marker(text)
         if not text:
-            yield event.chain_result([Plain("用法：#灵绘 画 <提示词>，或 #灵绘 <预设名> [追加要求]。")])
+            yield event.chain_result([Plain(
+                f"用法：{self._command_example(self.conf.get('extra_prefix', '画'))} <提示词>，"
+                f"或 {self._command_example('<预设名> [追加要求]')}。"
+            )])
             event.stop_event()
+            return
+
+        # Explicit commands are handled by decorators (or the namespace
+        # router above).  Do not mistake one for a prompt preset of the same
+        # name and generate a duplicate image.
+        if self._resolve_known_command(text) is not None:
             return
 
         # 消息去重检查：防止多平台重复处理同一消息
@@ -3229,13 +3384,13 @@ class LinghuiStudioPlugin(Star):
         preset_name = "自定义"
 
         extra_prefix = self.conf.get("extra_prefix", "画")
-        is_bnn = (base_cmd == extra_prefix)
+        is_custom_command = is_custom_drawing_command(base_cmd, extra_prefix)
 
-        if is_bnn:
+        if is_custom_command:
             user_prompt = parts[1] if len(parts) > 1 else ""
 
-            # [修改] bnn 模式下不再自动匹配预设，改为纯自定义模式
-            # user_prompt, preset_name = self._process_prompt_and_preset(user_prompt)
+            # Custom commands never resolve a prompt preset. This preserves
+            # upstream ``bnn`` behavior while allowing a configurable alias.
             preset_name = "自定义"
 
         else:
@@ -3284,7 +3439,7 @@ class LinghuiStudioPlugin(Star):
                 source="user_current"
             )
 
-        if not is_bnn and user_prompt:
+        if not is_custom_command and user_prompt:
             urls = extract_image_urls_from_text(user_prompt)
             for u in urls:
                 if b := await self.img_mgr.load_bytes(u):
@@ -3310,12 +3465,12 @@ class LinghuiStudioPlugin(Star):
             yield event.chain_result([Plain("没找到可继续修改的上文图片，先发图或生成一张再说。")])
             return
 
-        if not images and not (is_bnn and user_prompt):
+        if not images and not (is_custom_command and user_prompt):
             yield event.chain_result([Plain("请发送图片或提供描述。")])
             return
 
-        # 判断是否为纯文生图模式（bnn 指令且没有图片）
-        is_text_to_image = is_bnn and not images and user_prompt
+        # A custom command without an image is text-to-image.
+        is_text_to_image = is_custom_command and not images and user_prompt
 
         if is_text_to_image:
             # 纯文生图使用专用模型
@@ -3350,7 +3505,7 @@ class LinghuiStudioPlugin(Star):
             await self.data_mgr.record_usage(uid, gid)
             await self._register_generation_success(event.unified_msg_origin, 1)
             await self._register_generated_image(event.unified_msg_origin, res)
-            if not is_bnn: await self.data_mgr.save_preset_image(base_cmd, res)
+            if not is_custom_command: await self.data_mgr.save_preset_image(base_cmd, res)
 
             quota_str = self._get_quota_str(deduction, uid, gid)
             timing_text = self._format_success_timing(elapsed)
@@ -3362,10 +3517,10 @@ class LinghuiStudioPlugin(Star):
         else:
             yield event.chain_result([Plain(f"没弄好: {self._resolve_debug_error_message(res, '这次没弄好，请稍后再试。')}")])
 
-    @filter.command("灵绘文生图", prefix_optional=True)
+    @filter.command("文生图", prefix_optional=True)
+    @_direct_command_only
     async def on_txt2img(self, event: AstrMessageEvent, ctx=None):
-        raw = event.message_str.strip()
-        prompt = re.sub(r"^[#/！!]?灵绘文生图\s*", "", raw).strip()
+        prompt = self._command_args(event, "文生图")
         if not prompt: yield event.chain_result([Plain("请输入描述。")]); return
 
         uid = norm_id(event.get_sender_id())
@@ -3420,11 +3575,11 @@ class LinghuiStudioPlugin(Star):
         else:
             yield event.chain_result([Plain(str(res))])
 
-    @filter.command("灵绘头像图生图", prefix_optional=True)
+    @filter.command("头像图生图", prefix_optional=True)
+    @_direct_command_only
     async def on_avatar_image_to_image(self, event: AstrMessageEvent, ctx=None):
         """Use the sender's QQ avatar as the reference image for image-to-image."""
-        raw = event.message_str.strip()
-        prompt = re.sub(r"^[#/！!]?灵绘头像图生图\s*", "", raw).strip()
+        prompt = self._command_args(event, "头像图生图")
         uid = norm_id(event.get_sender_id())
         gid = norm_id(event.get_group_id())
         if not uid.isdigit():
@@ -3475,7 +3630,8 @@ class LinghuiStudioPlugin(Star):
         bot_id = self._get_bot_id(event) or "2854196310"
         return event.chain_result([Nodes(nodes=[Node(name="灵绘工坊", uin=bot_id, content=[Plain(txt)])])])
 
-    @filter.command("灵绘预设列表", prefix_optional=True)
+    @filter.command("预设列表", prefix_optional=True)
+    @_direct_command_only
     async def on_preset_list(self, event: AstrMessageEvent, ctx=None):
         presets = []
         for k, v in self.data_mgr.prompt_map.items():
@@ -3485,10 +3641,11 @@ class LinghuiStudioPlugin(Star):
         img_data = await self.img_mgr.create_preset_table(presets, self.data_mgr)
         yield event.chain_result([Image.fromBytes(img_data)])
 
-    @filter.command("灵绘预设添加", prefix_optional=True)
+    @filter.command("预设添加", prefix_optional=True)
+    @_direct_command_only
     async def on_add_preset(self, event: AstrMessageEvent, ctx=None):
         if not self.is_admin(event): return
-        msg = re.sub(r"^[#/！!]?灵绘预设添加\s*", "", event.message_str.strip()).strip()
+        msg = self._command_args(event, "预设添加")
         if ":" not in msg: yield event.chain_result([Plain("格式: 词:提示词")]); return
 
         k, v = msg.split(":", 1)
@@ -3512,14 +3669,16 @@ class LinghuiStudioPlugin(Star):
 
         yield event.chain_result([Plain(f"✅ 已添加预设: {k}\n💾 已同步保存到配置文件")])
 
-    @filter.command("灵绘预设删除", prefix_optional=True)
+    @filter.command("预设删除", prefix_optional=True)
+    @_direct_command_only
     async def on_delete_preset(self, event: AstrMessageEvent, ctx=None):
         if not self.is_admin(event): return
 
-        name = re.sub(r"^[#/！!]?灵绘预设删除\s*", "", event.message_str.strip()).strip().lstrip(":：").strip()
+        name = self._command_args(event, "预设删除").lstrip(":：").strip()
 
         if not name:
-            yield event.chain_result([Plain("用法: #灵绘预设删除 <预设名>\n例如: #灵绘预设删除 手办化新版")])
+            command = self._command_example("预设删除")
+            yield event.chain_result([Plain(f"用法: {command} <预设名>\n例如: {command} 手办化新版")])
             return
 
         prompt_list = self.conf.get("prompt_list", [])
@@ -3539,7 +3698,9 @@ class LinghuiStudioPlugin(Star):
         exists = name in self.data_mgr.prompt_map
 
         if exists and not in_user_prompts and not in_prompt_list:
-            yield event.chain_result([Plain(f"预设 [{name}] 是内置或配置文件固定预设，不能用 #灵绘预设删除 删除。")])
+            yield event.chain_result([Plain(
+                f"预设 [{name}] 是内置或配置文件固定预设，不能用 {self._command_example('预设删除')} 删除。"
+            )])
             return
 
         if not exists and not in_user_prompts and not in_prompt_list:
@@ -3567,15 +3728,17 @@ class LinghuiStudioPlugin(Star):
         detail_text = "\n已清理: " + "、".join(details) if details else ""
         yield event.chain_result([Plain(f"✅ 已删除预设: {name}{detail_text}")])
 
-    @filter.command("灵绘预设查看", prefix_optional=True)
+    @filter.command("预设查看", prefix_optional=True)
+    @_direct_command_only
     async def on_view_preset(self, event: AstrMessageEvent, ctx=None):
-        kw = re.sub(r"^[#/！!]?灵绘预设查看\s*", "", event.message_str.strip()).strip()
-        if not kw: yield event.chain_result([Plain("用法: #灵绘预设查看 <关键词>")]); return
+        kw = self._command_args(event, "预设查看")
+        if not kw: yield event.chain_result([Plain(f"用法: {self._command_example('预设查看')} <关键词>")]); return
         prompt = self.data_mgr.get_prompt(kw)
         msg = f"🔍 [{kw}]:\n{prompt}" if prompt else f"没找到 [{kw}]"
         yield event.chain_result([Plain(msg)])
 
-    @filter.command("灵绘签到", prefix_optional=True)
+    @filter.command("签到", prefix_optional=True)
+    @_direct_command_only
     async def on_checkin(self, event: AstrMessageEvent, ctx=None):
         if not self.conf.get("enable_checkin", False): yield event.chain_result([Plain("未开启签到")]); return
         uid = norm_id(event.get_sender_id())
@@ -3587,7 +3750,8 @@ class LinghuiStudioPlugin(Star):
         msg = await self.data_mgr.process_checkin(uid)
         yield event.chain_result([Plain(msg)])
 
-    @filter.command("灵绘额度", prefix_optional=True)
+    @filter.command("额度", prefix_optional=True)
+    @_direct_command_only
     async def on_query_count(self, event: AstrMessageEvent, ctx=None):
         uid = norm_id(event.get_sender_id())
         if self.is_admin(event):
@@ -3611,7 +3775,8 @@ class LinghuiStudioPlugin(Star):
             msg += f"\n👥 本群剩余: {self.data_mgr.get_group_count(norm_id(gid))}"
         yield event.chain_result([Plain(msg)])
 
-    @filter.command("灵绘接口模式", prefix_optional=True)
+    @filter.command("接口模式", prefix_optional=True)
+    @_direct_command_only
     async def on_switch_mode(self, event: AstrMessageEvent, ctx=None):
         if not self.is_admin(event): return
         mode = event.message_str.split()[-1].strip().lower()
@@ -3629,7 +3794,8 @@ class LinghuiStudioPlugin(Star):
                 "模式无效 (openai_image / openai_chat / gemini_official / custom_endpoint；旧 generic 仍兼容)"
             )])
 
-    @filter.command("灵绘模型", prefix_optional=True)
+    @filter.command("模型", prefix_optional=True)
+    @_direct_command_only
     async def on_switch_model(self, event: AstrMessageEvent, ctx=None):
         if not self.is_admin(event):
             yield event.chain_result([Plain("❌ 只有管理员可以切换模型。")])
@@ -3645,7 +3811,8 @@ class LinghuiStudioPlugin(Star):
                 )
             else:
                 msg = f"📋 当前模型: {curr}\n模型列表为空，可直接输入模型名称切换。"
-            msg += "\n\n💡 用法: #灵绘模型 <序号>\n或直接使用 #灵绘模型 <模型名称> 写入任意模型。"
+            model_command = self._command_example("模型")
+            msg += f"\n\n💡 用法: {model_command} <序号>\n或直接使用 {model_command} <模型名称> 写入任意模型。"
             yield event.chain_result([Plain(msg)])
             return
 
@@ -3658,22 +3825,22 @@ class LinghuiStudioPlugin(Star):
                 self._save_config(["model"])
                 yield event.chain_result([Plain(f"✅ 已切换为预设模型: {all_m[idx]}")])
             else:
-                yield event.chain_result([Plain("❌ 模型序号超出范围，请先发送 #灵绘模型 查看列表。")])
+                yield event.chain_result([Plain(f"❌ 模型序号超出范围，请先发送 {self._command_example('模型')} 查看列表。")])
         else:
             # 直接按名称写入任意模型
             self.conf["model"] = target
             self._save_config(["model"])
             yield event.chain_result([Plain(f"✅ 已直接切换为自定义模型: {target}")])
 
-    @filter.command("灵绘通道", alias={"灵绘渠道"}, prefix_optional=True)
+    @filter.command("通道", alias={"渠道"}, prefix_optional=True)
+    @_direct_command_only
     async def on_switch_channel(self, event: AstrMessageEvent, ctx=None):
         """查看或切换当前绘图渠道（管理员）。"""
         if not self.is_admin(event):
-            yield event.chain_result([Plain("只有管理员可以切换灵绘渠道。")])
+            yield event.chain_result([Plain("只有管理员可以切换绘图渠道。")])
             return
 
-        raw = event.message_str.strip()
-        argument = re.sub(r"^[#/！!]?(?:灵绘通道|灵绘渠道)\s*", "", raw).strip()
+        argument = self._command_args(event, "通道", "渠道")
         channels = self.api_mgr.channels()
         if not channels:
             yield event.chain_result([Plain("当前未配置绘图渠道，将使用兼容的单接口配置。")])
@@ -3688,7 +3855,8 @@ class LinghuiStudioPlugin(Star):
                 marker = " <- 当前" if channel_id == active else ""
                 fallback = "可回退" if channel.get("fallback_enabled", True) is not False else "不作回退"
                 rows.append(f"{index}. {channel_id}（{label}，{fallback}）{marker}")
-            rows.append("用法：#灵绘通道 <渠道ID>；#灵绘通道 自动")
+            channel_command = self._command_example("通道")
+            rows.append(f"用法：{channel_command} <渠道ID>；{channel_command} 自动")
             yield event.chain_result([Plain("\n".join(rows))])
             return
 
@@ -3701,14 +3869,15 @@ class LinghuiStudioPlugin(Star):
 
         selected = argument.split()[0]
         if selected not in {channel["id"] for channel in channels}:
-            yield event.chain_result([Plain("未找到该渠道，请先发送 #灵绘通道 查看列表。")])
+            yield event.chain_result([Plain(f"未找到该渠道，请先发送 {self._command_example('通道')} 查看列表。")])
             return
         self.conf["active_drawing_channel"] = selected
         self._save_config(["active_drawing_channel"])
         await self.api_mgr.refresh()
         yield event.chain_result([Plain(f"已切换主渠道为 {selected}；失败时仍会按回退顺序尝试其他渠道。")])
 
-    @filter.command("灵绘统计", prefix_optional=True)
+    @filter.command("统计", prefix_optional=True)
+    @_direct_command_only
     async def on_daily_stats(self, event: AstrMessageEvent, ctx=None):
         if not self.is_admin(event): return
         stats = self.data_mgr.daily_stats
@@ -3721,7 +3890,8 @@ class LinghuiStudioPlugin(Star):
         msg += "\n\n👤 用户排行:\n" + ("\n".join([f"{k}: {v}" for k, v in u_top]) or "无")
         yield event.chain_result([Plain(msg)])
 
-    @filter.command("灵绘加用户额度", prefix_optional=True)
+    @filter.command("加用户额度", prefix_optional=True)
+    @_direct_command_only
     async def on_add_user_counts(self, event: AstrMessageEvent, ctx=None):
         if not self.is_admin(event): return
 
@@ -3763,9 +3933,13 @@ class LinghuiStudioPlugin(Star):
             yield event.chain_result([Plain(f"✅ 用户 {target} +{count}")])
         else:
             yield event.chain_result(
-                [Plain("用法: #灵绘加用户额度 <QQ号> <次数>\n或: #灵绘加用户额度 @用户 <次数>")])
+                [Plain(
+                    f"用法: {self._command_example('加用户额度')} <QQ号> <次数>\n"
+                    f"或: {self._command_example('加用户额度')} @用户 <次数>"
+                )])
 
-    @filter.command("灵绘加群额度", prefix_optional=True)
+    @filter.command("加群额度", prefix_optional=True)
+    @_direct_command_only
     async def on_add_group_counts(self, event: AstrMessageEvent, ctx=None):
         if not self.is_admin(event): return
 
@@ -3781,7 +3955,10 @@ class LinghuiStudioPlugin(Star):
             count = int(digit_parts[0])
         else:
             yield event.chain_result(
-                [Plain("用法: #灵绘加群额度 <群号> <次数>\n或在群内: #灵绘加群额度 <次数>")])
+                [Plain(
+                    f"用法: {self._command_example('加群额度')} <群号> <次数>\n"
+                    f"或在群内: {self._command_example('加群额度')} <次数>"
+                )])
             return
 
         if count > 0:
@@ -3793,7 +3970,8 @@ class LinghuiStudioPlugin(Star):
                 yield event.chain_result([Plain(
                     "⚠️ 注意：当前配置中 enable_group_limit=False，群组次数不会生效。请在配置中开启 enable_group_limit。")])
 
-    @filter.command("灵绘添加密钥", prefix_optional=True)
+    @filter.command("添加密钥", prefix_optional=True)
+    @_direct_command_only
     async def on_add_key(self, event: AstrMessageEvent, ctx=None):
         if not self.is_admin(event): return
         parts = event.message_str.split()
@@ -3808,7 +3986,8 @@ class LinghuiStudioPlugin(Star):
         self._save_config([field])
         yield event.chain_result([Plain(f"✅ 已向 {field} 添加 {len(keys)} 个 Key")])
 
-    @filter.command("灵绘密钥列表", prefix_optional=True)
+    @filter.command("密钥列表", prefix_optional=True)
+    @_direct_command_only
     async def on_list_keys(self, event: AstrMessageEvent, ctx=None):
         if not self.is_admin(event): return
         mode = self.conf.get("interface_mode", self.conf.get("api_mode", "openai_chat"))
@@ -3819,11 +3998,12 @@ class LinghuiStudioPlugin(Star):
         msg = f"🔑 模式: {mode}\n📌 普通池 ({len(nk)}):\n" + "\n".join([f"{k[:8]}..." for k in nk])
         yield event.chain_result([Plain(msg)])
 
-    @filter.command("灵绘删除密钥", prefix_optional=True)
+    @filter.command("删除密钥", prefix_optional=True)
+    @_direct_command_only
     async def on_delete_key(self, event: AstrMessageEvent, ctx=None):
         if not self.is_admin(event): return
         parts = event.message_str.split()
-        if len(parts) < 2: yield event.chain_result([Plain("用法: #灵绘删除密钥 <all/序号>")]); return
+        if len(parts) < 2: yield event.chain_result([Plain(f"用法: {self._command_example('删除密钥')} <all/序号>")]); return
 
         idx_str = parts[1]
 
@@ -3849,7 +4029,8 @@ class LinghuiStudioPlugin(Star):
                 self._save_config([field])
                 yield event.chain_result([Plain("✅ 已删除")])
 
-    @filter.command("灵绘预设图片清理", prefix_optional=True)
+    @filter.command("预设图片清理", prefix_optional=True)
+    @_direct_command_only
     async def on_cleanup_presets(self, event: AstrMessageEvent, ctx=None):
         if not self.is_admin(event): return
         parts = event.message_str.split()
@@ -3857,13 +4038,15 @@ class LinghuiStudioPlugin(Star):
         count = await self.data_mgr.cleanup_old_presets(days)
         yield event.chain_result([Plain(f"✅ 清理了 {count} 张超过 {days} 天的图片")])
 
-    @filter.command("灵绘预设图片统计", prefix_optional=True)
+    @filter.command("预设图片统计", prefix_optional=True)
+    @_direct_command_only
     async def on_preset_stats(self, event: AstrMessageEvent, ctx=None):
         if not self.is_admin(event): return
         cnt, size = self.data_mgr.get_preset_stats()
         yield event.chain_result([Plain(f"📊 缓存统计:\n数量: {cnt} 张\n占用: {size:.2f} MB")])
 
-    @filter.command("灵绘帮助", prefix_optional=True)
+    @filter.command("帮助", prefix_optional=True)
+    @_direct_command_only
     async def on_help(self, event: AstrMessageEvent, ctx=None):
         yield self._get_help_node(event)
 
@@ -4117,7 +4300,8 @@ class LinghuiStudioPlugin(Star):
 
         return "未知任务类型"
 
-    @filter.command("灵绘上下文状态", prefix_optional=True)
+    @filter.command("上下文状态", prefix_optional=True)
+    @_direct_command_only
     async def on_context_status(self, event: AstrMessageEvent, ctx=None):
         """查看上下文状态（管理员）"""
         if not self.is_admin(event): return
@@ -4144,7 +4328,8 @@ class LinghuiStudioPlugin(Star):
 
         yield event.chain_result([Plain(msg)])
 
-    @filter.command("灵绘清除上下文", prefix_optional=True)
+    @filter.command("清除上下文", prefix_optional=True)
+    @_direct_command_only
     async def on_clear_context(self, event: AstrMessageEvent, ctx=None):
         """清除当前会话的上下文（管理员）"""
         if not self.is_admin(event): return
@@ -4156,7 +4341,8 @@ class LinghuiStudioPlugin(Star):
 
         yield event.chain_result([Plain(f"✅ 已清除 {count} 条上下文记录")])
 
-    @filter.command("灵绘测试智能判断", prefix_optional=True)
+    @filter.command("测试智能判断", prefix_optional=True)
+    @_direct_command_only
     async def on_test_smart_detect(self, event: AstrMessageEvent, ctx=None):
         """测试智能判断功能（不实际生成）"""
         if not self.is_admin(event): return
@@ -4195,25 +4381,30 @@ class LinghuiStudioPlugin(Star):
 
     # ================= 预设参考图管理 =================
 
-    @filter.command("灵绘预设参考图添加", prefix_optional=True)
+    @filter.command("预设参考图添加", prefix_optional=True)
+    @_direct_command_only
     async def on_add_preset_ref(self, event: AstrMessageEvent, ctx=None):
         """为预设添加参考图（管理员）
 
-        用法: #灵绘预设参考图添加 <预设名> [图片]
+        用法: #预设参考图添加 <预设名> [图片]
         """
         if not self.is_admin(event): return
 
         # 解析预设名
         parts = event.message_str.split()
         if len(parts) < 2:
-            yield event.chain_result([Plain("用法: #灵绘预设参考图添加 <预设名> [图片]\n请同时发送或引用图片")])
+            yield event.chain_result([Plain(
+                f"用法: {self._command_example('预设参考图添加')} <预设名> [图片]\n请同时发送或引用图片"
+            )])
             return
 
         preset_name = parts[1].strip()
 
         # 检查预设是否存在
         if preset_name not in self.data_mgr.prompt_map:
-            yield event.chain_result([Plain(f"预设 [{preset_name}] 不存在，先用 #灵绘预设添加 创建一个吧")])
+            yield event.chain_result([Plain(
+                f"预设 [{preset_name}] 不存在，先用 {self._command_example('预设添加')} 创建一个吧"
+            )])
             return
 
         # 提取图片
@@ -4234,7 +4425,8 @@ class LinghuiStudioPlugin(Star):
         else:
             yield event.chain_result([Plain("参考图保存失败了，再试试？")])
 
-    @filter.command("灵绘预设参考图查看", prefix_optional=True)
+    @filter.command("预设参考图查看", prefix_optional=True)
+    @_direct_command_only
     async def on_view_preset_ref(self, event: AstrMessageEvent, ctx=None):
         """查看预设的参考图（管理员）
 
@@ -4270,7 +4462,8 @@ class LinghuiStudioPlugin(Star):
 
         yield event.chain_result(result)
 
-    @filter.command("灵绘预设参考图清除", prefix_optional=True)
+    @filter.command("预设参考图清除", prefix_optional=True)
+    @_direct_command_only
     async def on_clear_preset_ref(self, event: AstrMessageEvent, ctx=None):
         """清除预设的所有参考图（管理员）
 
@@ -4292,7 +4485,8 @@ class LinghuiStudioPlugin(Star):
         else:
             yield event.chain_result([Plain(f"预设 [{preset_name}] 没有参考图")])
 
-    @filter.command("灵绘预设参考图删除", prefix_optional=True)
+    @filter.command("预设参考图删除", prefix_optional=True)
+    @_direct_command_only
     async def on_remove_preset_ref(self, event: AstrMessageEvent, ctx=None):
         """删除预设的指定参考图（管理员）
 
@@ -4322,7 +4516,8 @@ class LinghuiStudioPlugin(Star):
         else:
             yield event.chain_result([Plain("删除失败了，检查一下预设名和序号对不对？")])
 
-    @filter.command("灵绘预设参考图统计", prefix_optional=True)
+    @filter.command("预设参考图统计", prefix_optional=True)
+    @_direct_command_only
     async def on_preset_ref_stats(self, event: AstrMessageEvent, ctx=None):
         """查看预设参考图统计（管理员）"""
         if not self.is_admin(event): return
@@ -4344,7 +4539,8 @@ class LinghuiStudioPlugin(Star):
 
         yield event.chain_result([Plain(msg)])
 
-    @filter.command("灵绘预设参考图列表", prefix_optional=True)
+    @filter.command("预设参考图列表", prefix_optional=True)
+    @_direct_command_only
     async def on_list_preset_refs(self, event: AstrMessageEvent, ctx=None):
         """列出所有有参考图的预设（管理员）"""
         if not self.is_admin(event): return
@@ -4859,7 +5055,8 @@ class LinghuiStudioPlugin(Star):
             logger.error(f"Batch task {task_index} exception: {e}", exc_info=True)
             return False, error_msg
 
-    @filter.command("灵绘打包PDF", prefix_optional=True)
+    @filter.command("打包PDF", alias={"图片转PDF", "合成PDF"}, prefix_optional=True)
+    @_direct_command_only
     async def on_pack_pdf_cmd(self, event: AstrMessageEvent, ctx=None):
         """将上下文或当前消息中的图片打包为PDF（不生成新图，纯打包）"""
 
@@ -5858,7 +6055,8 @@ class LinghuiStudioPlugin(Star):
             return self._finalize_llm_tool_success(
                 f"[TOOL_SUCCESS] {total_success} 张照片已经发给用户。请用你自己的语气自然收尾一句，比如“给你啦，才不是特意拍给你的呢。”不要提系统、工具或生成。")
 
-    @filter.command("灵绘人设拍照", prefix_optional=True)
+    @filter.command("人设拍照", prefix_optional=True)
+    @_direct_command_only
     async def on_persona_photo_cmd(self, event: AstrMessageEvent, ctx=None):
         """生成人设角色的日常照片（指令模式）
 
@@ -5968,7 +6166,8 @@ class LinghuiStudioPlugin(Star):
         else:
             yield event.chain_result([Plain(f"没弄好: {self._resolve_debug_error_message(res, '这次没弄好，请稍后再试。')}")])
 
-    @filter.command("灵绘人设参考图添加", prefix_optional=True)
+    @filter.command("人设参考图添加", alias={"添加人设图"}, prefix_optional=True)
+    @_direct_command_only
     async def on_add_persona_ref(self, event: AstrMessageEvent, ctx=None):
         """添加人设参考图（管理员）
 
@@ -5993,7 +6192,8 @@ class LinghuiStudioPlugin(Star):
         else:
             yield event.chain_result([Plain("参考图保存失败了，再试试？")])
 
-    @filter.command("灵绘人设参考图查看", prefix_optional=True)
+    @filter.command("人设参考图查看", alias={"查看人设图"}, prefix_optional=True)
+    @_direct_command_only
     async def on_view_persona_ref(self, event: AstrMessageEvent, ctx=None):
         """查看人设参考图（管理员）"""
         if not self.is_admin(event): return
@@ -6017,7 +6217,8 @@ class LinghuiStudioPlugin(Star):
 
         yield event.chain_result(result)
 
-    @filter.command("灵绘人设参考图清除", prefix_optional=True)
+    @filter.command("人设参考图清除", alias={"清除人设图"}, prefix_optional=True)
+    @_direct_command_only
     async def on_clear_persona_ref(self, event: AstrMessageEvent, ctx=None):
         """清除所有人设参考图（管理员）"""
         if not self.is_admin(event): return
@@ -6029,7 +6230,8 @@ class LinghuiStudioPlugin(Star):
         else:
             yield event.chain_result([Plain("暂无人设参考图")])
 
-    @filter.command("灵绘人设场景列表", prefix_optional=True)
+    @filter.command("人设场景列表", alias={"场景列表"}, prefix_optional=True)
+    @_direct_command_only
     async def on_list_persona_scenes(self, event: AstrMessageEvent, ctx=None):
         """查看所有人设场景"""
         if not self._persona_scene_map:
@@ -6047,7 +6249,8 @@ class LinghuiStudioPlugin(Star):
 
         yield event.chain_result([Plain(msg)])
 
-    @filter.command("灵绘人设状态", prefix_optional=True)
+    @filter.command("人设状态", prefix_optional=True)
+    @_direct_command_only
     async def on_persona_status(self, event: AstrMessageEvent, ctx=None):
         """查看人设功能状态（管理员）"""
         if not self.is_admin(event): return
@@ -6075,20 +6278,24 @@ class LinghuiStudioPlugin(Star):
     async def on_batch_process_cmd(self, event: AstrMessageEvent, ctx=None):
         """批量处理上下文中的图片（指令模式）
 
-        用法: #灵绘批量<预设名> [追加规则]
-        示例: #灵绘批量手办化 皮肤白一点
+        用法: #批量<预设名> [追加规则]
+        示例: #批量手办化 皮肤白一点
         """
         if self.conf.get("prefix", True) and not event.is_at_or_wake_command:
             return
 
-        text = event.message_str.strip()
-        if not text: return
-
-        namespace = "灵绘"
-        compact = re.sub(r"^[#/！!]+", "", text).strip()
-        if not compact.startswith(namespace):
+        text = getattr(event, "_linghui_command_text", None)
+        if text is None:
+            namespaced_text = self._namespaced_command_text(event)
+            if namespaced_text is not None:
+                text = namespaced_text
+            else:
+                if not self._direct_commands_enabled():
+                    return
+                text = self._strip_command_marker(event.message_str)
+        text = str(text or "").strip()
+        if not text:
             return
-        text = compact[len(namespace):].strip()
 
         # 消息去重检查：防止多平台重复处理同一消息
         msg_id = str(event.message_obj.message_id)
@@ -6102,7 +6309,10 @@ class LinghuiStudioPlugin(Star):
         if not match:
             # 单独的 "批量" 或 "全部"
             if re.match(r"^(批量|全部)$", text):
-                yield event.chain_result([Plain("用法: #灵绘批量<预设名> [追加规则]\n示例: #灵绘批量手办化 皮肤白一点")])
+                yield event.chain_result([Plain(
+                    f"用法: {self._command_example('批量<预设名> [追加规则]')}\n"
+                    f"示例: {self._command_example('批量手办化 皮肤白一点')}"
+                )])
                 event.stop_event()
             return
 
@@ -6112,7 +6322,10 @@ class LinghuiStudioPlugin(Star):
             # 兼容旧版的 "批量处理 xxx"
             parts = text.split(maxsplit=1)
             if len(parts) < 2:
-                yield event.chain_result([Plain("用法: #灵绘批量<预设名> [追加规则]\n示例: #灵绘批量手办化 皮肤白一点")])
+                yield event.chain_result([Plain(
+                    f"用法: {self._command_example('批量<预设名> [追加规则]')}\n"
+                    f"示例: {self._command_example('批量手办化 皮肤白一点')}"
+                )])
                 event.stop_event()
                 return
             prompt = parts[1].strip()

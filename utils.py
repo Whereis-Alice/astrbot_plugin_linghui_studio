@@ -32,6 +32,23 @@ def normalize_model_list(raw_models: Any) -> List[str]:
     return models
 
 
+def is_custom_drawing_command(command: Any, configured_command: Any) -> bool:
+    """Return whether a command invokes custom-prompt drawing.
+
+    ``bnn`` is the upstream public command and remains available even when a
+    deployment changes the preferred short command from the default ``画``.
+    """
+    normalized = str(command or "").strip().casefold()
+    if not normalized:
+        return False
+
+    aliases = {"bnn"}
+    configured = str(configured_command or "").strip().casefold()
+    if configured:
+        aliases.add(configured)
+    return normalized in aliases
+
+
 def normalize_api_root(raw_url: Any) -> str:
     """提取 API 基础地址，忽略用户填写的版本段和已拼接接口路径。
 

@@ -200,6 +200,7 @@ function hydrateFields() {
   const tools = config.prompt_tools || {};
   const persona = config.persona || {};
   const settings = config.settings || {};
+  const commands = config.commands || {};
   byId("group-access-mode").value = permissions.group_access_mode || "whitelist";
   byId("allow-private").checked = bool(permissions.allow_private_messages);
   byId("admins-unlimited").checked = bool(permissions.admins_unlimited);
@@ -221,6 +222,8 @@ function hydrateFields() {
   byId("translation-system").value = tools.prompt_translation_system_prompt || "";
   byId("optimization-system").value = tools.prompt_optimization_system_prompt || "";
   byId("enable-persona").checked = bool(settings.enable_persona_mode);
+  byId("command-namespace").value = commands.namespace || "";
+  byId("enable-direct-commands").checked = bool(commands.enable_direct_commands);
   byId("persona-name").value = persona.name || "";
   byId("persona-description").value = persona.description || "";
   byId("persona-style").value = persona.photo_style || "";
@@ -279,6 +282,10 @@ function buildPayload() {
     },
     channels: readChannels(),
     active_drawing_channel: value("active-channel"),
+    commands: {
+      namespace: value("command-namespace").trim(),
+      enable_direct_commands: checked("enable-direct-commands"),
+    },
     permissions: {
       group_access_mode: value("group-access-mode"),
       allow_private_messages: checked("allow-private"),

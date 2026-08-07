@@ -96,7 +96,7 @@
         <section id="tab-prompts" class="tab-pane">
           <div class="two-columns wide-first">
             <section class="section-block">
-              <div class="section-heading"><div><h2>提示词预设</h2><p>使用 #灵绘 &lt;预设名&gt; [追加要求] 调用。预设名不能包含冒号。</p></div><button id="add-preset" class="quiet-action">添加预设</button></div>
+              <div class="section-heading"><div><h2>提示词预设</h2><p>默认使用 #&lt;预设名&gt; [追加要求] 调用；命名空间模式请在前面加上配置的命名空间。预设名不能包含冒号。</p></div><button id="add-preset" class="quiet-action">添加预设</button></div>
               <div id="preset-list" class="preset-list"></div>
             </section>
             <section class="section-block">
@@ -120,7 +120,7 @@
         <section id="tab-persona" class="tab-pane">
           <div class="two-columns">
             <section class="section-block">
-              <div class="section-heading"><div><h2>人设</h2><p>人设拍照使用独立的人设参考图。聊天指令为 #灵绘人设拍照。</p></div></div>
+              <div class="section-heading"><div><h2>人设</h2><p>人设拍照使用独立的人设参考图。默认聊天指令为 #人设拍照。</p></div></div>
               <div class="form-grid">
                 <label class="toggle-field"><input id="enable-persona" type="checkbox" /><span>启用人设拍照</span></label>
                 <label class="field"><span>人设名称</span><input id="persona-name" /></label>
@@ -146,6 +146,8 @@
           <section class="section-block narrow">
             <div class="section-heading"><div><h2>运行设置</h2><p>渠道为空时会使用兼容单接口配置；正常使用建议配置“绘图渠道”。</p></div></div>
             <div class="form-grid">
+              <label class="field"><span>可选命令命名空间</span><input id="command-namespace" placeholder="留空则直接使用 #文生图" /></label>
+              <label class="toggle-field"><input id="enable-direct-commands" type="checkbox" /><span>启用不带命名空间的直接命令</span></label>
               <label class="field"><span>兼容默认模型</span><input id="default-model" /></label>
               <label class="field"><span>兼容文生图模型</span><input id="default-t2i-model" /></label>
               <label class="field"><span>默认分辨率</span><select id="resolution"><option>1K</option><option>2K</option><option>4K</option></select></label>

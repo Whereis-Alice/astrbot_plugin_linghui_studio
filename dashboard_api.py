@@ -170,6 +170,10 @@ class LinghuiDashboardApi:
             },
             "channels": [self._public_channel(channel, index) for index, channel in enumerate(channels) if isinstance(channel, dict)],
             "active_drawing_channel": str(self.plugin.conf.get("active_drawing_channel", "") or ""),
+            "commands": {
+                "namespace": str(self.plugin.conf.get("command_namespace", "") or ""),
+                "enable_direct_commands": self._as_bool(self.plugin.conf.get("enable_direct_commands", True)),
+            },
             "permissions": {
                 "group_access_mode": str(self.plugin.conf.get("group_access_mode", "whitelist") or "whitelist"),
                 "allow_private_messages": self._as_bool(self.plugin.conf.get("allow_private_messages", False)),
@@ -332,6 +336,16 @@ class LinghuiDashboardApi:
                     if active_channel and active_channel not in channel_ids:
                         raise ValueError("当前主渠道必须是已配置的渠道 ID。")
                     self.plugin.conf["active_drawing_channel"] = active_channel
+
+                commands = payload.get("commands", {})
+                if isinstance(commands, dict):
+                    if "namespace" in commands:
+                        namespace = str(commands["namespace"] or "").strip()
+                        if len(namespace) > 40 or any(char in namespace for char in "#/！!\r\n"):
+                            raise ValueError("命名空间最长 40 个字符，且不能包含命令前缀或换行。")
+                        self.plugin.conf["command_namespace"] = namespace
+                    if "enable_direct_commands" in commands:
+                        self.plugin.conf["enable_direct_commands"] = self._as_bool(commands["enable_direct_commands"])
 
                 permissions = payload.get("permissions", {})
                 if isinstance(permissions, dict):
