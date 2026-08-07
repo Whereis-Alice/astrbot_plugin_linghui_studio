@@ -102,6 +102,7 @@ class DrawingChannelRouter:
             "timeout",
             "use_stream",
             "generic_prefer_images_api",
+            "image_edit_transport",
         ):
             value = channel.get(key)
             if value not in (None, "", []):

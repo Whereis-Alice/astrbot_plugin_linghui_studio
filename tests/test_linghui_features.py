@@ -193,6 +193,19 @@ class DrawingChannelRouterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(router._resolve_model("custom-model", channel, True), "custom-model")
         await router.close()
 
+    def test_channel_specific_image_edit_transport_overrides_the_shared_default(self):
+        router = self._router({
+            "image_edit_transport": "json",
+            "drawing_channels": [{
+                "id": "primary",
+                "base_url": "primary",
+                "api_keys": "one",
+                "image_edit_transport": "multipart",
+            }],
+        })
+        channel_config = router._channel_config(router.channels()[0])
+        self.assertEqual(channel_config["image_edit_transport"], "multipart")
+
     def test_channels_without_own_key_can_use_the_shared_legacy_pool(self):
         router = self._router({
             "api_keys": "shared-key",
@@ -256,6 +269,7 @@ class DashboardRegistrationTest(unittest.TestCase):
                 "id": "renamed",
                 "original_id": "primary",
                 "base_url": "https://new.example",
+                "image_edit_transport": "multipart",
                 "api_keys": "",
             }
         ])
@@ -267,6 +281,7 @@ class DashboardRegistrationTest(unittest.TestCase):
             }
         ])
         self.assertEqual(renamed[0]["api_keys"], "existing-key")
+        self.assertEqual(renamed[0]["image_edit_transport"], "multipart")
         self.assertEqual(cleared[0]["api_keys"], "")
         self.assertEqual(renamed[0]["__template_key"], "drawing_channel")
         self.assertEqual(cleared[0]["__template_key"], "drawing_channel")

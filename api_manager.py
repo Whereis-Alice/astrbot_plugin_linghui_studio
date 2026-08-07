@@ -436,6 +436,39 @@ class ApiManager:
         endpoint = "images/edits" if has_input_image else "images/generations"
         return f"{root}/v1/{endpoint}"
 
+    @staticmethod
+    def _looks_like_openai_images_collection_endpoint(base_url: str) -> bool:
+        """Return whether a custom URL is the incomplete OpenAI ``/v1/images`` collection path.
+
+        ``/v1/images`` is not itself a request endpoint.  A number of relay
+        dashboards present it as an Images API base URL, so accepting it here
+        avoids sending a request to a route that cannot generate or edit an
+        image.  Complete custom endpoints such as ``/v1/images/edits`` remain
+        untouched.
+        """
+        try:
+            path = urlparse(str(base_url or "")).path.rstrip("/")
+        except Exception:
+            return False
+        return bool(re.search(
+            r"/(?:v\d+(?:(?:alpha|beta)\d*)?)/images$",
+            path,
+            flags=re.IGNORECASE,
+        ))
+
+    def _get_image_edit_transport(self, model: str) -> str:
+        """Resolve the image-to-image transport without breaking legacy relays."""
+        configured = str(self.config.get("image_edit_transport", "auto") or "auto").strip().lower()
+        if configured in {"json", "multipart"}:
+            return configured
+
+        # OpenAI GPT Image and OpenAI-compatible relays use the standard
+        # multipart /v1/images/edits contract.  Other legacy relays retain the
+        # historical JSON-first behavior unless an administrator overrides it.
+        if str(model or "").strip().lower().startswith("gpt-image"):
+            return "multipart"
+        return "json"
+
     def _build_gemini_api_url(self, base_url: str, model: str) -> str:
         """忽略用户填写的版本/接口尾部，按 Gemini 官方模式统一补全。"""
         root = normalize_api_root(base_url)
@@ -457,7 +490,8 @@ class ApiManager:
         normalized = self._convert_to_images_api_url(base_url, has_input_image=has_input_image)
         return [normalized] if normalized else []
 
-    def _should_retry_images_api_with_multipart(self, error_msg: str, has_input_image: bool = False) -> bool:
+    def _should_retry_images_api_with_multipart(self, error_msg: str, has_input_image: bool = False,
+                                                allow_opaque_upstream_error: bool = False) -> bool:
         """判断 Images API 是否需要回退为 multipart/form-data 方式"""
         if not has_input_image:
             return False
@@ -474,7 +508,17 @@ class ApiManager:
             "expected uploadfile",
             "expected file"
         ]
-        return any(keyword in error_lower for keyword in keywords)
+        if any(keyword in error_lower for keyword in keywords):
+            return True
+
+        # New API and a few similar relays intentionally hide their upstream
+        # validation details behind this generic 400 response.  Retry once with
+        # the standard file-upload contract only for normalized Images API
+        # routes; custom endpoints continue to honor their explicit setting.
+        return allow_opaque_upstream_error and (
+            "openai_error" in error_lower
+            or "bad_response_status_code" in error_lower
+        )
 
     def _is_images_edits_unsupported_error(self, error_msg: str) -> bool:
         """Detect providers that do not implement /images/edits at all."""
@@ -601,6 +645,18 @@ class ApiManager:
         """调用 Images API (DALL-E 风格接口) - 作为 fallback"""
 
         has_input_image = bool(images)
+
+        if has_input_image and self._get_image_edit_transport(model) == "multipart":
+            logger.info(
+                "Images API image edit uses multipart/form-data "
+                f"(model={model}, exact_endpoint={exact_endpoint})."
+            )
+            return await self._call_images_api_multipart(
+                images, prompt, model, key, base_url, proxy,
+                generation_params=generation_params,
+                exact_endpoint=exact_endpoint,
+            )
+
         candidate_urls = [base_url.rstrip("/")] if exact_endpoint else self._build_candidate_generic_image_urls(
             base_url, has_input_image=has_input_image
         )
@@ -671,7 +727,11 @@ class ApiManager:
                                 continue
                             return f"Images API edits endpoint unsupported {resp.status}: {err_msg[:300]} | URL: {url}"
 
-                        if self._should_retry_images_api_with_multipart(err_msg, has_input_image):
+                        if self._should_retry_images_api_with_multipart(
+                                err_msg,
+                                has_input_image,
+                                allow_opaque_upstream_error=not exact_endpoint,
+                        ):
                             logger.info("Images API JSON 请求失败，检测到服务端更偏好 multipart/form-data，自动重试")
                             return await self._call_images_api_multipart(
                                 images, prompt, model, key, base_url, proxy,
@@ -991,10 +1051,21 @@ class ApiManager:
                 custom_kind = "image"
 
         if interface_mode == "openai_image" or custom_kind == "image":
+            exact_image_endpoint = interface_mode == "custom_endpoint"
+            if custom_kind == "image" and self._looks_like_openai_images_collection_endpoint(base):
+                # A bare /v1/images URL is a collection path, not a callable
+                # endpoint.  Normalize it exactly as openai_image mode instead
+                # of issuing an opaque upstream 400/404.
+                logger.warning(
+                    "Custom image endpoint %s looks like an incomplete OpenAI Images base; "
+                    "using standard /v1/images/generations or /v1/images/edits.",
+                    base,
+                )
+                exact_image_endpoint = False
             return await self.call_images_api(
                 images, prompt, model, key, base, proxy,
                 generation_params=generation_params,
-                exact_endpoint=(interface_mode == "custom_endpoint"),
+                exact_endpoint=exact_image_endpoint,
             )
 
         # 对于明确使用 Generic 图片接口的站点，可配置为优先直连 Images API

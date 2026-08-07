@@ -97,6 +97,7 @@ class LinghuiDashboardApi:
             "enabled": self._as_bool(channel.get("enabled", True)),
             "fallback_enabled": self._as_bool(channel.get("fallback_enabled", True)),
             "interface_mode": str(channel.get("interface_mode", "openai_chat") or "openai_chat"),
+            "image_edit_transport": str(channel.get("image_edit_transport", "auto") or "auto"),
             "base_url": str(channel.get("base_url", "") or ""),
             "model": str(channel.get("model", "") or ""),
             "text_to_image_model": str(channel.get("text_to_image_model", "") or ""),
@@ -309,6 +310,9 @@ class LinghuiDashboardApi:
             interface_mode = str(raw.get("interface_mode", "openai_chat") or "openai_chat").strip()
             if interface_mode not in _INTERFACE_MODES:
                 raise ValueError(f"渠道 {channel_id} 的接口模式无效。")
+            image_edit_transport = str(raw.get("image_edit_transport", "auto") or "auto").strip().lower()
+            if image_edit_transport not in {"auto", "multipart", "json"}:
+                raise ValueError(f"渠道 {channel_id} 的图生图上传格式无效。")
             api_keys = str(raw.get("api_keys", "") or "").strip()
             if not api_keys and not self._as_bool(raw.get("clear_api_keys", False)):
                 api_keys = str(old.get("api_keys", "") or "")
@@ -320,6 +324,7 @@ class LinghuiDashboardApi:
                 "enabled": self._as_bool(raw.get("enabled", True)),
                 "fallback_enabled": self._as_bool(raw.get("fallback_enabled", True)),
                 "interface_mode": interface_mode,
+                "image_edit_transport": image_edit_transport,
                 "base_url": str(raw.get("base_url", "") or "").strip()[:500],
                 "api_keys": api_keys,
                 "model": str(raw.get("model", "") or "").strip()[:160],

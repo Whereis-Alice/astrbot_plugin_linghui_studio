@@ -65,7 +65,7 @@
           "interface_mode": {
             "type": "string",
             "description": "接口模式",
-            "hint": "必须与服务端的请求和响应协议匹配；模式不匹配通常会导致请求失败。",
+            "hint": "必须与服务端的请求和响应协议匹配；New API/OpenAI Images 请选择 openai_image 并只填写站点基础地址，不要填到 /v1/images。",
             "options": [
               "openai_image",
               "openai_chat",
@@ -74,10 +74,21 @@
             ],
             "default": "openai_chat"
           },
+          "image_edit_transport": {
+            "type": "string",
+            "description": "图生图上传格式",
+            "hint": "用于人设拍照、头像图生图和带参考图的请求。auto 会让 gpt-image-* 直接使用 OpenAI 标准 multipart 文件上传；其他旧中转先用 JSON，报格式错误时自动尝试 multipart。",
+            "options": [
+              "auto",
+              "multipart",
+              "json"
+            ],
+            "default": "auto"
+          },
           "base_url": {
             "type": "string",
             "description": "接口地址",
-            "hint": "OpenAI 模式填写基础地址；custom_endpoint 填完整请求地址；Gemini 官方模式可填写 https://generativelanguage.googleapis.com。",
+            "hint": "OpenAI Images/New API 示例：https://example.com（程序会拼接 /v1/images/generations 或 /v1/images/edits）；custom_endpoint 才填写完整请求地址；Gemini 官方模式可填写 https://generativelanguage.googleapis.com。",
             "default": ""
           },
           "api_keys": {
@@ -119,7 +130,7 @@
   "interface_mode": {
     "type": "string",
     "description": "兼容单接口模式",
-    "hint": "仅在绘图渠道列表为空时使用。新安装建议使用上方的绘图渠道列表。",
+    "hint": "仅在绘图渠道列表为空时使用。New API/OpenAI Images 请选择 openai_image 并只填写站点基础地址；新安装建议使用上方的绘图渠道列表。",
     "options": [
       "openai_image",
       "openai_chat",
@@ -128,10 +139,21 @@
     ],
     "default": "openai_chat"
   },
+  "image_edit_transport": {
+    "type": "string",
+    "description": "兼容单接口图生图上传格式",
+    "hint": "仅在绘图渠道列表为空时使用。auto 会让 gpt-image-* 直接使用 multipart 文件上传；其他旧中转先使用 JSON，必要时自动回退为 multipart。",
+    "options": [
+      "auto",
+      "multipart",
+      "json"
+    ],
+    "default": "auto"
+  },
   "base_url": {
     "type": "string",
     "description": "兼容单接口地址",
-    "hint": "仅在“绘图渠道”列表为空时使用。OpenAI 模式填写基础地址，自定义接口填写完整请求地址。",
+    "hint": "仅在“绘图渠道”列表为空时使用。OpenAI Images/New API 填写站点基础地址，例如 https://example.com；自定义接口才填写完整请求地址。",
     "default": ""
   },
   "api_keys": {

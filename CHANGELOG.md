@@ -1,3 +1,8 @@
+## v3.2.1
+- 修复 New API/OpenAI Images 的人设拍照、头像图生图和参考图请求：将误填为完整地址的裸 `/v1/images` 自动规范为 `/v1/images/generations` 或 `/v1/images/edits`。
+- `gpt-image-*` 带参考图时直接使用标准 `multipart/form-data` 上传，避免 JSON/Base64 请求被上游收敛为不透明的 400 `openai_error`。
+- Dashboard 新增每渠道“图生图上传格式”选择，并明确 New API/OpenAI Images 应填写站点基础地址而非裸 `/v1/images`。
+
 ## v3.2.0
 - 修复 Dashboard 上传后的人设图、预设参考图预览：不再由 `<img>` 直连需要 Dashboard 授权的插件 API，而是通过已鉴权的页面配置响应返回受尺寸限制的内联缩略图。
 - 为图片预览增加不可用状态，损坏的历史文件不会只显示浏览器破图标；删除按钮仍保留可用。

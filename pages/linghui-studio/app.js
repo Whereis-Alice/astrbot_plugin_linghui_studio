@@ -104,6 +104,7 @@ function channelTemplate(channel = {}, index = 0) {
     enabled: channel.enabled !== false,
     fallback_enabled: channel.fallback_enabled !== false,
     interface_mode: channel.interface_mode || "openai_chat",
+    image_edit_transport: channel.image_edit_transport || "auto",
     base_url: channel.base_url || "",
     model: channel.model || "",
     text_to_image_model: channel.text_to_image_model || "",
@@ -122,9 +123,12 @@ function channelTemplate(channel = {}, index = 0) {
         <label class="field"><span>显示名称</span><input data-channel="name" value="${escapeHtml(item.name)}" /><small class="field-hint">仅用于 Dashboard 和状态展示，留空时显示渠道 ID。</small></label>
         <label class="field"><span>接口模式</span><select data-channel="interface_mode">
           ${["openai_chat", "openai_image", "gemini_official", "custom_endpoint"].map((kind) => `<option value="${kind}" ${item.interface_mode === kind ? "selected" : ""}>${kind}</option>`).join("")}
-        </select><small class="field-hint">选择与服务端协议相符的模式；错误的模式通常会导致请求格式不匹配。</small></label>
+        </select><small class="field-hint">New API/OpenAI Images 请选择 openai_image；不要把地址填到 /v1/images。</small></label>
+        <label class="field"><span>图生图上传格式</span><select data-channel="image_edit_transport">
+          ${[["auto", "自动"], ["multipart", "multipart 文件上传"], ["json", "JSON / Base64"]].map(([kind, label]) => `<option value="${kind}" ${item.image_edit_transport === kind ? "selected" : ""}>${label}</option>`).join("")}
+        </select><small class="field-hint">人设拍照和参考图会使用此设置。auto 会为 gpt-image-* 选择标准 multipart，其余渠道保留兼容策略。</small></label>
         <label class="field"><span>超时（秒）</span><input data-channel="timeout" type="number" min="5" value="${escapeHtml(item.timeout)}" /><small class="field-hint">单次请求的最长等待时间。超时后会尝试下一个可回退渠道。</small></label>
-        <label class="field full"><span>接口地址</span><input data-channel="base_url" value="${escapeHtml(item.base_url)}" placeholder="https://api.example.com" /><small class="field-hint">OpenAI 模式填写基础地址；自定义接口填写完整请求地址；Gemini 官方模式可填写官方基础地址。</small></label>
+        <label class="field full"><span>接口地址</span><input data-channel="base_url" value="${escapeHtml(item.base_url)}" placeholder="https://api.example.com" /><small class="field-hint">OpenAI Images/New API 填站点基础地址，例如 https://example.com；程序会自动补齐 /v1/images/generations 或 /v1/images/edits。自定义接口才填写完整地址。</small></label>
         <label class="field full"><span>API Key</span><textarea data-channel="api_keys" rows="2" placeholder="${escapeHtml(masked)}"></textarea><small class="field-hint">每行一个 Key，可轮换使用。已有 Key 不会回显；留空保存会保留原值。</small></label>
         ${item.api_keys_masked ? '<label class="toggle-field full"><input data-channel="clear_api_keys" type="checkbox" /><span class="toggle-copy"><span>清除已保存的 API Key</span><small class="field-hint">保存后永久删除该渠道的所有 Key。</small></span></label>' : ""}
         <label class="field"><span>默认模型</span><input data-channel="model" value="${escapeHtml(item.model)}" /><small class="field-hint">图生图和未指定模型的请求使用此模型。</small></label>
@@ -144,6 +148,7 @@ function readChannels() {
       original_id: row.dataset.originalId || "",
       name: get("name").value.trim(),
       interface_mode: get("interface_mode").value,
+      image_edit_transport: get("image_edit_transport").value,
       timeout: Number(get("timeout").value) || 120,
       base_url: get("base_url").value.trim(),
       api_keys: clearApiKeys ? "" : get("api_keys").value.trim(),
