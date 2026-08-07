@@ -72,6 +72,25 @@ class ApiEndpointBuildTest(unittest.TestCase):
             "json",
         )
 
+    def test_gpt_image_edit_clamps_an_unsupported_high_resolution_size(self):
+        requested = {"resolution": "2K", "aspect_ratio": "1:1", "size": "2048x2048"}
+        normalized = self.manager._normalize_gpt_image_edit_generation_params(
+            requested,
+            "gpt-image-2",
+            True,
+        )
+        self.assertEqual(normalized, {"resolution": "1K", "aspect_ratio": "1:1", "size": "1024x1024"})
+        self.assertEqual(requested["size"], "2048x2048")
+
+    def test_gpt_image_text_request_keeps_the_requested_resolution(self):
+        requested = {"resolution": "2K", "aspect_ratio": "1:1", "size": "2048x2048"}
+        normalized = self.manager._normalize_gpt_image_edit_generation_params(
+            requested,
+            "gpt-image-2",
+            False,
+        )
+        self.assertEqual(normalized, requested)
+
     def test_gemini_mode_always_uses_v1beta(self):
         self.assertEqual(
             self.manager._build_gemini_api_url(

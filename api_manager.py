@@ -469,6 +469,46 @@ class ApiManager:
             return "multipart"
         return "json"
 
+    @staticmethod
+    def _is_gpt_image_model(model: str) -> bool:
+        return str(model or "").strip().lower().startswith("gpt-image")
+
+    def _normalize_gpt_image_edit_generation_params(
+            self,
+            generation_params: Dict,
+            model: str,
+            has_input_image: bool,
+    ) -> Dict:
+        """Use the stable OpenAI Images Edit size contract for GPT Image requests.
+
+        New API's OpenAI-compatible ``/v1/images/edits`` endpoint accepts only
+        256x256, 512x512, or 1024x1024.  The general resolution picker also
+        serves providers that support 2K/4K, so clamp only GPT Image requests
+        that include a reference image.  Text-to-image keeps the user's chosen
+        resolution unchanged.
+        """
+        resolved = dict(generation_params or {})
+        if not has_input_image or not self._is_gpt_image_model(model):
+            return resolved
+
+        allowed_sizes = {"256x256", "512x512", "1024x1024"}
+        requested_size = str(resolved.get("size", "") or "").lower()
+        if requested_size in allowed_sizes:
+            return resolved
+
+        logger.warning(
+            "OpenAI Images edit for %s does not accept size=%s; "
+            "using 1024x1024 for the reference-image request.",
+            model,
+            requested_size or "unknown",
+        )
+        resolved.update({
+            "resolution": "1K",
+            "aspect_ratio": "1:1",
+            "size": "1024x1024",
+        })
+        return resolved
+
     def _build_gemini_api_url(self, base_url: str, model: str) -> str:
         """忽略用户填写的版本/接口尾部，按 Gemini 官方模式统一补全。"""
         root = normalize_api_root(base_url)
@@ -565,7 +605,7 @@ class ApiManager:
         candidate_urls = [base_url.rstrip("/")] if exact_endpoint else self._build_candidate_generic_image_urls(
             base_url, has_input_image=has_input_image
         )
-        logger.info(f"Retry Images API with multipart/form-data, candidate urls: {candidate_urls}")
+        logger.info(f"Calling Images API with multipart/form-data, candidate urls: {candidate_urls}")
 
         headers = {
             "Authorization": f"Bearer {key}"
@@ -574,7 +614,12 @@ class ApiManager:
         generation_params = generation_params or resolve_image_generation_params(
             prompt, self.config.get("image_resolution", "1K")
         )
-        res_set = generation_params["resolution"]
+        request_params = self._normalize_gpt_image_edit_generation_params(
+            generation_params,
+            model,
+            has_input_image,
+        )
+        res_set = request_params["resolution"]
         final_prompt = f"(Masterpiece, Best Quality, {res_set} Resolution), {prompt}" if res_set != "1K" else prompt
 
         timeout_val = self.config.get("timeout", 120)
@@ -587,8 +632,8 @@ class ApiManager:
                 form.add_field("model", model)
                 form.add_field("prompt", final_prompt)
                 form.add_field("n", "1")
-                form.add_field("size", generation_params["size"])
-                if not str(model).lower().startswith("gpt-image"):
+                form.add_field("size", request_params["size"])
+                if not self._is_gpt_image_model(model):
                     form.add_field("response_format", "b64_json")
 
                 if images:

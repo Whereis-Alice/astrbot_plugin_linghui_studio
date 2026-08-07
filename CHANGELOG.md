@@ -1,3 +1,7 @@
+## v3.2.2
+- 修复 New API 的 `gpt-image-*` 人设拍照/图生图在全局选择 2K 或 4K 时仍向 `/v1/images/edits` 发送不兼容尺寸的问题。带参考图请求会自动改用标准 1024x1024，文生图分辨率不受影响。
+- 将 multipart 日志从“重试”改为“调用”，并补充编辑尺寸限制的 Dashboard 提示与公开排障说明。
+
 ## v3.2.1
 - 修复 New API/OpenAI Images 的人设拍照、头像图生图和参考图请求：将误填为完整地址的裸 `/v1/images` 自动规范为 `/v1/images/generations` 或 `/v1/images/edits`。
 - `gpt-image-*` 带参考图时直接使用标准 `multipart/form-data` 上传，避免 JSON/Base64 请求被上游收敛为不透明的 400 `openai_error`。
