@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>灵绘工坊</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="sidebar" aria-label="灵绘工坊导航">
+        <div class="brand"><span class="brand-mark">LH</span><span>灵绘工坊</span></div>
+        <nav class="nav-list">
+          <button class="nav-item active" data-tab="overview">概览</button>
+          <button class="nav-item" data-tab="channels">绘图渠道</button>
+          <button class="nav-item" data-tab="access">权限与额度</button>
+          <button class="nav-item" data-tab="prompts">提示词与预设</button>
+          <button class="nav-item" data-tab="persona">人设与参考图</button>
+          <button class="nav-item" data-tab="settings">运行设置</button>
+        </nav>
+        <div class="sidebar-actions">
+          <button id="reload-button" class="icon-action" title="重新加载配置" aria-label="重新加载配置">↻</button>
+          <button id="save-button" class="primary-action">保存更改</button>
+        </div>
+      </aside>
+
+      <section class="workspace">
+        <header class="page-header">
+          <div>
+            <h1 id="page-title">概览</h1>
+            <p id="page-subtitle">查看当前绘图服务状态和今日用量。</p>
+          </div>
+          <div id="save-state" class="save-state" role="status"></div>
+        </header>
+
+        <section id="tab-overview" class="tab-pane active">
+          <div class="metric-grid">
+            <article class="metric"><span>启用渠道</span><strong id="metric-channels">-</strong></article>
+            <article class="metric"><span>今日生成</span><strong id="metric-today">-</strong></article>
+            <article class="metric"><span>预设数量</span><strong id="metric-presets">-</strong></article>
+            <article class="metric"><span>参考图</span><strong id="metric-references">-</strong></article>
+          </div>
+          <section class="section-block">
+            <div class="section-heading"><div><h2>当前调度</h2><p>主渠道失败后，将按渠道列表中的回退设置继续尝试。</p></div></div>
+            <div id="overview-channels" class="channel-summary"></div>
+          </section>
+          <section class="section-block">
+            <div class="section-heading"><div><h2>今日用量</h2><p>成功返回的图片会计入统计；不限次数名单仍会统计。</p></div><button id="refresh-usage" class="quiet-action">刷新</button></div>
+            <div id="overview-usage" class="usage-table"></div>
+          </section>
+        </section>
+
+        <section id="tab-channels" class="tab-pane">
+          <section class="section-block">
+            <div class="section-heading"><div><h2>绘图渠道</h2><p>顺序就是默认优先级。仅启用且允许回退的渠道会成为备用渠道。</p></div><button id="add-channel" class="quiet-action">添加渠道</button></div>
+            <label class="field compact"><span>当前主渠道</span><select id="active-channel"></select></label>
+            <div id="channel-list" class="channel-list"></div>
+          </section>
+        </section>
+
+        <section id="tab-access" class="tab-pane">
+          <div class="two-columns">
+            <section class="section-block">
+              <div class="section-heading"><div><h2>访问控制</h2><p>黑名单优先。群白名单只授予使用权限，不会自动不限次数。</p></div></div>
+              <div class="form-grid">
+                <label class="field"><span>群聊访问模式</span><select id="group-access-mode"><option value="whitelist">只允许群白名单</option><option value="all">允许所有群聊</option></select></label>
+                <label class="toggle-field"><input id="allow-private" type="checkbox" /><span>允许私聊生图</span></label>
+                <label class="toggle-field"><input id="admins-unlimited" type="checkbox" /><span>管理员额度豁免</span></label>
+                <label class="field full"><span>允许用户白名单</span><textarea id="allowed-users" rows="3" placeholder="每行一个用户 ID"></textarea></label>
+                <label class="field full"><span>禁止用户黑名单</span><textarea id="blocked-users" rows="3" placeholder="每行一个用户 ID"></textarea></label>
+                <label class="field full"><span>允许生图的群白名单</span><textarea id="group-whitelist" rows="3" placeholder="每行一个群号"></textarea></label>
+                <label class="field full"><span>禁止生图的群黑名单</span><textarea id="group-blacklist" rows="3" placeholder="每行一个群号"></textarea></label>
+                <label class="field full"><span>用户无限次数名单</span><textarea id="unlimited-users" rows="3" placeholder="每行一个用户 ID"></textarea></label>
+                <label class="field full"><span>群无限次数名单</span><textarea id="unlimited-groups" rows="3" placeholder="每行一个群号"></textarea></label>
+              </div>
+            </section>
+            <section class="section-block">
+              <div class="section-heading"><div><h2>额度与签到</h2><p>用户额度不足时，可选用群额度。签到增加个人额度。</p></div></div>
+              <div class="form-grid">
+                <label class="toggle-field"><input id="enable-user-limit" type="checkbox" /><span>启用个人额度</span></label>
+                <label class="toggle-field"><input id="enable-group-limit" type="checkbox" /><span>启用群额度</span></label>
+                <label class="toggle-field"><input id="enable-checkin" type="checkbox" /><span>启用每日签到</span></label>
+                <label class="toggle-field"><input id="enable-random-checkin" type="checkbox" /><span>签到随机奖励</span></label>
+                <label class="field"><span>固定签到奖励</span><input id="checkin-fixed" type="number" min="0" /></label>
+                <label class="field"><span>随机奖励上限</span><input id="checkin-max" type="number" min="1" /></label>
+              </div>
+              <div class="credit-controls">
+                <h3>手动调整额度</h3>
+                <div class="credit-form"><select id="credit-kind"><option value="user">用户</option><option value="group">群</option></select><input id="credit-id" placeholder="ID / 群号" /><input id="credit-amount" type="number" min="1" value="1" /><button id="credit-add" class="quiet-action">增加</button><button id="credit-reset" class="danger-action">重置</button></div>
+                <div id="credit-table" class="usage-table"></div>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="tab-prompts" class="tab-pane">
+          <div class="two-columns wide-first">
+            <section class="section-block">
+              <div class="section-heading"><div><h2>提示词预设</h2><p>使用 #灵绘 &lt;预设名&gt; [追加要求] 调用。预设名不能包含冒号。</p></div><button id="add-preset" class="quiet-action">添加预设</button></div>
+              <div id="preset-list" class="preset-list"></div>
+            </section>
+            <section class="section-block">
+              <div class="section-heading"><div><h2>提示词处理模型</h2><p>可单独选择模型做翻译或优化，故障时会保留原提示词。</p></div></div>
+              <div class="form-grid">
+                <label class="toggle-field"><input id="enable-translation" type="checkbox" /><span>生成前翻译为英文</span></label>
+                <label class="toggle-field"><input id="enable-optimization" type="checkbox" /><span>生成前优化提示词</span></label>
+                <label class="field full"><span>OpenAI 兼容地址</span><input id="processor-base-url" placeholder="https://api.example.com 或完整 chat/completions 地址" /></label>
+                <label class="field full"><span>API Key</span><input id="processor-api-key" type="password" autocomplete="new-password" /></label>
+                <label class="toggle-field full"><input id="clear-processor-api-key" type="checkbox" /><span>清除已保存的 API Key</span></label>
+                <label class="field"><span>翻译模型</span><input id="translation-model" /></label>
+                <label class="field"><span>优化模型</span><input id="optimization-model" /></label>
+                <label class="field"><span>超时（秒）</span><input id="processor-timeout" type="number" min="5" /></label>
+                <label class="field full"><span>翻译系统提示词</span><textarea id="translation-system" rows="4"></textarea></label>
+                <label class="field full"><span>优化系统提示词</span><textarea id="optimization-system" rows="4"></textarea></label>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="tab-persona" class="tab-pane">
+          <div class="two-columns">
+            <section class="section-block">
+              <div class="section-heading"><div><h2>人设</h2><p>人设拍照使用独立的人设参考图。聊天指令为 #灵绘人设拍照。</p></div></div>
+              <div class="form-grid">
+                <label class="toggle-field"><input id="enable-persona" type="checkbox" /><span>启用人设拍照</span></label>
+                <label class="field"><span>人设名称</span><input id="persona-name" /></label>
+                <label class="field full"><span>人设描述</span><textarea id="persona-description" rows="5"></textarea></label>
+                <label class="field full"><span>照片风格</span><input id="persona-style" /></label>
+                <label class="field full"><span>触发关键词</span><input id="persona-keywords" placeholder="用逗号分隔" /></label>
+                <label class="field full"><span>默认场景提示词</span><textarea id="persona-default-prompt" rows="3"></textarea></label>
+                <label class="field full"><span>场景预设</span><textarea id="persona-scene-prompts" rows="5" placeholder="每行一个：场景名:提示词"></textarea></label>
+              </div>
+              <div class="asset-toolbar"><label class="upload-action">上传人设图<input id="persona-upload" type="file" accept="image/*" multiple /></label><button class="quiet-action" data-clear-ref="_persona_">清空人设图</button></div>
+              <div id="persona-images" class="image-grid"></div>
+            </section>
+            <section class="section-block">
+              <div class="section-heading"><div><h2>预设参考图</h2><p>预设命中时会把对应参考图加入请求。可直接在这里上传和删除。</p></div></div>
+              <label class="field"><span>预设</span><select id="reference-preset"></select></label>
+              <div class="asset-toolbar"><label class="upload-action">上传参考图<input id="reference-upload" type="file" accept="image/*" multiple /></label><button id="reference-clear" class="quiet-action">清空当前预设图</button></div>
+              <div id="reference-images" class="image-grid"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="tab-settings" class="tab-pane">
+          <section class="section-block narrow">
+            <div class="section-heading"><div><h2>运行设置</h2><p>渠道为空时会使用兼容单接口配置；正常使用建议配置“绘图渠道”。</p></div></div>
+            <div class="form-grid">
+              <label class="field"><span>兼容默认模型</span><input id="default-model" /></label>
+              <label class="field"><span>兼容文生图模型</span><input id="default-t2i-model" /></label>
+              <label class="field"><span>默认分辨率</span><select id="resolution"><option>1K</option><option>2K</option><option>4K</option></select></label>
+              <label class="field"><span>默认比例</span><select id="aspect-ratio"><option>1:1</option><option>16:9</option><option>9:16</option><option>4:3</option><option>3:4</option><option>3:2</option><option>2:3</option></select></label>
+              <label class="field"><span>兼容超时（秒）</span><input id="default-timeout" type="number" min="5" /></label>
+              <label class="toggle-field"><input id="show-model-info" type="checkbox" /><span>成功消息显示模型</span></label>
+              <label class="toggle-field"><input id="enable-preset-refs" type="checkbox" /><span>启用预设参考图</span></label>
+            </div>
+          </section>
+        </section>
+      </section>
+    </main>
+    <div id="toast" class="toast" role="status"></div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

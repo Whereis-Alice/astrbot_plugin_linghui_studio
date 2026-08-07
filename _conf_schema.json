@@ -1,0 +1,445 @@
+{
+  "prefix": {
+    "type": "bool",
+    "description": "要求 AstrBot 指令前缀或唤醒",
+    "hint": "建议开启，避免普通聊天中的词语被识别为绘图请求。",
+    "default": true
+  },
+  "extra_prefix": {
+    "type": "string",
+    "description": "灵绘自定义绘图子命令",
+    "hint": "例如设为“画”后，使用 #灵绘 画 一只橘猫。",
+    "default": "画"
+  },
+  "help_text": {
+    "type": "text",
+    "description": "帮助文本",
+    "default": "灵绘工坊使用说明\n\n基础绘图\n#灵绘 画 <提示词>：文生图。\n#灵绘 <预设名> [追加要求]：调用预设；例：#灵绘 手办化 透明底座。\n#灵绘文生图 <提示词>：显式文生图。\n#灵绘头像图生图 <提示词>：以发送者 QQ 头像作为参考图。\n\n管理\n#灵绘通道 [渠道ID/自动]：查看或切换绘图渠道（管理员）。\n#灵绘额度：查看额度。\n#灵绘签到：领取签到额度。\n#灵绘帮助：查看帮助。\n\n请先在灵绘工坊 Dashboard 配置至少一个绘图渠道，并将群号加入群白名单。"
+  },
+  "drawing_channels": {
+    "type": "template_list",
+    "description": "绘图渠道与回退顺序",
+    "hint": "列表从上到下依次尝试。当前主渠道失败时，会自动尝试后续已启用且允许回退的渠道。渠道 ID 可通过 #灵绘通道 快速切换。",
+    "default": [],
+    "templates": {
+      "drawing_channel": {
+        "name": "绘图渠道",
+        "items": {
+          "id": {
+            "type": "string",
+            "description": "渠道 ID",
+            "hint": "仅字母、数字、下划线和连字符；例如 primary、backup_1。",
+            "default": ""
+          },
+          "name": {
+            "type": "string",
+            "description": "渠道显示名称",
+            "default": ""
+          },
+          "enabled": {
+            "type": "bool",
+            "description": "启用此渠道",
+            "default": true
+          },
+          "fallback_enabled": {
+            "type": "bool",
+            "description": "允许作为其他渠道的回退",
+            "default": true
+          },
+          "interface_mode": {
+            "type": "string",
+            "description": "接口模式",
+            "options": ["openai_image", "openai_chat", "gemini_official", "custom_endpoint"],
+            "default": "openai_chat"
+          },
+          "base_url": {
+            "type": "string",
+            "description": "接口地址",
+            "hint": "OpenAI 模式填写基础地址；custom_endpoint 填完整请求地址；Gemini 官方模式可填写 https://generativelanguage.googleapis.com。",
+            "default": ""
+          },
+          "api_keys": {
+            "type": "text",
+            "description": "API Key 池",
+            "hint": "每行一个 Key，可轮询。",
+            "default": ""
+          },
+          "model": {
+            "type": "string",
+            "description": "图生图/默认模型",
+            "default": ""
+          },
+          "text_to_image_model": {
+            "type": "string",
+            "description": "文生图模型（可选）",
+            "hint": "留空时使用默认模型。",
+            "default": ""
+          },
+          "timeout": {
+            "type": "int",
+            "description": "请求超时（秒）",
+            "default": 120,
+            "min": 5,
+            "max": 900
+          }
+        }
+      }
+    }
+  },
+  "active_drawing_channel": {
+    "type": "string",
+    "description": "当前主绘图渠道",
+    "hint": "留空为自动，按绘图渠道列表顺序选择。可用 #灵绘通道 <ID> 修改。",
+    "default": ""
+  },
+  "interface_mode": {
+    "type": "string",
+    "description": "兼容单接口模式",
+    "hint": "仅在绘图渠道列表为空时使用。新安装建议使用上方的绘图渠道列表。",
+    "options": ["openai_image", "openai_chat", "gemini_official", "custom_endpoint"],
+    "default": "openai_chat"
+  },
+  "base_url": {
+    "type": "string",
+    "description": "兼容单接口地址",
+    "default": ""
+  },
+  "api_keys": {
+    "type": "text",
+    "description": "兼容单接口 API Key",
+    "default": ""
+  },
+  "model_list": {
+    "type": "list",
+    "description": "可切换模型列表",
+    "items": {"type": "string"},
+    "default": []
+  },
+  "model": {
+    "type": "string",
+    "description": "兼容单接口默认模型",
+    "default": ""
+  },
+  "text_to_image_model": {
+    "type": "string",
+    "description": "兼容单接口文生图模型",
+    "default": ""
+  },
+  "image_resolution": {
+    "type": "string",
+    "description": "默认分辨率",
+    "options": ["1K", "2K", "4K"],
+    "default": "1K"
+  },
+  "image_aspect_ratio": {
+    "type": "string",
+    "description": "文生图默认比例",
+    "options": ["1:1", "16:9", "9:16", "5:4", "4:5", "4:3", "3:4", "3:2", "2:3", "21:9"],
+    "default": "1:1"
+  },
+  "timeout": {
+    "type": "int",
+    "description": "兼容单接口超时（秒）",
+    "default": 120,
+    "min": 5,
+    "max": 900
+  },
+  "use_proxy": {
+    "type": "bool",
+    "description": "使用代理",
+    "default": false
+  },
+  "proxy_url": {
+    "type": "string",
+    "description": "代理地址",
+    "default": ""
+  },
+  "show_model_info": {
+    "type": "bool",
+    "description": "成功消息显示模型信息",
+    "default": false
+  },
+  "debug_mode": {
+    "type": "bool",
+    "description": "向用户显示上游错误详情",
+    "hint": "仅排障时使用，可能包含服务端返回的信息。",
+    "default": false
+  },
+  "enable_luxury_mode": {
+    "type": "bool",
+    "description": "并发抢占模式",
+    "hint": "会同时发送多次请求，只保留第一张成功结果，消耗会增加。",
+    "default": false
+  },
+  "luxury_request_count": {
+    "type": "int",
+    "description": "并发抢占请求数",
+    "default": 2,
+    "min": 1,
+    "max": 8
+  },
+  "group_access_mode": {
+    "type": "string",
+    "description": "群聊访问模式",
+    "hint": "白名单模式下，只有 group_whitelist 中的群可生图；这只授予使用权限，不会免除额度。",
+    "options": ["whitelist", "all"],
+    "default": "whitelist"
+  },
+  "group_whitelist": {
+    "type": "list",
+    "description": "允许生图的群白名单",
+    "items": {"type": "string"},
+    "default": []
+  },
+  "group_blacklist": {
+    "type": "list",
+    "description": "禁止生图的群黑名单",
+    "items": {"type": "string"},
+    "default": []
+  },
+  "allowed_users": {
+    "type": "list",
+    "description": "用户白名单（可选）",
+    "hint": "填写后只允许名单内用户使用；留空表示不限制用户身份。",
+    "items": {"type": "string"},
+    "default": []
+  },
+  "blocked_users": {
+    "type": "list",
+    "description": "用户黑名单",
+    "items": {"type": "string"},
+    "default": []
+  },
+  "unlimited_users": {
+    "type": "list",
+    "description": "用户无限次数名单",
+    "hint": "只豁免额度，不绕过黑名单、用户白名单或群白名单。",
+    "items": {"type": "string"},
+    "default": []
+  },
+  "unlimited_groups": {
+    "type": "list",
+    "description": "群无限次数名单",
+    "hint": "只豁免额度；群仍必须通过群聊访问模式的校验。",
+    "items": {"type": "string"},
+    "default": []
+  },
+  "allow_private_messages": {
+    "type": "bool",
+    "description": "允许私聊生图",
+    "default": false
+  },
+  "admins_unlimited": {
+    "type": "bool",
+    "description": "管理员额度豁免",
+    "hint": "管理员仍会受到黑名单限制。",
+    "default": true
+  },
+  "enable_user_limit": {
+    "type": "bool",
+    "description": "启用个人额度",
+    "default": true
+  },
+  "enable_group_limit": {
+    "type": "bool",
+    "description": "启用群额度作为个人额度不足时的备用额度",
+    "default": false
+  },
+  "enable_checkin": {
+    "type": "bool",
+    "description": "启用每日签到",
+    "default": false
+  },
+  "checkin_fixed_reward": {
+    "type": "int",
+    "description": "固定签到奖励",
+    "default": 3,
+    "min": 0,
+    "max": 999
+  },
+  "enable_random_checkin": {
+    "type": "bool",
+    "description": "签到随机奖励",
+    "default": false
+  },
+  "checkin_random_reward_max": {
+    "type": "int",
+    "description": "签到随机奖励上限",
+    "default": 5,
+    "min": 1,
+    "max": 999
+  },
+  "enable_prompt_optimization": {
+    "type": "bool",
+    "description": "启用提示词优化",
+    "hint": "使用下方单独配置的聊天模型；失败时自动保留原提示词。",
+    "default": false
+  },
+  "enable_prompt_translation": {
+    "type": "bool",
+    "description": "启用提示词翻译",
+    "hint": "先翻译为英文，再执行提示词优化（若同时开启）。",
+    "default": false
+  },
+  "prompt_processor_base_url": {
+    "type": "string",
+    "description": "提示词模型 OpenAI 兼容地址",
+    "hint": "填写基础地址或完整的 /v1/chat/completions 地址。",
+    "default": ""
+  },
+  "prompt_processor_api_key": {
+    "type": "string",
+    "description": "提示词模型 API Key",
+    "default": ""
+  },
+  "prompt_optimization_model": {
+    "type": "string",
+    "description": "提示词优化模型",
+    "default": ""
+  },
+  "prompt_translation_model": {
+    "type": "string",
+    "description": "提示词翻译模型",
+    "default": ""
+  },
+  "prompt_processor_timeout": {
+    "type": "int",
+    "description": "提示词模型超时（秒）",
+    "default": 30,
+    "min": 5,
+    "max": 300
+  },
+  "prompt_optimization_system_prompt": {
+    "type": "text",
+    "description": "提示词优化系统提示词",
+    "default": "Rewrite this as a precise image-generation prompt. Preserve the user's intent and safety constraints. Do not add sexual, violent, copyrighted-character, or unsupported claims. Output only the improved prompt."
+  },
+  "prompt_translation_system_prompt": {
+    "type": "text",
+    "description": "提示词翻译系统提示词",
+    "default": "Translate the image-generation prompt into concise English. Preserve all constraints, proper nouns, composition, aspect ratio, and safety requirements. Output only the prompt."
+  },
+  "prompt_list": {
+    "type": "list",
+    "description": "提示词预设",
+    "hint": "格式为“预设名:提示词”。可在灵绘工坊 Dashboard 中以表格方式维护。",
+    "items": {"type": "string"},
+    "default": [
+      "手办化:Transform the supplied reference image into a premium 1/7 scale collectible figurine product photograph. Preserve the subject identity, distinctive clothing, and core colors. Place it on a simple clear display base with soft studio lighting, realistic PVC texture, sharp details, and a clean composition.",
+      "Q版化:Transform the supplied reference image into a polished chibi character illustration. Preserve recognizable identity, hairstyle, clothing colors, and accessories. Use a balanced full-body composition, clean background, soft lighting, and high detail.",
+      "高清修复:Enhance the supplied image while preserving the original subject, composition, colors, and identity. Improve clarity, natural texture, and fine details without introducing text or unrelated objects."
+    ]
+  },
+  "enable_preset_ref_images": {
+    "type": "bool",
+    "description": "启用预设参考图",
+    "default": true
+  },
+  "enable_persona_mode": {
+    "type": "bool",
+    "description": "启用人设拍照",
+    "default": false
+  },
+  "persona_name": {
+    "type": "string",
+    "description": "人设名称",
+    "default": "灵绘助手"
+  },
+  "persona_description": {
+    "type": "text",
+    "description": "人设描述",
+    "default": "一个友好、自然的虚拟角色。"
+  },
+  "persona_photo_style": {
+    "type": "string",
+    "description": "人设照片风格",
+    "default": "natural lifestyle photography, soft daylight, detailed"
+  },
+  "persona_trigger_keywords": {
+    "type": "list",
+    "description": "人设触发关键词",
+    "items": {"type": "string"},
+    "default": ["拍照", "自拍"]
+  },
+  "persona_scene_prompts": {
+    "type": "list",
+    "description": "人设场景预设",
+    "hint": "格式为 场景:提示词。",
+    "items": {"type": "string"},
+    "default": []
+  },
+  "persona_default_prompt": {
+    "type": "string",
+    "description": "人设默认场景提示词",
+    "default": "a natural everyday portrait"
+  },
+  "enable_llm_tool": {
+    "type": "bool",
+    "description": "启用 Linghui LLM 工具",
+    "default": true
+  },
+  "enable_llm_auto_detect": {
+    "type": "bool",
+    "description": "启用 LLM 智能判断文生图/图生图",
+    "default": false
+  },
+  "context_rounds": {
+    "type": "int",
+    "description": "智能判断上下文轮数",
+    "default": 20,
+    "min": 1,
+    "max": 100
+  },
+  "context_max_messages": {
+    "type": "int",
+    "description": "每会话上下文消息上限",
+    "default": 50,
+    "min": 1,
+    "max": 500
+  },
+  "context_max_sessions": {
+    "type": "int",
+    "description": "上下文会话上限",
+    "default": 100,
+    "min": 1,
+    "max": 1000
+  },
+  "llm_cooldown_seconds": {
+    "type": "int",
+    "description": "LLM 生图冷却（秒）",
+    "default": 30,
+    "min": 0,
+    "max": 3600
+  },
+  "batch_max_images": {
+    "type": "int",
+    "description": "批量处理最大图片数",
+    "default": 10,
+    "min": 1,
+    "max": 50
+  },
+  "batch_concurrency": {
+    "type": "int",
+    "description": "批量处理并发数",
+    "default": 3,
+    "min": 1,
+    "max": 10
+  },
+  "batch_retries": {
+    "type": "int",
+    "description": "单图重试次数",
+    "default": 1,
+    "min": 0,
+    "max": 5
+  },
+  "enable_preset_safety_suffix": {
+    "type": "bool",
+    "description": "为预设追加安全限制",
+    "default": true
+  },
+  "preset_safety_suffix": {
+    "type": "text",
+    "description": "预设安全限制文本",
+    "default": "Keep the result non-explicit, age-appropriate, fully clothed where people appear, and free of sexual or exploitative content."
+  }
+}
