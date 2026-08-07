@@ -91,19 +91,19 @@ function channelTemplate(channel = {}, index = 0) {
         <button class="remove-button" type="button" data-remove-channel="${index}" title="删除渠道" aria-label="删除渠道">×</button>
       </div>
       <div class="form-grid">
-        <label class="field"><span>渠道 ID</span><input data-channel="id" value="${escapeHtml(item.id)}" /></label>
-        <label class="field"><span>显示名称</span><input data-channel="name" value="${escapeHtml(item.name)}" /></label>
+        <label class="field"><span>渠道 ID</span><input data-channel="id" value="${escapeHtml(item.id)}" /><small class="field-hint">唯一标识，只能使用字母、数字、下划线和连字符；可用于管理员切换主渠道。</small></label>
+        <label class="field"><span>显示名称</span><input data-channel="name" value="${escapeHtml(item.name)}" /><small class="field-hint">仅用于 Dashboard 和状态展示，留空时显示渠道 ID。</small></label>
         <label class="field"><span>接口模式</span><select data-channel="interface_mode">
           ${["openai_chat", "openai_image", "gemini_official", "custom_endpoint"].map((kind) => `<option value="${kind}" ${item.interface_mode === kind ? "selected" : ""}>${kind}</option>`).join("")}
-        </select></label>
-        <label class="field"><span>超时（秒）</span><input data-channel="timeout" type="number" min="5" value="${escapeHtml(item.timeout)}" /></label>
-        <label class="field full"><span>接口地址</span><input data-channel="base_url" value="${escapeHtml(item.base_url)}" placeholder="https://api.example.com" /></label>
-        <label class="field full"><span>API Key</span><textarea data-channel="api_keys" rows="2" placeholder="${escapeHtml(masked)}"></textarea></label>
-        ${item.api_keys_masked ? '<label class="toggle-field full"><input data-channel="clear_api_keys" type="checkbox" /><span>清除已保存的 API Key</span></label>' : ""}
-        <label class="field"><span>默认模型</span><input data-channel="model" value="${escapeHtml(item.model)}" /></label>
-        <label class="field"><span>文生图模型（可选）</span><input data-channel="text_to_image_model" value="${escapeHtml(item.text_to_image_model)}" /></label>
-        <label class="toggle-field"><input data-channel="enabled" type="checkbox" ${item.enabled ? "checked" : ""} /><span>启用渠道</span></label>
-        <label class="toggle-field"><input data-channel="fallback_enabled" type="checkbox" ${item.fallback_enabled ? "checked" : ""} /><span>允许作为回退渠道</span></label>
+        </select><small class="field-hint">选择与服务端协议相符的模式；错误的模式通常会导致请求格式不匹配。</small></label>
+        <label class="field"><span>超时（秒）</span><input data-channel="timeout" type="number" min="5" value="${escapeHtml(item.timeout)}" /><small class="field-hint">单次请求的最长等待时间。超时后会尝试下一个可回退渠道。</small></label>
+        <label class="field full"><span>接口地址</span><input data-channel="base_url" value="${escapeHtml(item.base_url)}" placeholder="https://api.example.com" /><small class="field-hint">OpenAI 模式填写基础地址；自定义接口填写完整请求地址；Gemini 官方模式可填写官方基础地址。</small></label>
+        <label class="field full"><span>API Key</span><textarea data-channel="api_keys" rows="2" placeholder="${escapeHtml(masked)}"></textarea><small class="field-hint">每行一个 Key，可轮换使用。已有 Key 不会回显；留空保存会保留原值。</small></label>
+        ${item.api_keys_masked ? '<label class="toggle-field full"><input data-channel="clear_api_keys" type="checkbox" /><span class="toggle-copy"><span>清除已保存的 API Key</span><small class="field-hint">保存后永久删除该渠道的所有 Key。</small></span></label>' : ""}
+        <label class="field"><span>默认模型</span><input data-channel="model" value="${escapeHtml(item.model)}" /><small class="field-hint">图生图和未指定模型的请求使用此模型。</small></label>
+        <label class="field"><span>文生图模型（可选）</span><input data-channel="text_to_image_model" value="${escapeHtml(item.text_to_image_model)}" /><small class="field-hint">显式文生图优先使用此模型；留空时使用默认模型。</small></label>
+        <label class="toggle-field"><input data-channel="enabled" type="checkbox" ${item.enabled ? "checked" : ""} /><span class="toggle-copy"><span>启用渠道</span><small class="field-hint">关闭后该渠道不会被主路由或回退流程调用。</small></span></label>
+        <label class="toggle-field"><input data-channel="fallback_enabled" type="checkbox" ${item.fallback_enabled ? "checked" : ""} /><span class="toggle-copy"><span>允许作为回退渠道</span><small class="field-hint">前方已尝试的渠道报错后，才会按列表顺序尝试此渠道。</small></span></label>
       </div>
     </article>`;
 }

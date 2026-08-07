@@ -53,7 +53,7 @@
         <section id="tab-channels" class="tab-pane">
           <section class="section-block">
             <div class="section-heading"><div><h2>绘图渠道</h2><p>顺序就是默认优先级。仅启用且允许回退的渠道会成为备用渠道。</p></div><button id="add-channel" class="quiet-action">添加渠道</button></div>
-            <label class="field compact"><span>当前主渠道</span><select id="active-channel"></select></label>
+            <label class="field compact"><span>当前主渠道</span><select id="active-channel"></select><small class="field-hint">留在“自动”时按渠道列表顺序开始尝试；指定渠道后会优先使用该渠道，失败时仍可回退。</small></label>
             <div id="channel-list" class="channel-list"></div>
           </section>
         </section>
@@ -61,28 +61,29 @@
         <section id="tab-access" class="tab-pane">
           <div class="two-columns">
             <section class="section-block">
-              <div class="section-heading"><div><h2>访问控制</h2><p>黑名单优先。群白名单只授予使用权限，不会自动不限次数。</p></div></div>
+              <div class="section-heading"><div><h2>访问控制</h2><p>访问资格和额度是两套规则。先确认能否使用，再决定是否扣除额度。</p></div></div>
+              <div class="access-order" role="note"><strong>判定顺序</strong><span>用户/群黑名单 → 用户白名单 → 群聊访问模式 → 额度。黑名单始终优先，且无限次数名单只免额度。</span></div>
               <div class="form-grid">
-                <label class="field"><span>群聊访问模式</span><select id="group-access-mode"><option value="whitelist">只允许群白名单</option><option value="all">允许所有群聊</option></select></label>
-                <label class="toggle-field"><input id="allow-private" type="checkbox" /><span>允许私聊生图</span></label>
-                <label class="toggle-field"><input id="admins-unlimited" type="checkbox" /><span>管理员额度豁免</span></label>
-                <label class="field full"><span>允许用户白名单</span><textarea id="allowed-users" rows="3" placeholder="每行一个用户 ID"></textarea></label>
-                <label class="field full"><span>禁止用户黑名单</span><textarea id="blocked-users" rows="3" placeholder="每行一个用户 ID"></textarea></label>
-                <label class="field full"><span>允许生图的群白名单</span><textarea id="group-whitelist" rows="3" placeholder="每行一个群号"></textarea></label>
-                <label class="field full"><span>禁止生图的群黑名单</span><textarea id="group-blacklist" rows="3" placeholder="每行一个群号"></textarea></label>
-                <label class="field full"><span>用户无限次数名单</span><textarea id="unlimited-users" rows="3" placeholder="每行一个用户 ID"></textarea></label>
-                <label class="field full"><span>群无限次数名单</span><textarea id="unlimited-groups" rows="3" placeholder="每行一个群号"></textarea></label>
+                <label class="field"><span>群聊访问模式</span><select id="group-access-mode"><option value="whitelist">只允许群白名单</option><option value="all">允许所有群聊</option></select><small class="field-hint">“只允许群白名单”时仅白名单内群可用；“允许所有群聊”时除群黑名单外均可用。</small></label>
+                <label class="toggle-field"><input id="allow-private" type="checkbox" /><span class="toggle-copy"><span>允许私聊生图</span><small class="field-hint">关闭时私聊一律不能生图。开启后，私聊仍受用户黑白名单限制。</small></span></label>
+                <label class="toggle-field"><input id="admins-unlimited" type="checkbox" /><span class="toggle-copy"><span>管理员额度豁免</span><small class="field-hint">管理员不扣额度，但仍必须通过黑名单、用户白名单和群聊访问校验。</small></span></label>
+                <label class="field full"><span>允许用户白名单</span><textarea id="allowed-users" rows="3" placeholder="每行一个用户 ID"></textarea><small class="field-hint">每行一个用户 ID。填写后，只有名单内用户可以使用；留空表示不按用户身份限制。</small></label>
+                <label class="field full"><span>禁止用户黑名单</span><textarea id="blocked-users" rows="3" placeholder="每行一个用户 ID"></textarea><small class="field-hint">每行一个用户 ID。名单内用户在私聊和所有群聊中都不能生图，优先于其他名单和额度豁免。</small></label>
+                <label class="field full"><span>允许生图的群白名单</span><textarea id="group-whitelist" rows="3" placeholder="每行一个群号"></textarea><small class="field-hint">每行一个群号。白名单模式下，名单外的群无法生图；留空时所有群都无法生图。加入本名单只授予使用资格，仍会消耗额度。</small></label>
+                <label class="field full"><span>禁止生图的群黑名单</span><textarea id="group-blacklist" rows="3" placeholder="每行一个群号"></textarea><small class="field-hint">每行一个群号。名单内群始终不能生图，优先于群白名单、群无限次数名单和管理员额度豁免。</small></label>
+                <label class="field full"><span>用户无限次数名单</span><textarea id="unlimited-users" rows="3" placeholder="每行一个用户 ID"></textarea><small class="field-hint">每行一个用户 ID。名单内用户不扣额度，但不会因此获得访问资格或绕过黑名单。</small></label>
+                <label class="field full"><span>群无限次数名单</span><textarea id="unlimited-groups" rows="3" placeholder="每行一个群号"></textarea><small class="field-hint">每行一个群号。名单内群不扣额度，但仍必须先通过群聊访问模式和黑名单校验。</small></label>
               </div>
             </section>
             <section class="section-block">
-              <div class="section-heading"><div><h2>额度与签到</h2><p>用户额度不足时，可选用群额度。签到增加个人额度。</p></div></div>
+              <div class="section-heading"><div><h2>额度与签到</h2><p>用户额度不足时，可选用群额度作为备用。签到奖励始终发放到个人额度。</p></div></div>
               <div class="form-grid">
-                <label class="toggle-field"><input id="enable-user-limit" type="checkbox" /><span>启用个人额度</span></label>
-                <label class="toggle-field"><input id="enable-group-limit" type="checkbox" /><span>启用群额度</span></label>
-                <label class="toggle-field"><input id="enable-checkin" type="checkbox" /><span>启用每日签到</span></label>
-                <label class="toggle-field"><input id="enable-random-checkin" type="checkbox" /><span>签到随机奖励</span></label>
-                <label class="field"><span>固定签到奖励</span><input id="checkin-fixed" type="number" min="0" /></label>
-                <label class="field"><span>随机奖励上限</span><input id="checkin-max" type="number" min="1" /></label>
+                <label class="toggle-field"><input id="enable-user-limit" type="checkbox" /><span class="toggle-copy"><span>启用个人额度</span><small class="field-hint">开启后优先扣除用户自己的额度；关闭后不会检查或扣除个人额度。</small></span></label>
+                <label class="toggle-field"><input id="enable-group-limit" type="checkbox" /><span class="toggle-copy"><span>启用群额度</span><small class="field-hint">仅群聊可用。个人额度关闭或不足时，才会检查并扣除群额度。</small></span></label>
+                <label class="toggle-field"><input id="enable-checkin" type="checkbox" /><span class="toggle-copy"><span>启用每日签到</span><small class="field-hint">用户每天可领取一次个人额度，签到同样受访问控制规则约束。</small></span></label>
+                <label class="toggle-field"><input id="enable-random-checkin" type="checkbox" /><span class="toggle-copy"><span>签到随机奖励</span><small class="field-hint">开启后随机发放 1 至“随机奖励上限”次数；固定签到奖励会被忽略。</small></span></label>
+                <label class="field"><span>固定签到奖励</span><input id="checkin-fixed" type="number" min="0" /><small class="field-hint">关闭随机奖励时，每次签到增加的个人额度次数。</small></label>
+                <label class="field"><span>随机奖励上限</span><input id="checkin-max" type="number" min="1" /><small class="field-hint">开启随机奖励时的最大次数，实际奖励从 1 到此值随机产生。</small></label>
               </div>
               <div class="credit-controls">
                 <h3>手动调整额度</h3>
@@ -100,18 +101,18 @@
               <div id="preset-list" class="preset-list"></div>
             </section>
             <section class="section-block">
-              <div class="section-heading"><div><h2>提示词处理模型</h2><p>可单独选择模型做翻译或优化，故障时会保留原提示词。</p></div></div>
+              <div class="section-heading"><div><h2>提示词处理模型</h2><p>可为翻译和优化分别选择模型。处理失败、超时或未配置时会直接使用原提示词。</p></div></div>
               <div class="form-grid">
-                <label class="toggle-field"><input id="enable-translation" type="checkbox" /><span>生成前翻译为英文</span></label>
-                <label class="toggle-field"><input id="enable-optimization" type="checkbox" /><span>生成前优化提示词</span></label>
-                <label class="field full"><span>OpenAI 兼容地址</span><input id="processor-base-url" placeholder="https://api.example.com 或完整 chat/completions 地址" /></label>
-                <label class="field full"><span>API Key</span><input id="processor-api-key" type="password" autocomplete="new-password" /></label>
-                <label class="toggle-field full"><input id="clear-processor-api-key" type="checkbox" /><span>清除已保存的 API Key</span></label>
-                <label class="field"><span>翻译模型</span><input id="translation-model" /></label>
-                <label class="field"><span>优化模型</span><input id="optimization-model" /></label>
-                <label class="field"><span>超时（秒）</span><input id="processor-timeout" type="number" min="5" /></label>
-                <label class="field full"><span>翻译系统提示词</span><textarea id="translation-system" rows="4"></textarea></label>
-                <label class="field full"><span>优化系统提示词</span><textarea id="optimization-system" rows="4"></textarea></label>
+                <label class="toggle-field"><input id="enable-translation" type="checkbox" /><span class="toggle-copy"><span>生成前翻译为英文</span><small class="field-hint">先将提示词翻译为英文；与优化同时开启时，翻译会先执行。</small></span></label>
+                <label class="toggle-field"><input id="enable-optimization" type="checkbox" /><span class="toggle-copy"><span>生成前优化提示词</span><small class="field-hint">调用独立聊天模型整理提示词，不影响绘图渠道本身的回退。</small></span></label>
+                <label class="field full"><span>OpenAI 兼容地址</span><input id="processor-base-url" placeholder="https://api.example.com 或完整 chat/completions 地址" /><small class="field-hint">填写基础地址或完整的 <code>/v1/chat/completions</code> 地址，仅供翻译和优化模型使用。</small></label>
+                <label class="field full"><span>API Key</span><input id="processor-api-key" type="password" autocomplete="new-password" /><small class="field-hint">页面重新加载不会回显密钥；留空保存会保留原值，勾选下方选项才会删除。</small></label>
+                <label class="toggle-field full"><input id="clear-processor-api-key" type="checkbox" /><span class="toggle-copy"><span>清除已保存的 API Key</span><small class="field-hint">保存时永久删除当前提示词处理模型的密钥，之后需重新填写才能调用。</small></span></label>
+                <label class="field"><span>翻译模型</span><input id="translation-model" /><small class="field-hint">仅在开启“生成前翻译为英文”时使用。</small></label>
+                <label class="field"><span>优化模型</span><input id="optimization-model" /><small class="field-hint">仅在开启“生成前优化提示词”时使用。</small></label>
+                <label class="field"><span>超时（秒）</span><input id="processor-timeout" type="number" min="5" /><small class="field-hint">超时后跳过提示词处理，继续使用原始提示词生图。</small></label>
+                <label class="field full"><span>翻译系统提示词</span><textarea id="translation-system" rows="4"></textarea><small class="field-hint">发送给翻译模型的系统说明。建议要求模型只输出可直接用于生图的提示词。</small></label>
+                <label class="field full"><span>优化系统提示词</span><textarea id="optimization-system" rows="4"></textarea><small class="field-hint">发送给优化模型的系统说明。建议保留用户意图和安全限制，并只输出优化后的提示词。</small></label>
               </div>
             </section>
           </div>
@@ -122,13 +123,13 @@
             <section class="section-block">
               <div class="section-heading"><div><h2>人设</h2><p>人设拍照使用独立的人设参考图。默认聊天指令为 #人设拍照。</p></div></div>
               <div class="form-grid">
-                <label class="toggle-field"><input id="enable-persona" type="checkbox" /><span>启用人设拍照</span></label>
-                <label class="field"><span>人设名称</span><input id="persona-name" /></label>
-                <label class="field full"><span>人设描述</span><textarea id="persona-description" rows="5"></textarea></label>
-                <label class="field full"><span>照片风格</span><input id="persona-style" /></label>
-                <label class="field full"><span>触发关键词</span><input id="persona-keywords" placeholder="用逗号分隔" /></label>
-                <label class="field full"><span>默认场景提示词</span><textarea id="persona-default-prompt" rows="3"></textarea></label>
-                <label class="field full"><span>场景预设</span><textarea id="persona-scene-prompts" rows="5" placeholder="每行一个：场景名:提示词"></textarea></label>
+                <label class="toggle-field"><input id="enable-persona" type="checkbox" /><span class="toggle-copy"><span>启用人设拍照</span><small class="field-hint">关闭后不会响应人设拍照入口，也不会使用人设参考图。</small></span></label>
+                <label class="field"><span>人设名称</span><input id="persona-name" /><small class="field-hint">用于人设提示词中的称呼，不会修改插件名称。</small></label>
+                <label class="field full"><span>人设描述</span><textarea id="persona-description" rows="5"></textarea><small class="field-hint">描述角色外观、身份和特征，作为生成人设照片时的基础信息。</small></label>
+                <label class="field full"><span>照片风格</span><input id="persona-style" /><small class="field-hint">附加到人设拍照请求的视觉风格，例如自然光、胶片或棚拍风格。</small></label>
+                <label class="field full"><span>触发关键词</span><input id="persona-keywords" placeholder="用逗号分隔" /><small class="field-hint">用逗号分隔。用于智能识别与人设相关的拍照意图。</small></label>
+                <label class="field full"><span>默认场景提示词</span><textarea id="persona-default-prompt" rows="3"></textarea><small class="field-hint">未指定场景时使用的默认环境与构图要求。</small></label>
+                <label class="field full"><span>场景预设</span><textarea id="persona-scene-prompts" rows="5" placeholder="每行一个：场景名:提示词"></textarea><small class="field-hint">每行一个“场景名:提示词”，例如“咖啡馆:窗边自然光人像”。</small></label>
               </div>
               <div class="asset-toolbar"><label class="upload-action">上传人设图<input id="persona-upload" type="file" accept="image/*" multiple /></label><button class="quiet-action" data-clear-ref="_persona_">清空人设图</button></div>
               <div id="persona-images" class="image-grid"></div>
@@ -144,17 +145,17 @@
 
         <section id="tab-settings" class="tab-pane">
           <section class="section-block narrow">
-            <div class="section-heading"><div><h2>运行设置</h2><p>渠道为空时会使用兼容单接口配置；正常使用建议配置“绘图渠道”。</p></div></div>
+              <div class="section-heading"><div><h2>运行设置</h2><p>渠道为空时会使用兼容单接口配置；正常使用建议配置“绘图渠道”。</p></div></div>
             <div class="form-grid">
-              <label class="field"><span>可选命令命名空间</span><input id="command-namespace" placeholder="留空则直接使用 #文生图" /></label>
-              <label class="toggle-field"><input id="enable-direct-commands" type="checkbox" /><span>启用不带命名空间的直接命令</span></label>
-              <label class="field"><span>兼容默认模型</span><input id="default-model" /></label>
-              <label class="field"><span>兼容文生图模型</span><input id="default-t2i-model" /></label>
-              <label class="field"><span>默认分辨率</span><select id="resolution"><option>1K</option><option>2K</option><option>4K</option></select></label>
-              <label class="field"><span>默认比例</span><select id="aspect-ratio"><option>1:1</option><option>16:9</option><option>9:16</option><option>4:3</option><option>3:4</option><option>3:2</option><option>2:3</option></select></label>
-              <label class="field"><span>兼容超时（秒）</span><input id="default-timeout" type="number" min="5" /></label>
-              <label class="toggle-field"><input id="show-model-info" type="checkbox" /><span>成功消息显示模型</span></label>
-              <label class="toggle-field"><input id="enable-preset-refs" type="checkbox" /><span>启用预设参考图</span></label>
+              <label class="field"><span>可选命令命名空间</span><input id="command-namespace" placeholder="留空则直接使用 #文生图" /><small class="field-hint">设置为“绘图”后可用 #绘图 文生图；与同类插件共存时建议同时关闭直接命令。</small></label>
+              <label class="toggle-field"><input id="enable-direct-commands" type="checkbox" /><span class="toggle-copy"><span>启用不带命名空间的直接命令</span><small class="field-hint">关闭后仅响应“命名空间 + 空格 + 命令”，用于避免与其他插件冲突。</small></span></label>
+              <label class="field"><span>兼容默认模型</span><input id="default-model" /><small class="field-hint">仅在未配置绘图渠道时使用，主要用于图生图和通用请求。</small></label>
+              <label class="field"><span>兼容文生图模型</span><input id="default-t2i-model" /><small class="field-hint">仅在未配置绘图渠道时使用；留空则沿用兼容默认模型。</small></label>
+              <label class="field"><span>默认分辨率</span><select id="resolution"><option>1K</option><option>2K</option><option>4K</option></select><small class="field-hint">发送给支持该参数的文生图接口；不支持时由渠道服务端自行处理。</small></label>
+              <label class="field"><span>默认比例</span><select id="aspect-ratio"><option>1:1</option><option>16:9</option><option>9:16</option><option>4:3</option><option>3:4</option><option>3:2</option><option>2:3</option></select><small class="field-hint">文生图的默认画面比例，可在具体请求中被渠道能力限制。</small></label>
+              <label class="field"><span>兼容超时（秒）</span><input id="default-timeout" type="number" min="5" /><small class="field-hint">仅在未配置绘图渠道时使用，超过时间后请求会失败并返回错误。</small></label>
+              <label class="toggle-field"><input id="show-model-info" type="checkbox" /><span class="toggle-copy"><span>成功消息显示模型</span><small class="field-hint">在生成成功消息中附带实际使用的模型名称，便于排查渠道路由。</small></span></label>
+              <label class="toggle-field"><input id="enable-preset-refs" type="checkbox" /><span class="toggle-copy"><span>启用预设参考图</span><small class="field-hint">开启后，调用预设会自动附带该预设在“人设与参考图”中保存的图片。</small></span></label>
             </div>
           </section>
         </section>

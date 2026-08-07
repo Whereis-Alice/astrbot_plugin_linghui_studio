@@ -59,9 +59,14 @@ h3 { font-size: 14px; }
 .field input, .field select, .field textarea, .credit-form input, .credit-form select { width: 100%; border: 1px solid #cbd6cf; border-radius: 4px; background: #fff; color: var(--ink); padding: 8px 9px; outline: none; }
 .field textarea { resize: vertical; min-height: 68px; line-height: 1.45; }
 .field input:focus, .field select:focus, .field textarea:focus, .credit-form input:focus, .credit-form select:focus { border-color: var(--teal); box-shadow: 0 0 0 2px #cce9e2; }
-.toggle-field { display: flex; gap: 8px; align-items: center; min-height: 36px; color: #2e4338; font-size: 13px; }
+.field-hint { display: block; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.field-hint code { color: #38564b; font-size: inherit; }
+.toggle-field { display: flex; gap: 8px; align-items: flex-start; min-height: 36px; padding: 3px 0; color: #2e4338; font-size: 13px; }
 .toggle-field.full { grid-column: 1 / -1; }
-.toggle-field input { width: 16px; height: 16px; accent-color: var(--teal); }
+.toggle-field input { width: 16px; height: 16px; margin: 1px 0 0; flex: 0 0 auto; accent-color: var(--teal); }
+.toggle-copy { display: grid; gap: 3px; min-width: 0; line-height: 1.4; }
+.access-order { display: grid; gap: 3px; margin: 0 0 15px; padding: 1px 0 1px 10px; border-left: 3px solid var(--teal); color: #34473d; font-size: 13px; line-height: 1.5; }
+.access-order span { color: var(--muted); }
 .channel-list, .preset-list { display: grid; gap: 12px; }
 .channel-row { border: 1px solid var(--line); border-left: 4px solid var(--teal); padding: 14px; display: grid; gap: 12px; }
 .row-top { display: flex; justify-content: space-between; gap: 10px; align-items: center; }

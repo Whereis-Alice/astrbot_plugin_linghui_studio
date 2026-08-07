@@ -1,5 +1,6 @@
 import importlib
 import io
+import json
 import pathlib
 import sys
 import tempfile
@@ -82,6 +83,17 @@ class AccessPolicyTest(unittest.TestCase):
         enabled = self.AccessPolicy({"allow_private_messages": True}).evaluate("20001", "")
         self.assertFalse(disabled.allowed)
         self.assertTrue(enabled.allowed)
+
+
+class ConfigurationDocumentationTest(unittest.TestCase):
+    def test_schema_fields_have_user_facing_hints(self):
+        schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+
+        for name, definition in schema.items():
+            self.assertTrue(definition.get("hint"), f"{name} is missing a configuration hint")
+            for template in (definition.get("templates") or {}).values():
+                for field_name, field in (template.get("items") or {}).items():
+                    self.assertTrue(field.get("hint"), f"{name}.{field_name} is missing a configuration hint")
 
 
 class PromptProcessorTest(unittest.TestCase):

@@ -26,6 +26,7 @@
   "help_text": {
     "type": "text",
     "description": "帮助文本",
+    "hint": "回复“帮助”时发送的内容。可使用换行；命令前缀仍由 AstrBot 的全局设置决定。",
     "default": "灵绘工坊使用说明\n\n基础绘图\n#画 <提示词>：自定义绘图；带图片时图生图，无图片时文生图。\n#bnn <提示词>：兼容上游的自定义绘图指令。\n#文生图 <提示词>：显式文生图。\n#头像图生图 <提示词>：使用发送者 QQ 头像。\n#<预设名> [追加要求]：调用预设，例如 #手办化。\n\n常用\n#签到：领取签到额度。\n#额度：查询额度。\n#通道 [渠道ID/自动]：查看或切换主渠道（管理员）。\n#帮助：查看完整帮助。\n\n共存模式：在 Dashboard 设置命名空间并关闭直接命令后，使用 #绘图 文生图、#绘图 画、#绘图 bnn、#绘图 手办化。"
   },
   "drawing_channels": {
@@ -46,21 +47,25 @@
           "name": {
             "type": "string",
             "description": "渠道显示名称",
+            "hint": "仅用于 Dashboard 和状态展示；留空时使用渠道 ID。",
             "default": ""
           },
           "enabled": {
             "type": "bool",
             "description": "启用此渠道",
+            "hint": "关闭后不会作为主渠道或回退渠道被调用。",
             "default": true
           },
           "fallback_enabled": {
             "type": "bool",
             "description": "允许作为其他渠道的回退",
+            "hint": "仅在前方已尝试的渠道失败时，按列表顺序尝试此渠道。",
             "default": true
           },
           "interface_mode": {
             "type": "string",
             "description": "接口模式",
+            "hint": "必须与服务端的请求和响应协议匹配；模式不匹配通常会导致请求失败。",
             "options": [
               "openai_image",
               "openai_chat",
@@ -84,6 +89,7 @@
           "model": {
             "type": "string",
             "description": "图生图/默认模型",
+            "hint": "图生图以及未指定模型的请求使用此模型。",
             "default": ""
           },
           "text_to_image_model": {
@@ -95,6 +101,7 @@
           "timeout": {
             "type": "int",
             "description": "请求超时（秒）",
+            "hint": "单次请求的最长等待时间。超时后会继续尝试下一个允许回退的渠道。",
             "default": 120,
             "min": 5,
             "max": 900
@@ -124,16 +131,19 @@
   "base_url": {
     "type": "string",
     "description": "兼容单接口地址",
+    "hint": "仅在“绘图渠道”列表为空时使用。OpenAI 模式填写基础地址，自定义接口填写完整请求地址。",
     "default": ""
   },
   "api_keys": {
     "type": "text",
     "description": "兼容单接口 API Key",
+    "hint": "仅在“绘图渠道”列表为空时使用。每行一个 Key，可轮换使用。",
     "default": ""
   },
   "model_list": {
     "type": "list",
     "description": "可切换模型列表",
+    "hint": "供管理员使用“模型”命令查看或切换。每项填写一个模型 ID；留空时仅使用默认模型。",
     "items": {
       "type": "string"
     },
@@ -142,16 +152,19 @@
   "model": {
     "type": "string",
     "description": "兼容单接口默认模型",
+    "hint": "仅在“绘图渠道”列表为空时使用，供图生图和未指定模型的请求调用。",
     "default": ""
   },
   "text_to_image_model": {
     "type": "string",
     "description": "兼容单接口文生图模型",
+    "hint": "仅在“绘图渠道”列表为空时使用。留空时文生图会使用兼容默认模型。",
     "default": ""
   },
   "image_resolution": {
     "type": "string",
     "description": "默认分辨率",
+    "hint": "传给支持分辨率参数的文生图接口；服务端不支持时可能忽略此值。",
     "options": [
       "1K",
       "2K",
@@ -162,6 +175,7 @@
   "image_aspect_ratio": {
     "type": "string",
     "description": "文生图默认比例",
+    "hint": "文生图请求的默认画面比例；实际可用范围以渠道服务端能力为准。",
     "options": [
       "1:1",
       "16:9",
@@ -179,6 +193,7 @@
   "timeout": {
     "type": "int",
     "description": "兼容单接口超时（秒）",
+    "hint": "仅在“绘图渠道”列表为空时使用；超过时间后该请求会失败。",
     "default": 120,
     "min": 5,
     "max": 900
@@ -186,16 +201,19 @@
   "use_proxy": {
     "type": "bool",
     "description": "使用代理",
+    "hint": "开启后，绘图请求使用下方代理地址。请填写服务端可访问的 HTTP(S) 代理。",
     "default": false
   },
   "proxy_url": {
     "type": "string",
     "description": "代理地址",
+    "hint": "例如 http://127.0.0.1:7890。只有“使用代理”开启时才会生效。",
     "default": ""
   },
   "show_model_info": {
     "type": "bool",
     "description": "成功消息显示模型信息",
+    "hint": "开启后，生成成功消息会附带实际使用的模型名称，便于排查渠道路由。",
     "default": false
   },
   "debug_mode": {
@@ -213,6 +231,7 @@
   "luxury_request_count": {
     "type": "int",
     "description": "并发抢占请求数",
+    "hint": "仅在开启“并发抢占模式”时生效。会并发发送同一请求，只保留首个成功结果，可能增加上游调用和额度消耗。",
     "default": 2,
     "min": 1,
     "max": 8
@@ -220,7 +239,8 @@
   "group_access_mode": {
     "type": "string",
     "description": "群聊访问模式",
-    "hint": "白名单模式下，只有 group_whitelist 中的群可生图；这只授予使用权限，不会免除额度。",
+    "hint": "“whitelist”时仅 group_whitelist 中的群可生图，且白名单留空时所有群都不能生图；“all”时所有未被群黑名单禁止的群都可生图。该设置只决定访问资格，不会免除额度。",
+    "obvious_hint": true,
     "options": [
       "whitelist",
       "all"
@@ -230,6 +250,8 @@
   "group_whitelist": {
     "type": "list",
     "description": "允许生图的群白名单",
+    "hint": "每项填写一个群号。白名单模式下，名单外的群无法生图；留空时所有群都无法生图。加入本名单只授予使用资格，仍会消耗额度。",
+    "obvious_hint": true,
     "items": {
       "type": "string"
     },
@@ -238,6 +260,8 @@
   "group_blacklist": {
     "type": "list",
     "description": "禁止生图的群黑名单",
+    "hint": "每项填写一个群号。名单内群始终禁止生图，优先于群白名单、群无限次数名单和管理员额度豁免。",
+    "obvious_hint": true,
     "items": {
       "type": "string"
     },
@@ -246,7 +270,8 @@
   "allowed_users": {
     "type": "list",
     "description": "用户白名单（可选）",
-    "hint": "填写后只允许名单内用户使用；留空表示不限制用户身份。",
+    "hint": "每项填写一个用户 ID。填写后只允许名单内用户使用；留空表示不限制用户身份。用户黑名单仍优先。",
+    "obvious_hint": true,
     "items": {
       "type": "string"
     },
@@ -255,6 +280,8 @@
   "blocked_users": {
     "type": "list",
     "description": "用户黑名单",
+    "hint": "每项填写一个用户 ID。名单内用户在私聊和所有群聊中都不能生图，优先于用户白名单、无限次数名单和管理员额度豁免。",
+    "obvious_hint": true,
     "items": {
       "type": "string"
     },
@@ -263,7 +290,8 @@
   "unlimited_users": {
     "type": "list",
     "description": "用户无限次数名单",
-    "hint": "只豁免额度，不绕过黑名单、用户白名单或群白名单。",
+    "hint": "每项填写一个用户 ID。只豁免额度，不绕过黑名单、用户白名单、私聊开关或群聊访问规则。",
+    "obvious_hint": true,
     "items": {
       "type": "string"
     },
@@ -272,7 +300,8 @@
   "unlimited_groups": {
     "type": "list",
     "description": "群无限次数名单",
-    "hint": "只豁免额度；群仍必须通过群聊访问模式的校验。",
+    "hint": "每项填写一个群号。只豁免额度；群仍必须通过群聊访问模式、用户白名单和黑名单校验。",
+    "obvious_hint": true,
     "items": {
       "type": "string"
     },
@@ -281,32 +310,43 @@
   "allow_private_messages": {
     "type": "bool",
     "description": "允许私聊生图",
+    "hint": "关闭时私聊一律不能生图。开启后，私聊仍受用户白名单和用户黑名单限制，不涉及群白名单。",
+    "obvious_hint": true,
     "default": false
   },
   "admins_unlimited": {
     "type": "bool",
     "description": "管理员额度豁免",
-    "hint": "管理员仍会受到黑名单限制。",
+    "hint": "开启后 AstrBot 管理员不扣额度；管理员仍必须通过黑名单、用户白名单和群聊访问校验。",
+    "obvious_hint": true,
     "default": true
   },
   "enable_user_limit": {
     "type": "bool",
     "description": "启用个人额度",
+    "hint": "开启后优先检查并扣除用户个人额度；关闭后不会检查或扣除个人额度。",
+    "obvious_hint": true,
     "default": true
   },
   "enable_group_limit": {
     "type": "bool",
     "description": "启用群额度作为个人额度不足时的备用额度",
+    "hint": "仅群聊可用。个人额度关闭或不足时，才检查并扣除群额度；私聊不会使用群额度。",
+    "obvious_hint": true,
     "default": false
   },
   "enable_checkin": {
     "type": "bool",
     "description": "启用每日签到",
+    "hint": "开启后，用户每天可领取一次个人额度。签到同样受用户和群访问控制规则约束。",
+    "obvious_hint": true,
     "default": false
   },
   "checkin_fixed_reward": {
     "type": "int",
     "description": "固定签到奖励",
+    "hint": "关闭“签到随机奖励”时，每次签到增加的个人额度次数。开启随机奖励后此值会被忽略。",
+    "obvious_hint": true,
     "default": 3,
     "min": 0,
     "max": 999
@@ -314,11 +354,15 @@
   "enable_random_checkin": {
     "type": "bool",
     "description": "签到随机奖励",
+    "hint": "开启后，每次签到随机发放 1 到“签到随机奖励上限”的个人额度；固定奖励不再使用。",
+    "obvious_hint": true,
     "default": false
   },
   "checkin_random_reward_max": {
     "type": "int",
     "description": "签到随机奖励上限",
+    "hint": "仅在开启“签到随机奖励”时生效。实际奖励从 1 到此值之间随机产生。",
+    "obvious_hint": true,
     "default": 5,
     "min": 1,
     "max": 999
@@ -344,21 +388,25 @@
   "prompt_processor_api_key": {
     "type": "string",
     "description": "提示词模型 API Key",
+    "hint": "仅用于提示词翻译和优化的独立聊天模型，不会用于绘图渠道。",
     "default": ""
   },
   "prompt_optimization_model": {
     "type": "string",
     "description": "提示词优化模型",
+    "hint": "仅在开启“启用提示词优化”时使用；建议填写支持普通聊天补全的模型 ID。",
     "default": ""
   },
   "prompt_translation_model": {
     "type": "string",
     "description": "提示词翻译模型",
+    "hint": "仅在开启“启用提示词翻译”时使用；建议填写支持普通聊天补全的模型 ID。",
     "default": ""
   },
   "prompt_processor_timeout": {
     "type": "int",
     "description": "提示词模型超时（秒）",
+    "hint": "超时或失败时跳过提示词处理，直接使用用户原始提示词继续生图。",
     "default": 30,
     "min": 5,
     "max": 300
@@ -366,11 +414,13 @@
   "prompt_optimization_system_prompt": {
     "type": "text",
     "description": "提示词优化系统提示词",
+    "hint": "发送给优化模型的系统说明。建议要求模型保留用户意图和安全限制，并且只输出优化后的提示词。",
     "default": "Rewrite this as a precise image-generation prompt. Preserve the user's intent and safety constraints. Do not add sexual, violent, copyrighted-character, or unsupported claims. Output only the improved prompt."
   },
   "prompt_translation_system_prompt": {
     "type": "text",
     "description": "提示词翻译系统提示词",
+    "hint": "发送给翻译模型的系统说明。建议要求模型只输出保留原意的英文生图提示词。",
     "default": "Translate the image-generation prompt into concise English. Preserve all constraints, proper nouns, composition, aspect ratio, and safety requirements. Output only the prompt."
   },
   "prompt_list": {
@@ -430,31 +480,37 @@
   "enable_preset_ref_images": {
     "type": "bool",
     "description": "启用预设参考图",
+    "hint": "开启后，调用预设会自动附带该预设保存的参考图；关闭后保留图片但不自动发送。",
     "default": true
   },
   "enable_persona_mode": {
     "type": "bool",
     "description": "启用人设拍照",
+    "hint": "开启后可使用人设拍照功能和人设参考图；关闭后不会响应该功能入口。",
     "default": false
   },
   "persona_name": {
     "type": "string",
     "description": "人设名称",
+    "hint": "用于人设提示词中的称呼，不会修改插件名称。",
     "default": "灵绘助手"
   },
   "persona_description": {
     "type": "text",
     "description": "人设描述",
+    "hint": "描述角色的外观、身份和特征，作为生成人设照片时的基础信息。",
     "default": "一个友好、自然的虚拟角色。"
   },
   "persona_photo_style": {
     "type": "string",
     "description": "人设照片风格",
+    "hint": "附加到人设拍照请求的视觉风格，例如自然光、胶片或棚拍风格。",
     "default": "natural lifestyle photography, soft daylight, detailed"
   },
   "persona_trigger_keywords": {
     "type": "list",
     "description": "人设触发关键词",
+    "hint": "每项填写一个关键词，用于智能识别与人设相关的拍照意图。",
     "items": {
       "type": "string"
     },
@@ -475,21 +531,25 @@
   "persona_default_prompt": {
     "type": "string",
     "description": "人设默认场景提示词",
+    "hint": "未指定人设场景时使用的默认环境与构图要求。",
     "default": "a natural everyday portrait"
   },
   "enable_llm_tool": {
     "type": "bool",
     "description": "启用 Linghui LLM 工具",
+    "hint": "控制 AstrBot Agent 是否能调用本插件提供的生图、图生图、批量处理和人设工具。",
     "default": true
   },
   "enable_llm_auto_detect": {
     "type": "bool",
     "description": "启用 LLM 智能判断文生图/图生图",
+    "hint": "开启后会根据会话上下文判断生成类型，可能增加模型调用和误判风险；普通命令不受此开关影响。",
     "default": false
   },
   "context_rounds": {
     "type": "int",
     "description": "智能判断上下文轮数",
+    "hint": "LLM 智能判断或上下文取图时读取的最近会话轮数。数值越大，上下文越完整但资源消耗越高。",
     "default": 20,
     "min": 1,
     "max": 100
@@ -497,6 +557,7 @@
   "context_max_messages": {
     "type": "int",
     "description": "每会话上下文消息上限",
+    "hint": "每个会话最多保留的消息数。达到上限后较早消息会被移出内存上下文。",
     "default": 50,
     "min": 1,
     "max": 500
@@ -504,6 +565,7 @@
   "context_max_sessions": {
     "type": "int",
     "description": "上下文会话上限",
+    "hint": "插件内存中最多维护的会话数量。达到上限后较早的不活跃会话会被清理。",
     "default": 100,
     "min": 1,
     "max": 1000
@@ -511,6 +573,7 @@
   "llm_cooldown_seconds": {
     "type": "int",
     "description": "LLM 生图冷却（秒）",
+    "hint": "仅限制通过 LLM 工具或智能判断触发的生图频率，不影响常规聊天命令。设置为 0 可关闭冷却。",
     "default": 30,
     "min": 0,
     "max": 3600
@@ -518,6 +581,7 @@
   "batch_max_images": {
     "type": "int",
     "description": "批量处理最大图片数",
+    "hint": "一次批量处理或 LLM 工具调用最多接受的图片数量，用于限制耗时与额度消耗。",
     "default": 10,
     "min": 1,
     "max": 50
@@ -525,6 +589,7 @@
   "batch_concurrency": {
     "type": "int",
     "description": "批量处理并发数",
+    "hint": "批量图片同时请求绘图渠道的数量。提高可加快处理，但会增加接口压力和并发额度消耗。",
     "default": 3,
     "min": 1,
     "max": 10
@@ -532,6 +597,7 @@
   "batch_retries": {
     "type": "int",
     "description": "单图重试次数",
+    "hint": "单张图片失败后额外尝试的次数。提高此值可能增加请求耗时和上游调用量。",
     "default": 1,
     "min": 0,
     "max": 5
@@ -539,11 +605,13 @@
   "enable_preset_safety_suffix": {
     "type": "bool",
     "description": "为预设追加安全限制",
+    "hint": "开启后，调用预设时会在提示词末尾追加下方安全限制文本；自定义绘图不受影响。",
     "default": true
   },
   "preset_safety_suffix": {
     "type": "text",
     "description": "预设安全限制文本",
+    "hint": "追加到预设提示词末尾的安全要求。关闭“为预设追加安全限制”后不会使用此文本。",
     "default": "Keep the result non-explicit, age-appropriate, fully clothed where people appear, and free of sexual or exploitative content."
   }
 }
