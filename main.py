@@ -1,4 +1,4 @@
-﻿import re
+import re
 import asyncio
 import json
 from functools import wraps
@@ -946,7 +946,10 @@ class LinghuiStudioPlugin(Star):
         # 使用特殊的预设名 "_persona_" 存储人设参考图
         if not self.data_mgr.has_preset_ref_images("_persona_"):
             return []
-        return await self.data_mgr.load_preset_ref_images_bytes("_persona_")
+        return await self.data_mgr.load_preset_ref_images_bytes(
+            "_persona_",
+            normalize_for_generation=True,
+        )
 
     async def initialize(self):
         if self._migrate_drawing_channel_template_keys():
@@ -1049,7 +1052,7 @@ class LinghuiStudioPlugin(Star):
 
         auto_detect_status = "已启用" if self._llm_auto_detect else "未启用"
         logger.info(
-            f"LinghuiStudio 已加载 v3.3.0 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
+            f"LinghuiStudio 已加载 v3.3.1 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
 
     def _generation_cache_retention_days(self) -> int:
         """Return a bounded retention period for successful output cache files."""
@@ -2630,7 +2633,10 @@ class LinghuiStudioPlugin(Star):
         """加载预设的参考图"""
         if not self.data_mgr.has_preset_ref_images(preset_name):
             return []
-        return await self.data_mgr.load_preset_ref_images_bytes(preset_name)
+        return await self.data_mgr.load_preset_ref_images_bytes(
+            preset_name,
+            normalize_for_generation=True,
+        )
 
     # ================= 核心：后台生成逻辑封装 =================
 

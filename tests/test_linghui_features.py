@@ -684,6 +684,28 @@ class ReferenceImageStorageTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(filename.endswith(".jpg"))
             self.assertTrue((manager.preset_ref_images_dir / filename).is_file())
 
+    async def test_generation_loader_normalizes_stored_webp_reference_to_png(self):
+        if ".webp" not in Image.registered_extensions():
+            self.skipTest("Pillow was built without WebP support")
+
+        output = io.BytesIO()
+        Image.new("RGBA", (1000, 1000), (120, 90, 220, 170)).save(output, "WEBP")
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.DataManager(pathlib.Path(directory), {})
+            filename = await manager.save_preset_ref_image("_persona_", output.getvalue())
+            self.assertTrue(filename.endswith(".webp"))
+
+            prepared = await manager.load_preset_ref_images_bytes(
+                "_persona_",
+                normalize_for_generation=True,
+            )
+
+        self.assertEqual(len(prepared), 1)
+        self.assertTrue(prepared[0].startswith(b"\x89PNG\r\n\x1a\n"))
+        with Image.open(io.BytesIO(prepared[0])) as image:
+            self.assertEqual(image.size, (1000, 1000))
+            self.assertEqual(image.mode, "RGBA")
+
 
 if __name__ == "__main__":
     unittest.main()

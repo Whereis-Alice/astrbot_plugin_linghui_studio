@@ -991,7 +991,43 @@ class DataManager:
             "details": details
         }
 
-    async def load_preset_ref_images_bytes(self, preset_key: str) -> List[bytes]:
+    @staticmethod
+    def _normalize_reference_image_for_generation(image_bytes: bytes) -> bytes:
+        """Convert nonstandard reference-image formats to a stable PNG input.
+
+        Images arriving in chat are normalized by ``ImageManager`` before they
+        reach a drawing channel. Dashboard-uploaded reference images are read
+        directly from disk, so formats such as WebP would otherwise take a
+        different path. Keep the original file for previews, but normalize the
+        in-memory request payload for the drawing API.
+        """
+        if not image_bytes:
+            return image_bytes
+        if image_bytes.startswith(b"\x89PNG\r\n\x1a\n") or image_bytes.startswith(b"\xff\xd8"):
+            return image_bytes
+
+        try:
+            with PILImage.open(io.BytesIO(image_bytes)) as image:
+                if getattr(image, "is_animated", False):
+                    image.seek(0)
+                normalized = image.convert("RGBA")
+                max_side = 1568
+                width, height = normalized.size
+                if width > max_side or height > max_side:
+                    scale = min(max_side / width, max_side / height)
+                    normalized = normalized.resize(
+                        (max(1, int(width * scale)), max(1, int(height * scale))),
+                        PILImage.Resampling.LANCZOS,
+                    )
+                output = io.BytesIO()
+                normalized.save(output, format="PNG")
+                return output.getvalue()
+        except Exception as exc:
+            logger.warning("参考图格式标准化失败，将使用原始文件: %s", exc)
+            return image_bytes
+
+    async def load_preset_ref_images_bytes(self, preset_key: str,
+                                           normalize_for_generation: bool = False) -> List[bytes]:
         """
         加载预设的所有参考图为字节数据
         
@@ -1003,12 +1039,26 @@ class DataManager:
         """
         paths = self.get_preset_ref_image_paths(preset_key)
         images = []
+        normalized_count = 0
         
         for path in paths:
             try:
                 img_bytes = await asyncio.to_thread(Path(path).read_bytes)
+                if normalize_for_generation:
+                    prepared = await asyncio.to_thread(
+                        self._normalize_reference_image_for_generation,
+                        img_bytes,
+                    )
+                    if prepared != img_bytes:
+                        normalized_count += 1
+                    img_bytes = prepared
                 images.append(img_bytes)
             except Exception as e:
                 logger.error(f"加载预设参考图失败: {path} - {e}")
         
+        if normalized_count:
+            logger.info(
+                "已将 %s 张已保存参考图标准化为 PNG 后提交绘图渠道，原文件保持不变。",
+                normalized_count,
+            )
         return images
