@@ -269,6 +269,7 @@ class DashboardRegistrationTest(unittest.TestCase):
                 "/astrbot_plugin_linghui_studio/reference",
                 "/astrbot_plugin_linghui_studio/asset",
                 "/astrbot_plugin_linghui_studio/generation_history",
+                "/astrbot_plugin_linghui_studio/generation_download",
                 "/astrbot_plugin_linghui_studio/generation_record",
             ],
         )
@@ -368,11 +369,18 @@ class DashboardUsageTest(unittest.IsolatedAsyncioTestCase):
             group_counts={"group-1": 12},
             user_checkin_data={},
             daily_stats={"date": today, "users": {"user-1": 3}, "groups": {"group-1": 2}},
+            identity_labels={
+                "users": {"user-1": {"name": "Alice"}},
+                "groups": {"group-1": {"name": "Example Group"}},
+            },
             get_preset_ref_stats=lambda: {},
         )
         payload = await self.DashboardApi(types.SimpleNamespace(data_mgr=manager)).get_usage()
         self.assertEqual(payload["daily_stats"]["users"], {"user-1": 3})
         self.assertEqual(payload["daily_stats"]["groups"], {"group-1": 2})
+        self.assertEqual(payload["users"][0]["name"], "Alice")
+        self.assertEqual(payload["groups"][0]["name"], "Example Group")
+        self.assertEqual(payload["identity_labels"]["users"]["user-1"], "Alice")
 
     async def test_stale_daily_usage_is_not_returned_as_today(self):
         manager = types.SimpleNamespace(
@@ -468,6 +476,59 @@ class GenerationHistoryStorageTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(manager.generation_history, [])
 
 
+class IdentityLabelStorageTest(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.DataManager = _load_module("data_manager").DataManager
+
+    @staticmethod
+    def _png_bytes() -> bytes:
+        output = io.BytesIO()
+        Image.new("RGB", (32, 32), (20, 120, 220)).save(output, "PNG")
+        return output.getvalue()
+
+    async def test_names_are_display_labels_while_ids_and_history_snapshots_stay_stable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = pathlib.Path(directory)
+            manager = self.DataManager(data_dir, {})
+            await manager.update_identity_labels("10001", "First Nickname", "20002", "First Group")
+            await manager.record_usage(
+                "10001",
+                "20002",
+                user_name="Renamed User",
+                group_name="Renamed Group",
+            )
+            record = await manager.save_generation_record(
+                self._png_bytes(),
+                prompt="portrait",
+                user_id="10001",
+                group_id="20002",
+                user_name="Renamed User",
+                group_name="Renamed Group",
+                task_type="文生图",
+            )
+
+            self.assertEqual(manager.daily_stats["users"], {"10001": 1})
+            self.assertEqual(manager.daily_stats["groups"], {"20002": 1})
+            self.assertEqual(manager.get_identity_label_map()["users"], {"10001": "Renamed User"})
+            self.assertEqual(manager.get_identity_label_map()["groups"], {"20002": "Renamed Group"})
+            self.assertEqual(record["user_id"], "10001")
+            self.assertEqual(record["group_id"], "20002")
+            self.assertEqual(record["user_name"], "Renamed User")
+            self.assertEqual(record["group_name"], "Renamed Group")
+
+            await manager.update_identity_labels("10001", "Newest Nickname", "20002", "Newest Group")
+            self.assertEqual(record["user_name"], "Renamed User")
+            self.assertEqual(record["group_name"], "Renamed Group")
+
+            reloaded = self.DataManager(data_dir, {})
+            await reloaded.initialize()
+            self.assertEqual(reloaded.get_user_display_name("10001"), "Newest Nickname")
+            self.assertEqual(reloaded.get_group_display_name("20002"), "Newest Group")
+            self.assertEqual(reloaded.generation_history[0]["user_name"], "Renamed User")
+            self.assertEqual(reloaded.generation_history[0]["group_name"], "Renamed Group")
+
+
 class DashboardGenerationHistoryTest(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls):
@@ -486,6 +547,8 @@ class DashboardGenerationHistoryTest(unittest.IsolatedAsyncioTestCase):
                 prompt="a violet neon city",
                 user_id="user-1",
                 group_id="group-1",
+                user_name="Alice",
+                group_name="Example Group",
                 model="test-model",
                 task_type="文生图",
             )
@@ -504,8 +567,19 @@ class DashboardGenerationHistoryTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(payload["success"])
             self.assertEqual(payload["summary"]["groups"], 1)
             self.assertEqual(payload["records"][0]["prompt"], "a violet neon city")
+            self.assertEqual(payload["records"][0]["user_name"], "Alice")
+            self.assertEqual(payload["records"][0]["group_name"], "Example Group")
             self.assertTrue(payload["records"][0]["preview"].startswith("data:image/jpeg;base64,"))
             self.assertNotIn(str(manager.generation_cache_dir), payload["records"][0]["preview"])
+
+            self.dashboard_module.request.args = {"id": record["id"]}
+            try:
+                downloaded = await api.generation_download()
+            finally:
+                self.dashboard_module.request.args = original_args
+            _, download_args = downloaded
+            self.assertTrue(download_args["as_attachment"])
+            self.assertTrue(download_args["attachment_filename"].startswith("linghui_"))
 
             async def body():
                 return {"action": "favorite", "id": record["id"], "value": True}
@@ -514,6 +588,15 @@ class DashboardGenerationHistoryTest(unittest.IsolatedAsyncioTestCase):
             updated = await api.generation_record()
             self.assertTrue(updated["success"])
             self.assertTrue(manager.generation_history[0]["favorite"])
+
+            self.dashboard_module.request.args = {"limit": "24", "offset": "0", "favorite_only": "1"}
+            try:
+                favorites = await api.generation_history()
+            finally:
+                self.dashboard_module.request.args = original_args
+            self.assertTrue(favorites["favorite_only"])
+            self.assertEqual(favorites["pagination"]["total"], 1)
+            self.assertTrue(favorites["records"][0]["favorite"])
 
 
 class ReferenceImageStorageTest(unittest.IsolatedAsyncioTestCase):

@@ -3,6 +3,7 @@ import asyncio
 import io
 import os
 import random
+import re
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -25,6 +26,7 @@ class DataManager:
         self.user_prompts_file = self.data_dir / "user_prompts.json"
         self.preset_ref_images_file = self.data_dir / "preset_ref_images.json"  # 预设参考图索引
         self.generation_history_file = self.data_dir / "generation_history.json"
+        self.identity_labels_file = self.data_dir / "identity_labels.json"
         self.preset_images_dir = self.data_dir / "preset_images"
         self.preset_ref_images_dir = self.data_dir / "preset_ref_images"  # 预设参考图目录
         self.generation_cache_dir = self.data_dir / "generation_cache"
@@ -54,6 +56,12 @@ class DataManager:
         self.user_prompts: Dict[str, str] = {}
         self.preset_ref_images: Dict[str, List[str]] = {}  # 预设参考图: {预设名: [图片文件名列表]}
         self.generation_history: List[Dict[str, Any]] = []
+        # Canonical user/group IDs remain the keys. Names are display-only
+        # labels, refreshed whenever AstrBot provides them on an event.
+        self.identity_labels: Dict[str, Dict[str, Dict[str, str]]] = {
+            "users": {},
+            "groups": {},
+        }
         self.prompt_map: Dict[str, str] = {}
         # A single lock protects read-modify-write credit/check-in operations.
         # The upstream version could lose credits when concurrent image tasks
@@ -74,7 +82,9 @@ class DataManager:
 
         await self._load_json(self.preset_images_file, "preset_images")
         await self._load_json(self.generation_history_file, "generation_history")
+        await self._load_json(self.identity_labels_file, "identity_labels")
         self.generation_history = self._normalize_generation_history(self.generation_history)
+        self.identity_labels = self._normalize_identity_labels(self.identity_labels)
         self.reload_prompts()
 
     async def _load_json(self, file_path: Path, attr_name: str):
@@ -97,6 +107,103 @@ class DataManager:
             await asyncio.to_thread(_atomic_write)
         except Exception as e:
             logger.error(f"Failed to save {file_path}: {e}")
+
+    @staticmethod
+    def _normalize_display_name(value: Any, limit: int = 160) -> str:
+        """Normalize an untrusted adapter-provided display name for storage."""
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        return text[:limit]
+
+    def _normalize_identity_labels(self, raw_labels: Any) -> Dict[str, Dict[str, Dict[str, str]]]:
+        """Load display labels without ever turning names into identity keys."""
+        normalized: Dict[str, Dict[str, Dict[str, str]]] = {"users": {}, "groups": {}}
+        if not isinstance(raw_labels, dict):
+            return normalized
+
+        for kind in ("users", "groups"):
+            raw_items = raw_labels.get(kind, {})
+            if not isinstance(raw_items, dict):
+                continue
+            for raw_id, raw_entry in raw_items.items():
+                identity_id = norm_id(raw_id)
+                if not identity_id:
+                    continue
+                if isinstance(raw_entry, dict):
+                    raw_name = raw_entry.get("name", "")
+                    updated_at = str(raw_entry.get("updated_at", "") or "")[:80]
+                else:
+                    # Accept a short-lived development format that used a
+                    # plain ID-to-name map, then rewrite it safely on update.
+                    raw_name = raw_entry
+                    updated_at = ""
+                name = self._normalize_display_name(raw_name)
+                if name:
+                    normalized[kind][identity_id] = {"name": name, "updated_at": updated_at}
+        return normalized
+
+    def _identity_display_name(self, kind: str, identity_id: Any) -> str:
+        entry = self.identity_labels.get(kind, {}).get(norm_id(identity_id), {})
+        return self._normalize_display_name(entry.get("name", "") if isinstance(entry, dict) else entry)
+
+    def get_user_display_name(self, user_id: Any) -> str:
+        return self._identity_display_name("users", user_id)
+
+    def get_group_display_name(self, group_id: Any) -> str:
+        return self._identity_display_name("groups", group_id)
+
+    def get_identity_label_map(self) -> Dict[str, Dict[str, str]]:
+        """Return names for Dashboard presentation while keeping IDs canonical."""
+        labels: Dict[str, Dict[str, str]] = {"users": {}, "groups": {}}
+        for kind in ("users", "groups"):
+            for identity_id, entry in self.identity_labels.get(kind, {}).items():
+                name = self._normalize_display_name(
+                    entry.get("name", "") if isinstance(entry, dict) else entry
+                )
+                if name:
+                    labels[kind][identity_id] = name
+        return labels
+
+    def _update_identity_labels_locked(
+            self,
+            user_id: Any,
+            user_name: Any = "",
+            group_id: Any = "",
+            group_name: Any = "",
+    ) -> bool:
+        """Update latest display labels while the shared state lock is held."""
+        updates = (
+            ("users", norm_id(user_id), self._normalize_display_name(user_name)),
+            ("groups", norm_id(group_id), self._normalize_display_name(group_name)),
+        )
+        changed = False
+        updated_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        for kind, identity_id, name in updates:
+            if not identity_id or not name:
+                continue
+            bucket = self.identity_labels.setdefault(kind, {})
+            previous = bucket.get(identity_id, {})
+            previous_name = self._normalize_display_name(
+                previous.get("name", "") if isinstance(previous, dict) else previous
+            )
+            if previous_name == name:
+                continue
+            bucket[identity_id] = {"name": name, "updated_at": updated_at}
+            changed = True
+        return changed
+
+    async def update_identity_labels(
+            self,
+            user_id: Any,
+            user_name: Any = "",
+            group_id: Any = "",
+            group_name: Any = "",
+    ) -> bool:
+        """Persist latest non-empty names without changing user or group IDs."""
+        async with self._state_lock:
+            changed = self._update_identity_labels_locked(user_id, user_name, group_id, group_name)
+            if changed:
+                await self._save_json(self.identity_labels_file, self.identity_labels)
+            return changed
 
     def reload_prompts(self):
         self.prompt_map.clear()
@@ -242,18 +349,29 @@ class DataManager:
             self.user_checkin_data.pop(uid, None)
             await self._save_json(self.user_checkin_file, self.user_checkin_data)
 
-    async def record_usage(self, uid: str, gid: Optional[str]):
+    async def record_usage(
+            self,
+            uid: str,
+            gid: Optional[str],
+            *,
+            user_name: str = "",
+            group_name: str = "",
+    ):
         async with self._state_lock:
             today = datetime.now().strftime("%Y-%m-%d")
             if self.daily_stats.get("date") != today:
                 self.daily_stats = {"date": today, "users": {}, "groups": {}}
 
             uid = norm_id(uid)
-            self.daily_stats["users"][uid] = self.daily_stats["users"].get(uid, 0) + 1
+            gid = norm_id(gid)
+            labels_changed = self._update_identity_labels_locked(uid, user_name, gid, group_name)
+            if uid:
+                self.daily_stats["users"][uid] = self.daily_stats["users"].get(uid, 0) + 1
             if gid:
-                gid = norm_id(gid)
                 self.daily_stats["groups"][gid] = self.daily_stats["groups"].get(gid, 0) + 1
             await self._save_json(self.daily_stats_file, self.daily_stats)
+            if labels_changed:
+                await self._save_json(self.identity_labels_file, self.identity_labels)
 
     # --- 成功生成记录与缓存 ---
     @staticmethod
@@ -318,6 +436,8 @@ class DataManager:
                 "created_at": str(raw.get("created_at", "") or ""),
                 "user_id": norm_id(raw.get("user_id")),
                 "group_id": norm_id(raw.get("group_id")),
+                "user_name": self._normalize_display_name(raw.get("user_name", "")),
+                "group_name": self._normalize_display_name(raw.get("group_name", "")),
                 "prompt": str(raw.get("prompt", "") or "").strip()[:12_000],
                 "model": str(raw.get("model", "") or "").strip()[:200],
                 "preset": str(raw.get("preset", "") or "").strip()[:160],
@@ -357,6 +477,8 @@ class DataManager:
             prompt: str,
             user_id: str,
             group_id: str = "",
+            user_name: str = "",
+            group_name: str = "",
             model: str = "",
             preset: str = "",
             task_type: str = "",
@@ -381,6 +503,8 @@ class DataManager:
             "created_at": timestamp.astimezone().isoformat(timespec="seconds"),
             "user_id": norm_id(user_id),
             "group_id": norm_id(group_id),
+            "user_name": "",
+            "group_name": "",
             "prompt": str(prompt or "").strip()[:12_000],
             "model": str(model or "").strip()[:200],
             "preset": str(preset or "").strip()[:160],
@@ -397,6 +521,21 @@ class DataManager:
             return None
 
         async with self._state_lock:
+            labels_changed = self._update_identity_labels_locked(
+                record["user_id"], user_name, record["group_id"], group_name
+            )
+            # A history record keeps the name seen at success time. Older
+            # entries without a snapshot can still use the latest label in
+            # the Dashboard, but new entries remain understandable after a
+            # later nickname change.
+            record["user_name"] = (
+                self._normalize_display_name(user_name)
+                or self.get_user_display_name(record["user_id"])
+            )
+            record["group_name"] = (
+                self._normalize_display_name(group_name)
+                or self.get_group_display_name(record["group_id"])
+            )
             try:
                 await asyncio.to_thread(path.write_bytes, image_bytes)
             except Exception as exc:
@@ -404,9 +543,28 @@ class DataManager:
                 return None
             self.generation_history.insert(0, record)
             await self._save_json(self.generation_history_file, self.generation_history)
+            if labels_changed:
+                await self._save_json(self.identity_labels_file, self.identity_labels)
         return dict(record)
 
-    async def get_generation_history_page(self, limit: int = 24, offset: int = 0) -> Tuple[List[Dict[str, Any]], int, Dict[str, int]]:
+    async def get_generation_record(self, record_id: str) -> Optional[Dict[str, Any]]:
+        """Look up one cache record by its opaque Dashboard record ID."""
+        record_id = str(record_id or "").strip()
+        if not record_id:
+            return None
+        async with self._state_lock:
+            for record in self.generation_history:
+                if record.get("id") == record_id:
+                    return dict(record)
+        return None
+
+    async def get_generation_history_page(
+            self,
+            limit: int = 24,
+            offset: int = 0,
+            *,
+            favorite_only: bool = False,
+    ) -> Tuple[List[Dict[str, Any]], int, Dict[str, int]]:
         """Return a bounded history page plus aggregate cache statistics."""
         try:
             limit = int(limit)
@@ -419,7 +577,9 @@ class DataManager:
         limit = min(max(1, limit), 100)
         offset = max(0, offset)
         async with self._state_lock:
-            records = [dict(item) for item in self.generation_history]
+            all_records = [dict(item) for item in self.generation_history]
+
+        records = [item for item in all_records if item.get("favorite")] if favorite_only else all_records
 
         today = datetime.now().date()
         unique_users = set()
@@ -427,7 +587,7 @@ class DataManager:
         today_count = 0
         private_count = 0
         protected_count = 0
-        for item in records:
+        for item in all_records:
             user_id = norm_id(item.get("user_id"))
             group_id = norm_id(item.get("group_id"))
             if user_id:
@@ -443,11 +603,11 @@ class DataManager:
                 today_count += 1
 
         summary = {
-            "total": len(records),
-            "favorite": sum(1 for item in records if item.get("favorite")),
-            "locked": sum(1 for item in records if item.get("locked")),
+            "total": len(all_records),
+            "favorite": sum(1 for item in all_records if item.get("favorite")),
+            "locked": sum(1 for item in all_records if item.get("locked")),
             "protected": protected_count,
-            "size_bytes": sum(self._history_int(item.get("size_bytes")) for item in records),
+            "size_bytes": sum(self._history_int(item.get("size_bytes")) for item in all_records),
             "today": today_count,
             "users": len(unique_users),
             "groups": len(unique_groups),

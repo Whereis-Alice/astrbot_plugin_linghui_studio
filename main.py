@@ -1,4 +1,4 @@
-﻿import re
+import re
 import asyncio
 import json
 from functools import wraps
@@ -139,7 +139,7 @@ def _direct_command_only(handler):
     PLUGIN_NAME,
     "Whereis-Alice",
     "灵绘工坊：多渠道回退、受控群白名单、自定义绘图反向提示词与可视化管理的文生图/图生图插件",
-    "3.2.5",
+    "3.2.6",
     "https://github.com/Whereis-Alice/astrbot_plugin_linghui_studio",
 )
 class LinghuiStudioPlugin(Star):
@@ -1040,7 +1040,7 @@ class LinghuiStudioPlugin(Star):
 
         auto_detect_status = "已启用" if self._llm_auto_detect else "未启用"
         logger.info(
-            f"LinghuiStudio 已加载 v3.2.5 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
+            f"LinghuiStudio 已加载 v3.2.6 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
 
     def _generation_cache_retention_days(self) -> int:
         """Return a bounded retention period for successful output cache files."""
@@ -1116,6 +1116,49 @@ class LinghuiStudioPlugin(Star):
 
         logger.debug(f"LinghuiStudio: Bot ID resolved as: {bot_id}")
         return bot_id or ""
+
+    @staticmethod
+    def _event_identity_labels(event: Optional[AstrMessageEvent]) -> Tuple[str, str]:
+        """Return non-authoritative sender and group labels from AstrBot's message model.
+
+        AstrBot standardizes the sender nickname at ``get_sender_name()`` and
+        the group display name at ``message_obj.group.group_name``. IDs are
+        intentionally not derived from these labels; they remain the only
+        identity and quota keys throughout the plugin.
+        """
+        if event is None:
+            return "", ""
+
+        user_name = ""
+        try:
+            user_name = str(event.get_sender_name() or "").strip()
+        except Exception:
+            pass
+
+        group_name = ""
+        try:
+            message_obj = getattr(event, "message_obj", None)
+            group = getattr(message_obj, "group", None)
+            group_name = str(getattr(group, "group_name", "") or "").strip()
+        except Exception:
+            pass
+        return user_name, group_name
+
+    async def _remember_event_identity_labels(self, event: AstrMessageEvent) -> Tuple[str, str]:
+        """Refresh display-only labels when a normal inbound event provides them."""
+        user_name, group_name = self._event_identity_labels(event)
+        try:
+            await self.data_mgr.update_identity_labels(
+                norm_id(event.get_sender_id()),
+                user_name,
+                norm_id(event.get_group_id()),
+                group_name,
+            )
+        except Exception as exc:
+            # Name persistence is deliberately best-effort and must never
+            # block message handling or quota accounting.
+            logger.debug(f"LinghuiStudio: failed to update display labels: {exc}")
+        return user_name, group_name
 
     def _save_config(self, changed_keys: Optional[List[str]] = None):
         try:
@@ -1606,6 +1649,7 @@ class LinghuiStudioPlugin(Star):
             model: str = "",
             preset_name: str = "",
             task_type: str = "",
+            event: Optional[AstrMessageEvent] = None,
     ) -> None:
         """Persist one successful output without letting cache failures affect delivery.
 
@@ -1613,13 +1657,21 @@ class LinghuiStudioPlugin(Star):
         accounting and in-session PDF context keep their existing behaviour
         even if the optional Dashboard history file cannot be written.
         """
-        await self.data_mgr.record_usage(user_id, group_id)
+        user_name, group_name = self._event_identity_labels(event)
+        await self.data_mgr.record_usage(
+            user_id,
+            group_id,
+            user_name=user_name,
+            group_name=group_name,
+        )
         try:
             record = await self.data_mgr.save_generation_record(
                 image_bytes,
                 prompt=prompt,
                 user_id=user_id,
                 group_id=group_id,
+                user_name=user_name,
+                group_name=group_name,
                 model=model,
                 preset=preset_name,
                 task_type=task_type,
@@ -2634,6 +2686,7 @@ class LinghuiStudioPlugin(Star):
                     model=model,
                     preset_name=preset_name,
                     task_type="文生图" if use_text_to_image_api else "图生图",
+                    event=event,
                 )
 
                 # 5. 检查是否处于 PDF 暂存模式
@@ -2757,6 +2810,7 @@ class LinghuiStudioPlugin(Star):
                                     model=model,
                                     preset_name=preset_name,
                                     task_type="批量文生图",
+                                    event=event,
                                 )
 
                                 # PDF 暂存模式：不发送单张图片，用 index 保证顺序
@@ -2904,6 +2958,7 @@ class LinghuiStudioPlugin(Star):
                                     model=model,
                                     preset_name=preset_name,
                                     task_type="批量图生图版本",
+                                    event=event,
                                 )
 
                                 # PDF 暂存模式：不发送单张图片，用 index 保证顺序
@@ -3647,6 +3702,7 @@ class LinghuiStudioPlugin(Star):
                 model=model,
                 preset_name=preset_name,
                 task_type="自定义文生图" if is_text_to_image else "自定义图生图",
+                event=event,
             )
             if not is_custom_command: await self.data_mgr.save_preset_image(base_cmd, res)
 
@@ -3715,6 +3771,7 @@ class LinghuiStudioPlugin(Star):
                 model=model,
                 preset_name=preset_name,
                 task_type="文生图",
+                event=event,
             )
             quota_str = self._get_quota_str(deduction, uid, group_id)
             timing_text = self._format_success_timing(elapsed)
@@ -3776,6 +3833,7 @@ class LinghuiStudioPlugin(Star):
             model=model,
             preset_name=preset_name,
             task_type="头像图生图",
+            event=event,
         )
         elapsed = (datetime.now() - start).total_seconds()
         quota = self._get_quota_str(deduction, uid, gid)
@@ -4259,6 +4317,7 @@ class LinghuiStudioPlugin(Star):
             msg_id = str(event.message_obj.message_id)
             sender_id = event.get_sender_id()
             sender_name = event.get_sender_name() or sender_id
+            await self._remember_event_identity_labels(event)
 
             # 检查是否是 Bot 自己的消息
             bot_id = self._get_bot_id(event)
@@ -5189,6 +5248,7 @@ class LinghuiStudioPlugin(Star):
                     model=model,
                     preset_name=preset_name,
                     task_type="批量图生图",
+                    event=event,
                 )
 
                 # PDF 暂存模式：不发送单张图片，用 task_index 保证顺序
@@ -5535,6 +5595,7 @@ class LinghuiStudioPlugin(Star):
                                         model=model,
                                         preset_name=preset_name,
                                         task_type="批量图生图（PDF）",
+                                        event=event,
                                     )
                                     success = True
                                     error_msg = ""
@@ -5834,6 +5895,7 @@ class LinghuiStudioPlugin(Star):
                                         model=model,
                                         preset_name=preset_name,
                                         task_type="批量图生图（PDF）",
+                                        event=event,
                                     )
                                     success = True
                                     error_msg = ""
@@ -6340,6 +6402,7 @@ class LinghuiStudioPlugin(Star):
                 model=model,
                 preset_name=scene_name or "人设",
                 task_type="人设拍照",
+                event=event,
             )
 
             quota_str = self._get_quota_str(deduction, uid, gid)

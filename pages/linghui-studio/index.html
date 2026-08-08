@@ -13,6 +13,7 @@
         <nav class="nav-list">
           <button class="nav-item active" data-tab="overview">概览</button>
           <button class="nav-item" data-tab="history">成功记录</button>
+          <button class="nav-item" data-tab="favorites">收藏</button>
           <button class="nav-item" data-tab="channels">绘图渠道</button>
           <button class="nav-item" data-tab="access">权限与额度</button>
           <button class="nav-item" data-tab="prompts">提示词与预设</button>
@@ -62,8 +63,8 @@
           <p id="history-detail-summary" class="history-detail-summary"></p>
           <section class="section-block">
             <div class="section-heading">
-              <div><h2>成功记录</h2><p>展示最终成功返回的图片、请求提示词、用户、群、模型与时间。默认保留 <span id="history-retention">-</span> 天；收藏或锁定的图片及提示词不会被自动清理。</p></div>
-              <div class="history-actions"><button id="history-refresh" class="quiet-action">刷新记录</button><button id="history-cleanup" class="danger-action">清理已过期</button></div>
+              <div><h2>成功记录</h2><p>展示最终成功返回的图片、请求提示词、昵称与 QQ 号、群名称与群号、模型及时间；可直接下载保留的原图。默认保留 <span id="history-retention">-</span> 天；收藏或锁定的图片及提示词不会被自动清理。</p></div>
+              <div class="history-actions"><button id="history-favorites" class="quiet-action" type="button" aria-pressed="false">只看收藏</button><button id="history-refresh" class="quiet-action">刷新记录</button><button id="history-cleanup" class="danger-action">清理已过期</button></div>
             </div>
             <div id="generation-history-list" class="generation-history-list"></div>
             <div id="generation-history-pagination" class="history-pagination" hidden>

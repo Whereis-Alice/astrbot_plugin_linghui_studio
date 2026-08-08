@@ -18,15 +18,18 @@ const bridge = window.AstrBotPluginPage || {
 const state = {
   config: null,
   usage: { users: [], groups: [], daily_stats: {} },
-  history: { records: [], pagination: { offset: 0, limit: 24, total: 0 }, summary: {} },
+  history: { records: [], pagination: { offset: 0, limit: 24, total: 0 }, summary: {}, favorite_only: false },
+  historyFavoriteOnly: false,
 };
 
 const THEME_STORAGE_KEY = "linghui-studio-theme";
 const HISTORY_PAGE_SIZE = 24;
+const PLUGIN_API_BASE = "/api/plug/astrbot_plugin_linghui_studio";
 
 const titles = {
   overview: ["概览", "查看当前绘图服务状态和今日用量。"],
   history: ["成功记录", "查看成功图片、请求提示词与缓存保护状态。"],
+  favorites: ["收藏", "快速查看已收藏且不会自动清理的成功图片。"],
   channels: ["绘图渠道", "配置主渠道、模型和失败后的回退顺序。"],
   access: ["权限与额度", "把访问权限与无限次数名单分开管理。"],
   prompts: ["提示词与预设", "维护快捷预设，并选择可选的翻译和优化模型。"],
@@ -209,8 +212,14 @@ function renderOverview() {
 function renderDailyUsage(targetId, dailyStats) {
   const target = byId(targetId);
   const stats = dailyStats && typeof dailyStats === "object" ? dailyStats : {};
+  const labels = state.usage?.identity_labels || {};
   const toRows = (records, kind) => Object.entries(records && typeof records === "object" ? records : {})
-    .map(([id, count]) => ({ id, kind, count: Number(count || 0) }))
+    .map(([id, count]) => ({
+      id,
+      kind,
+      name: kind === "群" ? labels.groups?.[id] : labels.users?.[id],
+      count: Number(count || 0),
+    }))
     .filter((row) => row.id && row.count > 0);
   const rows = [...toRows(stats.groups, "群"), ...toRows(stats.users, "用户")]
     .sort((left, right) => right.count - left.count || left.kind.localeCompare(right.kind) || left.id.localeCompare(right.id));
@@ -218,7 +227,15 @@ function renderDailyUsage(targetId, dailyStats) {
     target.innerHTML = '<p class="empty">暂无用量记录。</p>';
     return;
   }
-  target.innerHTML = `<table><thead><tr><th>类型</th><th>ID / 群号</th><th>今日成功数</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${escapeHtml(row.kind)}</td><td>${escapeHtml(row.id)}</td><td>${escapeHtml(row.count)}</td></tr>`).join("")}</tbody></table>`;
+  target.innerHTML = `<table><thead><tr><th>类型</th><th>名称 / ID</th><th>今日成功数</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${escapeHtml(row.kind)}</td><td>${escapeHtml(formatIdentity(row.name, row.id, row.kind))}</td><td>${escapeHtml(row.count)}</td></tr>`).join("")}</tbody></table>`;
+}
+
+function formatIdentity(name, id, kind) {
+  const displayName = String(name || "").trim();
+  const identityId = String(id || "").trim();
+  const idLabel = kind === "群" ? "群号" : "QQ号";
+  if (!identityId) return displayName || "未知";
+  return displayName ? `${displayName}（${idLabel} ${identityId}）` : `${idLabel} ${identityId}`;
 }
 
 function renderCreditTable() {
@@ -230,7 +247,7 @@ function renderCreditTable() {
     target.innerHTML = '<p class="empty">暂无额度记录。</p>';
     return;
   }
-  target.innerHTML = `<table><thead><tr><th>类型</th><th>ID</th><th>额度</th><th>签到</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${row.kind}</td><td>${escapeHtml(row.id)}</td><td>${escapeHtml(row.credits)}</td><td>${escapeHtml(row.checked_in || "-")}</td></tr>`).join("")}</tbody></table>`;
+  target.innerHTML = `<table><thead><tr><th>类型</th><th>名称 / ID</th><th>额度</th><th>签到</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${escapeHtml(row.kind)}</td><td>${escapeHtml(formatIdentity(row.name, row.id, row.kind))}</td><td>${escapeHtml(row.credits)}</td><td>${escapeHtml(row.checked_in || "-")}</td></tr>`).join("")}</tbody></table>`;
 }
 
 function formatBytes(rawBytes) {
@@ -258,6 +275,8 @@ function renderGenerationHistory() {
   const pagination = history.pagination || {};
   const records = history.records || [];
   const retentionDays = Math.max(1, Number(history.retention_days) || 7);
+  const favoriteOnly = bool(history.favorite_only);
+  state.historyFavoriteOnly = favoriteOnly;
 
   byId("history-total").textContent = String(summary.total ?? pagination.total ?? 0);
   byId("history-today").textContent = String(summary.today ?? 0);
@@ -271,6 +290,9 @@ function renderGenerationHistory() {
     `收藏 ${Number(summary.favorite) || 0} 条`,
     `锁定 ${Number(summary.locked) || 0} 条`,
   ].join(" · ");
+  const favoritesButton = byId("history-favorites");
+  favoritesButton.textContent = favoriteOnly ? "显示全部" : `只看收藏（${Number(summary.favorite) || 0}）`;
+  favoritesButton.setAttribute("aria-pressed", String(favoriteOnly));
 
   const target = byId("generation-history-list");
   if (!records.length) {
@@ -282,7 +304,8 @@ function renderGenerationHistory() {
       const isLocked = bool(record.locked);
       const preview = typeof record.preview === "string" ? record.preview : "";
       const prompt = String(record.prompt || "");
-      const owner = record.group_id ? `群 ${record.group_id}` : "私聊";
+      const user = formatIdentity(record.user_name, record.user_id, "用户");
+      const owner = record.group_id ? formatIdentity(record.group_name, record.group_id, "群") : "私聊";
       const dimension = record.width && record.height ? `${record.width} × ${record.height}` : "尺寸未知";
       const model = record.model || "未记录模型";
       const preset = record.preset || "无预设";
@@ -298,13 +321,14 @@ function renderGenerationHistory() {
             <div class="generation-record-topline">
               <div class="generation-record-title"><strong>${escapeHtml(taskType)}</strong><span>${escapeHtml(formatHistoryTime(record.created_at))}</span></div>
               <div class="generation-record-actions">
+                <button type="button" class="history-icon-button download" data-history-download="${escapeHtml(id)}" title="下载原图" aria-label="下载原图" ${record.image_available ? "" : "disabled"}>↓</button>
                 <button type="button" class="history-icon-button${isFavorite ? " active" : ""}" data-history-favorite="${escapeHtml(id)}" data-history-value="${String(!isFavorite)}" title="${isFavorite ? "取消收藏" : "收藏并永久保留"}" aria-label="${isFavorite ? "取消收藏" : "收藏并永久保留"}" aria-pressed="${String(isFavorite)}">★</button>
                 <button type="button" class="history-icon-button${isLocked ? " active locked" : ""}" data-history-lock="${escapeHtml(id)}" data-history-value="${String(!isLocked)}" title="${isLocked ? "解除锁定" : "锁定并永久保留"}" aria-label="${isLocked ? "解除锁定" : "锁定并永久保留"}" aria-pressed="${String(isLocked)}">▣</button>
                 <button type="button" class="history-icon-button danger" data-history-delete="${escapeHtml(id)}" title="删除成功记录" aria-label="删除成功记录">×</button>
               </div>
             </div>
             <div class="generation-meta">
-              <span>用户 ${escapeHtml(record.user_id || "未知")}</span><span>${escapeHtml(owner)}</span><span>${escapeHtml(dimension)}</span><span>${escapeHtml(formatBytes(record.size_bytes))}</span><span>${escapeHtml(model)}</span><span>${escapeHtml(preset)}</span>
+              <span>用户 ${escapeHtml(user)}</span><span>${escapeHtml(owner)}</span><span>${escapeHtml(dimension)}</span><span>${escapeHtml(formatBytes(record.size_bytes))}</span><span>${escapeHtml(model)}</span><span>${escapeHtml(preset)}</span>
             </div>
             ${protection.length ? `<div class="generation-protection">${protection.map((label) => `<span>${label}</span>`).join("")}</div>` : ""}
             <details class="generation-prompt"><summary>请求提示词</summary><pre>${escapeHtml(prompt || "未记录提示词")}</pre></details>
@@ -488,6 +512,7 @@ async function loadGenerationHistory(offset = 0) {
   const response = await bridge.apiGet("generation_history", {
     limit: HISTORY_PAGE_SIZE,
     offset: safeOffset,
+    favorite_only: state.historyFavoriteOnly ? "1" : "0",
   });
   if (!response?.success) throw new Error(response?.message || "无法读取成功记录");
   state.history = response;
@@ -502,7 +527,38 @@ async function updateGenerationRecord(action, id, nextValue) {
   });
   if (!response?.success) throw new Error(response?.message || "成功记录操作失败");
   showToast(response.message || "成功记录已更新");
-  await loadGenerationHistory(state.history?.pagination?.offset || 0);
+  const mustRestartFavoritePage = state.historyFavoriteOnly && action === "favorite" && !nextValue;
+  await loadGenerationHistory(mustRestartFavoritePage ? 0 : (state.history?.pagination?.offset || 0));
+}
+
+async function downloadGenerationImage(id) {
+  const recordId = String(id || "").trim();
+  if (!recordId) throw new Error("缺少成功记录 ID");
+  if (typeof bridge.download === "function") {
+    await bridge.download("generation_download", { id: recordId }, `linghui_${recordId}`);
+    return;
+  }
+  const response = await fetch(`${PLUGIN_API_BASE}/generation_download?id=${encodeURIComponent(recordId)}`, {
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload?.message || "原图下载失败");
+  }
+  const image = await response.blob();
+  if (!image.size) throw new Error("原图缓存为空");
+  const header = response.headers.get("content-disposition") || "";
+  const matchedName = /filename="?([^";]+)"?/i.exec(header);
+  const filename = matchedName?.[1] || `linghui_${recordId}.png`;
+  const url = URL.createObjectURL(image);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }
 
 async function deleteGenerationRecord(id) {
@@ -589,8 +645,9 @@ async function clearReference(preset) {
 }
 
 function switchTab(tab) {
+  const contentTab = tab === "favorites" ? "history" : tab;
   document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.tab === tab));
-  document.querySelectorAll(".tab-pane").forEach((pane) => pane.classList.toggle("active", pane.id === `tab-${tab}`));
+  document.querySelectorAll(".tab-pane").forEach((pane) => pane.classList.toggle("active", pane.id === `tab-${contentTab}`));
   const [title, subtitle] = titles[tab] || titles.overview;
   byId("page-title").textContent = title;
   byId("page-subtitle").textContent = subtitle;
@@ -604,14 +661,23 @@ document.addEventListener("click", async (event) => {
     }
     const tab = event.target.closest("[data-tab]");
     if (tab) {
-      switchTab(tab.dataset.tab);
-      if (tab.dataset.tab === "history") await loadGenerationHistory(state.history?.pagination?.offset || 0);
+      const tabName = tab.dataset.tab;
+      if (tabName === "favorites") state.historyFavoriteOnly = true;
+      if (tabName === "history") state.historyFavoriteOnly = false;
+      switchTab(tabName);
+      if (tabName === "history" || tabName === "favorites") await loadGenerationHistory(0);
       return;
     }
     if (event.target.closest("#save-button")) { await saveConfig(); return; }
     if (event.target.closest("#reload-button")) { await loadConfig(); return; }
     if (event.target.closest("#refresh-usage")) { await loadUsage(); showToast("用量已刷新"); return; }
     if (event.target.closest("#history-refresh")) { await loadGenerationHistory(state.history?.pagination?.offset || 0); showToast("成功记录已刷新"); return; }
+    if (event.target.closest("#history-favorites")) {
+      state.historyFavoriteOnly = !state.historyFavoriteOnly;
+      switchTab(state.historyFavoriteOnly ? "favorites" : "history");
+      await loadGenerationHistory(0);
+      return;
+    }
     if (event.target.closest("#history-cleanup")) { await cleanupGenerationHistory(); return; }
     if (event.target.closest("#history-prev")) {
       const offset = Math.max(0, Number(state.history?.pagination?.offset) || 0);
@@ -646,6 +712,8 @@ document.addEventListener("click", async (event) => {
     const clearButton = event.target.closest("[data-clear-ref]");
     if (clearButton) { await clearReference(clearButton.dataset.clearRef); return; }
     if (event.target.closest("#reference-clear")) { await clearReference(value("reference-preset")); }
+    const downloadButton = event.target.closest("[data-history-download]");
+    if (downloadButton) { await downloadGenerationImage(downloadButton.dataset.historyDownload); return; }
     const favoriteButton = event.target.closest("[data-history-favorite]");
     if (favoriteButton) {
       await updateGenerationRecord("favorite", favoriteButton.dataset.historyFavorite, bool(favoriteButton.dataset.historyValue));

@@ -46,6 +46,7 @@ class LinghuiDashboardApi:
             ("reference", self.reference, ["POST"], "Manage Linghui Studio reference images"),
             ("asset", self.asset, ["GET"], "Preview Linghui Studio reference image"),
             ("generation_history", self.generation_history, ["GET"], "Get Linghui Studio successful generation history"),
+            ("generation_download", self.generation_download, ["GET"], "Download one Linghui Studio successful image"),
             ("generation_record", self.generation_record, ["POST"], "Manage Linghui Studio successful generation history"),
         )
         for endpoint, handler, methods, description in routes:
@@ -86,6 +87,34 @@ class LinghuiDashboardApi:
             if normalized and normalized not in result:
                 result.append(normalized)
         return result[:2_000]
+
+    @staticmethod
+    def _identity_label_map(manager: Any) -> Dict[str, Dict[str, str]]:
+        """Return display labels without allowing them to replace canonical IDs."""
+        raw_labels: Any = None
+        getter = getattr(manager, "get_identity_label_map", None)
+        if callable(getter):
+            try:
+                raw_labels = getter()
+            except Exception:
+                raw_labels = None
+        if not isinstance(raw_labels, dict):
+            raw_labels = getattr(manager, "identity_labels", {})
+
+        normalized: Dict[str, Dict[str, str]] = {"users": {}, "groups": {}}
+        if not isinstance(raw_labels, dict):
+            return normalized
+        for kind in ("users", "groups"):
+            values = raw_labels.get(kind, {})
+            if not isinstance(values, dict):
+                continue
+            for identity_id, entry in values.items():
+                safe_id = norm_id(identity_id)
+                raw_name = entry.get("name", "") if isinstance(entry, dict) else entry
+                name = re.sub(r"\s+", " ", str(raw_name or "")).strip()[:160]
+                if safe_id and name:
+                    normalized[kind][safe_id] = name
+        return normalized
 
     @staticmethod
     def _mask_keys(value: Any) -> str:
@@ -534,11 +563,24 @@ class LinghuiDashboardApi:
 
     async def get_usage(self):
         manager = self.plugin.data_mgr
+        identity_labels = self._identity_label_map(manager)
         users = [
-            {"id": user_id, "credits": credits, "checked_in": manager.user_checkin_data.get(user_id, "")}
+            {
+                "id": user_id,
+                "name": identity_labels["users"].get(norm_id(user_id), ""),
+                "credits": credits,
+                "checked_in": manager.user_checkin_data.get(user_id, ""),
+            }
             for user_id, credits in sorted(manager.user_counts.items())
         ]
-        groups = [{"id": group_id, "credits": credits} for group_id, credits in sorted(manager.group_counts.items())]
+        groups = [
+            {
+                "id": group_id,
+                "name": identity_labels["groups"].get(norm_id(group_id), ""),
+                "credits": credits,
+            }
+            for group_id, credits in sorted(manager.group_counts.items())
+        ]
         raw_stats = manager.daily_stats if isinstance(manager.daily_stats, dict) else {}
         today = datetime.now().strftime("%Y-%m-%d")
         # The data file is reset on the next successful request. Until then,
@@ -556,6 +598,7 @@ class LinghuiDashboardApi:
             "users": users,
             "groups": groups,
             "daily_stats": stats,
+            "identity_labels": identity_labels,
             "references": manager.get_preset_ref_stats(),
         })
 
@@ -638,8 +681,14 @@ class LinghuiDashboardApi:
         """Return one paged, authenticated view of successful output cache records."""
         limit = self._as_int(request.args.get("limit", 24), 1, 100)
         offset = self._as_int(request.args.get("offset", 0), 0, 1_000_000)
+        favorite_only = self._as_bool(request.args.get("favorite_only", False))
         manager = self.plugin.data_mgr
-        records, total, summary = await manager.get_generation_history_page(limit=limit, offset=offset)
+        records, total, summary = await manager.get_generation_history_page(
+            limit=limit,
+            offset=offset,
+            favorite_only=favorite_only,
+        )
+        identity_labels = self._identity_label_map(manager)
 
         public_records: List[Dict[str, Any]] = []
         for record in records:
@@ -657,6 +706,10 @@ class LinghuiDashboardApi:
                 "created_at": str(record.get("created_at", "") or ""),
                 "user_id": norm_id(record.get("user_id")),
                 "group_id": norm_id(record.get("group_id")),
+                "user_name": str(record.get("user_name", "") or "").strip()[:160]
+                or identity_labels["users"].get(norm_id(record.get("user_id")), ""),
+                "group_name": str(record.get("group_name", "") or "").strip()[:160]
+                or identity_labels["groups"].get(norm_id(record.get("group_id")), ""),
                 "prompt": str(record.get("prompt", "") or ""),
                 "model": str(record.get("model", "") or ""),
                 "preset": str(record.get("preset", "") or ""),
@@ -681,10 +734,38 @@ class LinghuiDashboardApi:
                 "has_more": offset + len(public_records) < total,
             },
             "summary": summary,
+            "favorite_only": favorite_only,
             "retention_days": self._as_int(
                 self.plugin.conf.get("generation_cache_retention_days", 7), 1, 365
             ),
         })
+
+    async def generation_download(self):
+        """Send one cached original image as an authenticated attachment."""
+        record_id = str(request.args.get("id", "") or "").strip()
+        if not record_id or len(record_id) > 80:
+            return jsonify({"success": False, "message": "请提供有效的成功记录 ID。"}), 400
+
+        manager = self.plugin.data_mgr
+        record = await manager.get_generation_record(record_id)
+        if record is None:
+            return jsonify({"success": False, "message": "未找到成功记录。"}), 404
+        image_path = manager.get_generation_image_path(record)
+        if image_path is None:
+            return jsonify({"success": False, "message": "原图缓存已不可用。"}), 404
+
+        suffix = image_path.suffix.lower()
+        if not re.fullmatch(r"\.[a-z0-9]{1,8}", suffix):
+            suffix = ".img"
+        safe_id = re.sub(r"[^A-Za-z0-9_-]", "", record_id)[:20] or "image"
+        download_name = f"linghui_{safe_id}{suffix}"
+        return await send_file(
+            image_path,
+            mimetype=mimetypes.guess_type(image_path.name)[0] or "application/octet-stream",
+            as_attachment=True,
+            attachment_filename=download_name,
+            cache_timeout=0,
+        )
 
     async def generation_record(self):
         """Update protection flags, explicitly delete, or clean expired cache records."""
