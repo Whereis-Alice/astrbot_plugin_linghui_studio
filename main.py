@@ -17,6 +17,10 @@ from .data_manager import DataManager
 from .image_manager import ImageManager
 from .access_control import AccessPolicy
 from .channel_router import DrawingChannelRouter
+from .config_persistence import (
+    merge_native_fallback_snapshots,
+    should_restore_fallback_value,
+)
 from .context_manager import ContextManager, LLMTaskAnalyzer
 from .dashboard_api import DRAWING_CHANNEL_TEMPLATE_KEY, LinghuiDashboardApi, PLUGIN_NAME
 from .utils import (
@@ -140,7 +144,7 @@ def _direct_command_only(handler):
     PLUGIN_NAME,
     "Whereis-Alice",
     "灵绘工坊：带参考图专用渠道回退、受控群白名单、自定义绘图反向提示词与可视化管理的文生图/图生图插件",
-    "3.3.3",
+    "3.3.4",
     "https://github.com/Whereis-Alice/astrbot_plugin_linghui_studio",
 )
 class LinghuiStudioPlugin(Star):
@@ -180,7 +184,8 @@ class LinghuiStudioPlugin(Star):
     _DYNAMIC_CONFIG_META_KEY = "__dynamic_overrides__"
     _DYNAMIC_CONFIG_VERSION_KEY = "__dynamic_config_version__"
     _DYNAMIC_CONFIG_UPDATED_AT_KEY = "__dynamic_updated_at__"
-    _DYNAMIC_CONFIG_VERSION = 3
+    _DYNAMIC_CONFIG_NATIVE_SNAPSHOT_KEY = "__native_values_at_fallback__"
+    _DYNAMIC_CONFIG_VERSION = 5
     _LEGACY_DYNAMIC_RESTORE_KEYS = {
         "model",
         "text_to_image_model",
@@ -191,26 +196,6 @@ class LinghuiStudioPlugin(Star):
         "generic_api_keys",
         "gemini_api_keys",
         "text_to_image_api_keys",
-    }
-    _COMMAND_PRIORITY_DYNAMIC_KEYS = {
-        "model",
-        "text_to_image_model",
-        "interface_mode",
-        "api_keys",
-        "api_mode",
-        "prompt_list",
-        "active_drawing_channel",
-    }
-    _PANEL_PRIORITY_DYNAMIC_KEYS = {
-        "generic_api_url",
-        "gemini_api_url",
-        "text_to_image_api_url",
-        "base_url",
-        "custom_drawing_negative_prompt",
-        "generation_cache_retention_days",
-        "dashboard_theme",
-        "drawing_channels",
-        "reference_image_drawing_channel",
     }
     _COMMAND_ROUTES = (
         (("预设参考图添加", "lmref添加", "添加参考图"), "on_add_preset_ref", "灵绘预设参考图添加"),
@@ -449,63 +434,33 @@ class LinghuiStudioPlugin(Star):
             logger.warning(f"LinghuiStudio: 读取配置默认值失败，将使用保守恢复策略: {e}")
             return {}
 
-    @staticmethod
-    def _is_empty_config_value(value) -> bool:
-        return value is None or value == "" or value == [] or value == {}
-
     def _should_restore_dynamic_value(
             self,
             key: str,
             dynamic_value,
             has_override_meta: bool,
             schema_defaults: Dict[str, Any],
-            dynamic_backup_is_newer: Optional[bool] = None,
+            native_values_at_fallback: Dict[str, Any],
+            native_config_is_newer: Optional[bool],
     ) -> Tuple[bool, str]:
-        """决定是否用 dynamic_config 覆盖当前配置。
+        return should_restore_fallback_value(
+            key,
+            dynamic_value,
+            dynamic_keys=self._DYNAMIC_CONFIG_KEYS,
+            legacy_restore_keys=self._LEGACY_DYNAMIC_RESTORE_KEYS,
+            current_config=self.conf,
+            has_override_meta=has_override_meta,
+            schema_defaults=schema_defaults,
+            has_native_snapshot=key in native_values_at_fallback,
+            native_value_at_fallback=native_values_at_fallback.get(key),
+            native_config_is_newer=native_config_is_newer,
+        )
 
-        原则：
-        1. 新版带元数据的命令改动仍然可以在重启后恢复；
-        2. 如果 AstrBot 当前配置已经是非默认值，说明面板保存过，优先保留面板值；
-        3. 旧版无元数据备份只恢复命令可能改动过的字段，避免老地址反复盖回去。
-        """
-        if key not in self._DYNAMIC_CONFIG_KEYS:
-            return False, "unknown-key"
-
-        current_exists = key in self.conf
-        current_value = self.conf.get(key) if current_exists else None
-        if current_exists and current_value == dynamic_value:
-            return False, "same-value"
-
-        has_default = key in schema_defaults
-        default_value = schema_defaults.get(key)
-        current_is_default = has_default and current_value == default_value
-
-        if has_override_meta:
-            if current_exists and not current_is_default:
-                if key in self._PANEL_PRIORITY_DYNAMIC_KEYS:
-                    return False, "keep-panel-value"
-                if dynamic_backup_is_newer is True:
-                    return True, "metadata-newer"
-                if dynamic_backup_is_newer is None and key in self._COMMAND_PRIORITY_DYNAMIC_KEYS:
-                    return True, "metadata-command-priority"
-                return False, "keep-panel-value"
-            return True, "metadata-override"
-
-        if key not in self._LEGACY_DYNAMIC_RESTORE_KEYS:
-            return False, "legacy-url-or-unsupported"
-
-        if self._is_empty_config_value(dynamic_value):
-            return False, "legacy-empty"
-
-        if has_default and dynamic_value == default_value:
-            return False, "legacy-default"
-
-        if current_exists and not current_is_default:
-            return False, "keep-panel-value"
-
-        return True, "legacy-compatible"
-
-    def _build_dynamic_config_backup(self, override_keys) -> Dict[str, Any]:
+    def _build_dynamic_config_backup(
+            self,
+            override_keys,
+            native_values_at_fallback: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         dynamic_keys = list(self._DYNAMIC_CONFIG_KEYS)
         clean_overrides = sorted({k for k in override_keys if k in dynamic_keys})
 
@@ -517,88 +472,62 @@ class LinghuiStudioPlugin(Star):
         save_data[self._DYNAMIC_CONFIG_META_KEY] = clean_overrides
         save_data[self._DYNAMIC_CONFIG_VERSION_KEY] = self._DYNAMIC_CONFIG_VERSION
         save_data[self._DYNAMIC_CONFIG_UPDATED_AT_KEY] = datetime.now().isoformat(timespec="seconds")
+        snapshots = native_values_at_fallback or {}
+        if isinstance(snapshots, dict):
+            save_data[self._DYNAMIC_CONFIG_NATIVE_SNAPSHOT_KEY] = {
+                key: snapshots[key]
+                for key in clean_overrides
+                if key in snapshots
+            }
         return save_data
 
-    def _write_dynamic_config_backup(self, config_path: str, override_keys) -> None:
+    def _write_dynamic_config_backup(
+            self,
+            config_path: str,
+            override_keys,
+            native_values_at_fallback: Optional[Dict[str, Any]] = None,
+    ) -> None:
         with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(self._build_dynamic_config_backup(override_keys), f, ensure_ascii=False, indent=2)
+            json.dump(
+                self._build_dynamic_config_backup(override_keys, native_values_at_fallback),
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
 
-    @staticmethod
-    def _coerce_existing_file_path(value) -> Optional[str]:
+    def _read_native_config_values(self, keys) -> Dict[str, Any]:
+        """Read persisted values before attempting a native config save."""
+        import os
+
+        native_path = getattr(self.conf, "config_path", None)
+        if not native_path:
+            return {}
         try:
-            import os
-            if not value:
-                return None
+            with open(os.fspath(native_path), encoding="utf-8-sig") as file:
+                raw = json.load(file)
+            if not isinstance(raw, dict):
+                return {}
+            return {key: raw[key] for key in keys if key in raw}
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return {}
 
-            path = os.fspath(value)
-            if os.path.isfile(path):
-                return path
-        except Exception:
+    def _native_config_freshness_vs_dynamic_backup(self, dynamic_path: str) -> Optional[bool]:
+        """Compare source file mtimes for old fallback files without snapshots."""
+        import os
+
+        native_path = getattr(self.conf, "config_path", None)
+        if not native_path:
             return None
+        try:
+            native_mtime = os.path.getmtime(native_path)
+            dynamic_mtime = os.path.getmtime(dynamic_path)
+        except (OSError, TypeError):
+            return None
+        if native_mtime > dynamic_mtime:
+            return True
+        if dynamic_mtime > native_mtime:
+            return False
         return None
-
-    def _get_config_source_mtime(self) -> Optional[float]:
-        """尽量定位 AstrBot 原始配置文件，用 mtime 判断面板保存和命令备份谁更新。"""
-        import os
-
-        candidates = []
-        attr_names = (
-            "path",
-            "file_path",
-            "filepath",
-            "config_path",
-            "_path",
-            "_file_path",
-            "_filepath",
-            "_config_path",
-        )
-        key_names = (
-            "__config_path__",
-            "_config_path",
-            "config_path",
-            "path",
-        )
-
-        for attr in attr_names:
-            candidates.append(getattr(self.conf, attr, None))
-
-        for key in key_names:
-            try:
-                candidates.append(self.conf.get(key))
-            except Exception:
-                pass
-
-        try:
-            for value in vars(self.conf).values():
-                if isinstance(value, (str, os.PathLike)):
-                    candidates.append(value)
-        except Exception:
-            pass
-
-        mtimes = []
-        for candidate in candidates:
-            path = self._coerce_existing_file_path(candidate)
-            if path:
-                try:
-                    mtimes.append(os.path.getmtime(path))
-                except Exception:
-                    pass
-
-        return max(mtimes) if mtimes else None
-
-    def _is_dynamic_backup_newer_than_config(self, config_path: str) -> Optional[bool]:
-        import os
-
-        config_mtime = self._get_config_source_mtime()
-        if config_mtime is None:
-            return None
-
-        try:
-            dynamic_mtime = os.path.getmtime(config_path)
-        except Exception:
-            return None
-
-        return dynamic_mtime >= config_mtime
 
     def _is_message_processed(self, msg_id: str) -> bool:
         """
@@ -961,8 +890,10 @@ class LinghuiStudioPlugin(Star):
         if removed_from_runtime > 0:
             logger.info(f"LinghuiStudio: 已从运行时配置中清理 {removed_from_runtime} 个废弃强力模式字段")
 
-        # 尝试加载动态配置备份。命令改动过的字段需要覆盖 schema 默认值，
-        # 但面板里已经保存的新配置要优先，避免地址/Key 被旧备份盖回去。
+        # dynamic_config.json is a persistence fallback for environments where
+        # AstrBot cannot save plugin configuration. Each fallback can retain a
+        # snapshot of the native value it replaced, so a later native save is
+        # recognized without confusing AstrBot's schema-default write for one.
         import os
         import json
         config_path = os.path.join(StarTools.get_data_dir(), "dynamic_config.json")
@@ -986,6 +917,10 @@ class LinghuiStudioPlugin(Star):
                 dynamic_keys = set(self._DYNAMIC_CONFIG_KEYS)
                 override_keys = dynamic_conf.get(self._DYNAMIC_CONFIG_META_KEY)
                 has_override_meta = isinstance(override_keys, list)
+                raw_native_values = dynamic_conf.get(self._DYNAMIC_CONFIG_NATIVE_SNAPSHOT_KEY)
+                native_values_at_fallback = (
+                    dict(raw_native_values) if isinstance(raw_native_values, dict) else {}
+                )
                 if has_override_meta:
                     keys_to_restore = [k for k in override_keys if k in dynamic_keys]
                     active_override_keys = set(keys_to_restore)
@@ -996,7 +931,7 @@ class LinghuiStudioPlugin(Star):
                     dynamic_backup_changed = True
 
                 schema_defaults = self._get_schema_defaults()
-                dynamic_backup_is_newer = self._is_dynamic_backup_newer_than_config(config_path)
+                native_config_is_newer = self._native_config_freshness_vs_dynamic_backup(config_path)
                 restored_keys = []
                 skip_reasons: Dict[str, int] = {}
                 for k in keys_to_restore:
@@ -1008,7 +943,12 @@ class LinghuiStudioPlugin(Star):
 
                     v = dynamic_conf.get(k)
                     should_restore, reason = self._should_restore_dynamic_value(
-                        k, v, has_override_meta, schema_defaults, dynamic_backup_is_newer
+                        k,
+                        v,
+                        has_override_meta,
+                        schema_defaults,
+                        native_values_at_fallback,
+                        native_config_is_newer,
                     )
 
                     if should_restore:
@@ -1019,7 +959,12 @@ class LinghuiStudioPlugin(Star):
                     else:
                         skipped_count += 1
                         skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
-                        if reason == "keep-panel-value":
+                        if reason in {
+                            "keep-native-value",
+                            "native-changed",
+                            "same-value",
+                            "newer-native-config",
+                        }:
                             active_override_keys.discard(k)
                             dynamic_backup_changed = True
 
@@ -1036,7 +981,11 @@ class LinghuiStudioPlugin(Star):
                 if dynamic_backup_changed or (
                         has_override_meta and normalized_overrides != sorted(keys_to_restore)
                 ):
-                    self._write_dynamic_config_backup(config_path, normalized_overrides)
+                    self._write_dynamic_config_backup(
+                        config_path,
+                        normalized_overrides,
+                        native_values_at_fallback,
+                    )
                     logger.info("LinghuiStudio: 已规范化 dynamic_config.json，后续不会反复覆盖面板配置")
             except Exception as e:
                 logger.error(f"LinghuiStudio: 恢复动态配置失败 {e}")
@@ -1053,7 +1002,7 @@ class LinghuiStudioPlugin(Star):
 
         auto_detect_status = "已启用" if self._llm_auto_detect else "未启用"
         logger.info(
-            f"LinghuiStudio 已加载 v3.3.3 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
+            f"LinghuiStudio 已加载 v3.3.4 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
 
     def _generation_cache_retention_days(self) -> int:
         """Return a bounded retention period for successful output cache files."""
@@ -1178,6 +1127,17 @@ class LinghuiStudioPlugin(Star):
         try:
             self._purge_deprecated_config_keys()
 
+            dynamic_keys = set(self._DYNAMIC_CONFIG_KEYS)
+            changed_dynamic_keys = {
+                key for key in (changed_keys or []) if key in dynamic_keys
+            }
+            # Capture the persisted native values *before* trying to save. If
+            # that save fails, these snapshots let initialize() distinguish a
+            # real later dashboard save from the old on-disk value.
+            native_values_before_save = self._read_native_config_values(
+                changed_dynamic_keys
+            ) if changed_dynamic_keys else {}
+
             # 尝试 AstrBot 原生配置保存
             saved = False
             try:
@@ -1198,8 +1158,9 @@ class LinghuiStudioPlugin(Star):
             import json
             config_path = os.path.join(StarTools.get_data_dir(), "dynamic_config.json")
 
-            dynamic_keys = list(self._DYNAMIC_CONFIG_KEYS)
+            dynamic_keys = set(self._DYNAMIC_CONFIG_KEYS)
             previous_overrides = set()
+            previous_native_snapshots: Dict[str, Any] = {}
             if os.path.exists(config_path):
                 try:
                     with open(config_path, "r", encoding="utf-8") as rf:
@@ -1214,16 +1175,44 @@ class LinghuiStudioPlugin(Star):
                                 if k in self._LEGACY_DYNAMIC_RESTORE_KEYS
                                 and previous_data.get(k) not in (None, "", [], {})
                             }
+                        raw_snapshots = previous_data.get(
+                            self._DYNAMIC_CONFIG_NATIVE_SNAPSHOT_KEY
+                        )
+                        if isinstance(raw_snapshots, dict):
+                            previous_native_snapshots = {
+                                key: value
+                                for key, value in raw_snapshots.items()
+                                if key in dynamic_keys
+                            }
                 except Exception:
                     previous_overrides = set()
+                    previous_native_snapshots = {}
 
-            if changed_keys:
-                current_overrides = {k for k in changed_keys if k in dynamic_keys}
+            if saved:
+                # The native plugin config has just been written successfully.
+                # It is now authoritative, so retaining old fallback markers
+                # would allow a stale dynamic_config.json to undo a later
+                # save from AstrBot's own configuration page on hot reload.
+                override_keys = []
+            elif changed_keys is not None:
+                current_overrides = changed_dynamic_keys
                 override_keys = sorted(previous_overrides | current_overrides)
             else:
                 override_keys = sorted(previous_overrides or dynamic_keys)
 
-            self._write_dynamic_config_backup(config_path, override_keys)
+            native_values_at_fallback = merge_native_fallback_snapshots(
+                previous_native_snapshots,
+                override_keys=override_keys,
+                changed_dynamic_keys=changed_dynamic_keys,
+                native_values_before_save=native_values_before_save,
+                native_save_succeeded=saved,
+            )
+
+            self._write_dynamic_config_backup(
+                config_path,
+                override_keys,
+                native_values_at_fallback,
+            )
 
             if not saved:
                 logger.info("LinghuiStudio: 无法通过原生方法保存，已使用本地 dynamic_config.json 进行了持久化")

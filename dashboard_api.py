@@ -462,23 +462,32 @@ class LinghuiDashboardApi:
         payload = await self._json_body()
         async with self._lock:
             try:
+                # Keep the native-save fallback scoped to fields that this
+                # request actually changes. This is especially important for
+                # channel selectors whose empty value has a real meaning.
+                changed_dynamic_keys: set[str] = set()
                 settings = payload.get("settings", {})
                 if isinstance(settings, dict):
                     for key in ("model", "text_to_image_model", "image_resolution", "image_aspect_ratio"):
                         if key in settings:
                             self.plugin.conf[key] = str(settings[key] or "").strip()
+                            if key in {"model", "text_to_image_model"}:
+                                changed_dynamic_keys.add(key)
                     for key, minimum, maximum in (
                         ("timeout", 5, 900),
                         ("generation_cache_retention_days", 1, 365),
                     ):
                         if key in settings:
                             self.plugin.conf[key] = self._as_int(settings[key], minimum, maximum)
+                            if key == "generation_cache_retention_days":
+                                changed_dynamic_keys.add(key)
                     for key in ("show_model_info", "enable_preset_ref_images", "enable_persona_mode"):
                         if key in settings:
                             self.plugin.conf[key] = self._as_bool(settings[key])
 
                 if "channels" in payload:
                     self.plugin.conf["drawing_channels"] = self._normalize_channels(payload["channels"])
+                    changed_dynamic_keys.add("drawing_channels")
                 if "active_drawing_channel" in payload:
                     active_channel = str(payload["active_drawing_channel"] or "").strip()
                     channel_ids = {
@@ -489,6 +498,7 @@ class LinghuiDashboardApi:
                     if active_channel and active_channel not in channel_ids:
                         raise ValueError("当前主渠道必须是已配置的渠道 ID。")
                     self.plugin.conf["active_drawing_channel"] = active_channel
+                    changed_dynamic_keys.add("active_drawing_channel")
                 if "reference_image_drawing_channel" in payload:
                     reference_channel = str(payload["reference_image_drawing_channel"] or "").strip()
                     channel_ids = {
@@ -499,6 +509,7 @@ class LinghuiDashboardApi:
                     if reference_channel and reference_channel not in channel_ids:
                         raise ValueError("带参考图优先渠道必须是已配置的渠道 ID。")
                     self.plugin.conf["reference_image_drawing_channel"] = reference_channel
+                    changed_dynamic_keys.add("reference_image_drawing_channel")
 
                 commands = payload.get("commands", {})
                 if isinstance(commands, dict):
@@ -552,6 +563,7 @@ class LinghuiDashboardApi:
                         self.plugin.conf["custom_drawing_negative_prompt"] = str(
                             prompt_tools["custom_drawing_negative_prompt"] or ""
                         ).strip()[:12_000]
+                        changed_dynamic_keys.add("custom_drawing_negative_prompt")
                     if str(prompt_tools.get("prompt_processor_api_key", "") or "").strip():
                         self.plugin.conf["prompt_processor_api_key"] = str(prompt_tools["prompt_processor_api_key"]).strip()
                     if self._as_bool(prompt_tools.get("clear_prompt_processor_api_key", False)):
@@ -590,11 +602,12 @@ class LinghuiDashboardApi:
                     await self.plugin.data_mgr.replace_user_prompts(preset_map)
                     for removed_name in previous_names - set(preset_map):
                         await self.plugin.data_mgr.clear_preset_ref_images(removed_name)
+                    changed_dynamic_keys.add("prompt_list")
 
                 self.plugin.data_mgr.reload_prompts()
                 self.plugin._load_persona_scenes()
                 self.plugin._persona_mode = self._as_bool(self.plugin.conf.get("enable_persona_mode", False))
-                self.plugin._save_config()
+                self.plugin._save_config(sorted(changed_dynamic_keys))
                 await self.plugin.api_mgr.refresh()
             except ValueError as exc:
                 return jsonify({"success": False, "message": str(exc)}), 400

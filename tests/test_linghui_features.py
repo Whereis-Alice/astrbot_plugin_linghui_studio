@@ -390,11 +390,12 @@ class DashboardSaveTest(unittest.IsolatedAsyncioTestCase):
         async def refresh():
             pass
 
+        saved_keys = []
         plugin = types.SimpleNamespace(
             conf={},
             data_mgr=DataManager(),
             _load_persona_scenes=lambda: None,
-            _save_config=lambda: None,
+            _save_config=lambda changed_keys=None: saved_keys.append(changed_keys),
             api_mgr=types.SimpleNamespace(refresh=refresh),
         )
         api = self.DashboardApi(plugin)
@@ -410,6 +411,55 @@ class DashboardSaveTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(response["success"])
         self.assertEqual(plugin.conf["custom_drawing_negative_prompt"], "blurry, watermark")
         self.assertEqual(plugin.conf["generation_cache_retention_days"], 14)
+        self.assertEqual(
+            saved_keys,
+            [["custom_drawing_negative_prompt", "generation_cache_retention_days"]],
+        )
+
+    async def test_channel_selectors_are_saved_as_explicit_changed_fields(self):
+        class DataManager:
+            user_prompts = {}
+
+            def reload_prompts(self):
+                pass
+
+        async def refresh():
+            pass
+
+        saved_keys = []
+        plugin = types.SimpleNamespace(
+            conf={},
+            data_mgr=DataManager(),
+            _load_persona_scenes=lambda: None,
+            _save_config=lambda changed_keys=None: saved_keys.append(changed_keys),
+            api_mgr=types.SimpleNamespace(refresh=refresh),
+        )
+        api = self.DashboardApi(plugin)
+
+        async def request_body():
+            return {
+                "channels": [
+                    {"id": "primary", "base_url": "https://primary.example"},
+                    {"id": "reference", "base_url": "https://reference.example"},
+                ],
+                "active_drawing_channel": "primary",
+                "reference_image_drawing_channel": "reference",
+            }
+
+        api._json_body = request_body
+        response = await api.save_config()
+
+        self.assertTrue(response["success"])
+        self.assertEqual(plugin.conf["active_drawing_channel"], "primary")
+        self.assertEqual(plugin.conf["reference_image_drawing_channel"], "reference")
+        self.assertEqual(
+            saved_keys,
+            [[
+                "active_drawing_channel",
+                "drawing_channels",
+                "reference_image_drawing_channel",
+            ]],
+        )
 
 
 class DashboardThemeSaveTest(unittest.IsolatedAsyncioTestCase):
