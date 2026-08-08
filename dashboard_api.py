@@ -25,6 +25,7 @@ DRAWING_CHANNEL_TEMPLATE_KEY = "drawing_channel"
 _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _PREVIEW_MAX_BYTES = 300 * 1024
+_HISTORY_PREVIEW_MAX_BYTES = 120 * 1024
 _INTERFACE_MODES = {"openai_image", "openai_chat", "gemini_official", "custom_endpoint"}
 
 
@@ -44,6 +45,8 @@ class LinghuiDashboardApi:
             ("reset_credit", self.reset_credit, ["POST"], "Reset Linghui Studio credits"),
             ("reference", self.reference, ["POST"], "Manage Linghui Studio reference images"),
             ("asset", self.asset, ["GET"], "Preview Linghui Studio reference image"),
+            ("generation_history", self.generation_history, ["GET"], "Get Linghui Studio successful generation history"),
+            ("generation_record", self.generation_record, ["POST"], "Manage Linghui Studio successful generation history"),
         )
         for endpoint, handler, methods, description in routes:
             self.plugin.context.register_web_api(
@@ -142,8 +145,15 @@ class LinghuiDashboardApi:
         return path
 
     @staticmethod
-    def _reference_preview_data_url(path: Path) -> str:
+    def _image_preview_data_url(
+            path: Path,
+            *,
+            max_bytes: int = _PREVIEW_MAX_BYTES,
+            max_edge: int = 560,
+    ) -> str:
         """Make a small inline JPEG preview for a Bridge-authenticated page response."""
+        max_bytes = max(16 * 1024, min(int(max_bytes), _PREVIEW_MAX_BYTES))
+        max_edge = max(160, min(int(max_edge), 1_024))
         try:
             with PILImage.open(path) as source:
                 image = ImageOps.exif_transpose(source)
@@ -156,9 +166,13 @@ class LinghuiDashboardApi:
                         image = image.convert("RGB")
 
                 encoded = b""
-                for max_edge, quality in ((560, 82), (448, 76), (336, 70)):
+                for edge, quality in (
+                    (max_edge, 82),
+                    (max(int(max_edge * 0.8), 224), 76),
+                    (max(int(max_edge * 0.6), 160), 68),
+                ):
                     preview = image.copy()
-                    preview.thumbnail((max_edge, max_edge), PILImage.Resampling.LANCZOS)
+                    preview.thumbnail((edge, edge), PILImage.Resampling.LANCZOS)
                     buffer = io.BytesIO()
                     preview.save(
                         buffer,
@@ -168,13 +182,18 @@ class LinghuiDashboardApi:
                         progressive=True,
                     )
                     encoded = buffer.getvalue()
-                    if len(encoded) <= _PREVIEW_MAX_BYTES:
+                    if len(encoded) <= max_bytes:
                         break
         except Exception as exc:
-            logger.warning("Linghui dashboard could not create a reference preview: %s", exc)
+            logger.warning("Linghui dashboard could not create an image preview: %s", exc)
             return ""
 
         return f"data:image/jpeg;base64,{base64.b64encode(encoded).decode('ascii')}"
+
+    @staticmethod
+    def _reference_preview_data_url(path: Path) -> str:
+        """Backward-compatible preview helper used by reference image tests."""
+        return LinghuiDashboardApi._image_preview_data_url(path)
 
     async def _reference_previews(self, paths: List[str]) -> List[str]:
         previews: List[str] = []
@@ -227,6 +246,9 @@ class LinghuiDashboardApi:
                 "image_resolution": str(self.plugin.conf.get("image_resolution", "1K") or "1K"),
                 "image_aspect_ratio": str(self.plugin.conf.get("image_aspect_ratio", "1:1") or "1:1"),
                 "timeout": self._as_int(self.plugin.conf.get("timeout", 120), 5, 900),
+                "generation_cache_retention_days": self._as_int(
+                    self.plugin.conf.get("generation_cache_retention_days", 7), 1, 365
+                ),
                 "show_model_info": self._as_bool(self.plugin.conf.get("show_model_info", False)),
                 "enable_preset_ref_images": self._as_bool(self.plugin.conf.get("enable_preset_ref_images", True)),
                 "enable_persona_mode": self._as_bool(self.plugin.conf.get("enable_persona_mode", False)),
@@ -384,9 +406,12 @@ class LinghuiDashboardApi:
                     for key in ("model", "text_to_image_model", "image_resolution", "image_aspect_ratio"):
                         if key in settings:
                             self.plugin.conf[key] = str(settings[key] or "").strip()
-                    for key in ("timeout",):
+                    for key, minimum, maximum in (
+                        ("timeout", 5, 900),
+                        ("generation_cache_retention_days", 1, 365),
+                    ):
                         if key in settings:
-                            self.plugin.conf[key] = self._as_int(settings[key], 5, 900)
+                            self.plugin.conf[key] = self._as_int(settings[key], minimum, maximum)
                     for key in ("show_model_info", "enable_preset_ref_images", "enable_persona_mode"):
                         if key in settings:
                             self.plugin.conf[key] = self._as_bool(settings[key])
@@ -608,3 +633,123 @@ class LinghuiDashboardApi:
         if path is None:
             return jsonify({"success": False, "message": "参考图路径无效。"}), 404
         return await send_file(path, mimetype=mimetypes.guess_type(path.name)[0] or "application/octet-stream")
+
+    async def generation_history(self):
+        """Return one paged, authenticated view of successful output cache records."""
+        limit = self._as_int(request.args.get("limit", 24), 1, 100)
+        offset = self._as_int(request.args.get("offset", 0), 0, 1_000_000)
+        manager = self.plugin.data_mgr
+        records, total, summary = await manager.get_generation_history_page(limit=limit, offset=offset)
+
+        public_records: List[Dict[str, Any]] = []
+        for record in records:
+            image_path = manager.get_generation_image_path(record)
+            preview = ""
+            if image_path is not None:
+                preview = await asyncio.to_thread(
+                    self._image_preview_data_url,
+                    image_path,
+                    max_bytes=_HISTORY_PREVIEW_MAX_BYTES,
+                    max_edge=440,
+                )
+            public_records.append({
+                "id": str(record.get("id", "") or ""),
+                "created_at": str(record.get("created_at", "") or ""),
+                "user_id": norm_id(record.get("user_id")),
+                "group_id": norm_id(record.get("group_id")),
+                "prompt": str(record.get("prompt", "") or ""),
+                "model": str(record.get("model", "") or ""),
+                "preset": str(record.get("preset", "") or ""),
+                "task_type": str(record.get("task_type", "") or ""),
+                "image_format": str(record.get("image_format", "") or ""),
+                "width": self._as_int(record.get("width"), 0, 100_000),
+                "height": self._as_int(record.get("height"), 0, 100_000),
+                "size_bytes": self._as_int(record.get("size_bytes"), 0, 2_147_483_647),
+                "favorite": self._as_bool(record.get("favorite", False)),
+                "locked": self._as_bool(record.get("locked", False)),
+                "image_available": image_path is not None,
+                "preview": preview,
+            })
+
+        return jsonify({
+            "success": True,
+            "records": public_records,
+            "pagination": {
+                "offset": offset,
+                "limit": limit,
+                "total": total,
+                "has_more": offset + len(public_records) < total,
+            },
+            "summary": summary,
+            "retention_days": self._as_int(
+                self.plugin.conf.get("generation_cache_retention_days", 7), 1, 365
+            ),
+        })
+
+    async def generation_record(self):
+        """Update protection flags, explicitly delete, or clean expired cache records."""
+        payload = await self._json_body()
+        action = str(payload.get("action", "") or "").strip().lower()
+        manager = self.plugin.data_mgr
+
+        async with self._lock:
+            if action in {"favorite", "lock"}:
+                record_id = str(payload.get("id", "") or "").strip()
+                if not record_id or len(record_id) > 80:
+                    return jsonify({"success": False, "message": "请提供有效的成功记录 ID。"}), 400
+                desired_value = self._as_bool(payload.get("value", False))
+                record = await manager.update_generation_record_flags(
+                    record_id,
+                    favorite=desired_value if action == "favorite" else None,
+                    locked=desired_value if action == "lock" else None,
+                )
+                if record is None:
+                    return jsonify({"success": False, "message": "未找到成功记录。"}), 404
+                label = "收藏" if action == "favorite" else "锁定"
+                state = "已开启" if desired_value else "已取消"
+                return jsonify({
+                    "success": True,
+                    "message": f"{label}{state}。",
+                    "record": {
+                        "id": record.get("id", ""),
+                        "favorite": self._as_bool(record.get("favorite", False)),
+                        "locked": self._as_bool(record.get("locked", False)),
+                    },
+                })
+
+            if action == "delete":
+                record_id = str(payload.get("id", "") or "").strip()
+                if not record_id or len(record_id) > 80:
+                    return jsonify({"success": False, "message": "请提供有效的成功记录 ID。"}), 400
+                deleted = await manager.delete_generation_record(record_id)
+                if not deleted:
+                    return jsonify({"success": False, "message": "未找到记录或缓存图片无法删除。"}), 404
+                return jsonify({"success": True, "message": "成功记录已删除。"})
+
+            if action == "cleanup":
+                cleanup = getattr(self.plugin, "_cleanup_generation_cache", None)
+                if callable(cleanup):
+                    result = await cleanup()
+                else:
+                    result = await manager.cleanup_generation_cache(
+                        self._as_int(
+                            self.plugin.conf.get("generation_cache_retention_days", 7), 1, 365
+                        )
+                    )
+                removed_records = self._as_int(result.get("removed_records"), 0, 1_000_000)
+                removed_images = self._as_int(result.get("removed_images"), 0, 1_000_000)
+                removed_orphans = self._as_int(result.get("removed_orphans"), 0, 1_000_000)
+                return jsonify({
+                    "success": True,
+                    "message": (
+                        f"已清理 {removed_records} 条过期记录、{removed_images} 张缓存图片"
+                        f"和 {removed_orphans} 个遗留文件。"
+                    ),
+                    "result": {
+                        "removed_records": removed_records,
+                        "removed_images": removed_images,
+                        "removed_orphans": removed_orphans,
+                    },
+                })
+
+        return jsonify({"success": False, "message": "未知成功记录操作。"}), 400

@@ -7,7 +7,7 @@ import sys
 import tempfile
 import types
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from PIL import Image
 
@@ -268,6 +268,8 @@ class DashboardRegistrationTest(unittest.TestCase):
                 "/astrbot_plugin_linghui_studio/reset_credit",
                 "/astrbot_plugin_linghui_studio/reference",
                 "/astrbot_plugin_linghui_studio/asset",
+                "/astrbot_plugin_linghui_studio/generation_history",
+                "/astrbot_plugin_linghui_studio/generation_record",
             ],
         )
 
@@ -342,12 +344,16 @@ class DashboardSaveTest(unittest.IsolatedAsyncioTestCase):
         api = self.DashboardApi(plugin)
 
         async def request_body():
-            return {"prompt_tools": {"custom_drawing_negative_prompt": "blurry, watermark"}}
+            return {
+                "settings": {"generation_cache_retention_days": 14},
+                "prompt_tools": {"custom_drawing_negative_prompt": "blurry, watermark"},
+            }
 
         api._json_body = request_body
         response = await api.save_config()
         self.assertTrue(response["success"])
         self.assertEqual(plugin.conf["custom_drawing_negative_prompt"], "blurry, watermark")
+        self.assertEqual(plugin.conf["generation_cache_retention_days"], 14)
 
 
 class DashboardUsageTest(unittest.IsolatedAsyncioTestCase):
@@ -412,6 +418,102 @@ class DashboardReferencePreviewTest(unittest.IsolatedAsyncioTestCase):
             with Image.open(io.BytesIO(image_data)) as image:
                 self.assertEqual(image.format, "JPEG")
                 self.assertLessEqual(max(image.size), 560)
+
+
+class GenerationHistoryStorageTest(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.DataManager = _load_module("data_manager").DataManager
+
+    @staticmethod
+    def _png_bytes() -> bytes:
+        output = io.BytesIO()
+        Image.new("RGB", (480, 300), (30, 170, 230)).save(output, "PNG")
+        return output.getvalue()
+
+    async def test_protected_success_record_survives_cleanup_until_unprotected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.DataManager(pathlib.Path(directory), {})
+            record = await manager.save_generation_record(
+                self._png_bytes(),
+                prompt="cinematic portrait",
+                user_id="10001",
+                group_id="20002",
+                model="image-model",
+                preset="手办化",
+                task_type="图生图",
+            )
+            self.assertIsNotNone(record)
+            self.assertTrue(manager.get_generation_image_path(record).is_file())
+            self.assertEqual(record["prompt"], "cinematic portrait")
+            self.assertEqual(record["group_id"], "20002")
+
+            manager.generation_history[0]["created_at"] = (
+                datetime.now() - timedelta(days=10)
+            ).isoformat(timespec="seconds")
+            await manager.update_generation_record_flags(record["id"], favorite=True)
+            protected_cleanup = await manager.cleanup_generation_cache(7)
+            self.assertEqual(protected_cleanup["removed_records"], 0)
+            self.assertEqual(len(manager.generation_history), 1)
+            self.assertTrue(manager.get_generation_image_path(manager.generation_history[0]).is_file())
+
+            await manager.update_generation_record_flags(record["id"], favorite=False, locked=True)
+            locked_cleanup = await manager.cleanup_generation_cache(7)
+            self.assertEqual(locked_cleanup["removed_records"], 0)
+            self.assertEqual(len(manager.generation_history), 1)
+
+            await manager.update_generation_record_flags(record["id"], locked=False)
+            expired_cleanup = await manager.cleanup_generation_cache(7)
+            self.assertEqual(expired_cleanup["removed_records"], 1)
+            self.assertEqual(manager.generation_history, [])
+
+
+class DashboardGenerationHistoryTest(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.dashboard_module = _load_module("dashboard_api", with_quart=True)
+        cls.DashboardApi = cls.dashboard_module.LinghuiDashboardApi
+        cls.DataManager = _load_module("data_manager").DataManager
+
+    async def test_history_returns_inline_preview_and_favorite_operation(self):
+        output = io.BytesIO()
+        Image.new("RGB", (800, 500), (100, 60, 220)).save(output, "PNG")
+
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.DataManager(pathlib.Path(directory), {})
+            record = await manager.save_generation_record(
+                output.getvalue(),
+                prompt="a violet neon city",
+                user_id="user-1",
+                group_id="group-1",
+                model="test-model",
+                task_type="文生图",
+            )
+            plugin = types.SimpleNamespace(
+                conf={"generation_cache_retention_days": 7},
+                data_mgr=manager,
+            )
+            api = self.DashboardApi(plugin)
+            original_args = self.dashboard_module.request.args
+            self.dashboard_module.request.args = {"limit": "24", "offset": "0"}
+            try:
+                payload = await api.generation_history()
+            finally:
+                self.dashboard_module.request.args = original_args
+
+            self.assertTrue(payload["success"])
+            self.assertEqual(payload["summary"]["groups"], 1)
+            self.assertEqual(payload["records"][0]["prompt"], "a violet neon city")
+            self.assertTrue(payload["records"][0]["preview"].startswith("data:image/jpeg;base64,"))
+            self.assertNotIn(str(manager.generation_cache_dir), payload["records"][0]["preview"])
+
+            async def body():
+                return {"action": "favorite", "id": record["id"], "value": True}
+
+            api._json_body = body
+            updated = await api.generation_record()
+            self.assertTrue(updated["success"])
+            self.assertTrue(manager.generation_history[0]["favorite"])
 
 
 class ReferenceImageStorageTest(unittest.IsolatedAsyncioTestCase):

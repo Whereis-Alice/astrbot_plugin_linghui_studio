@@ -12,6 +12,7 @@
         <div class="brand"><span class="brand-mark">LH</span><span>灵绘工坊</span></div>
         <nav class="nav-list">
           <button class="nav-item active" data-tab="overview">概览</button>
+          <button class="nav-item" data-tab="history">成功记录</button>
           <button class="nav-item" data-tab="channels">绘图渠道</button>
           <button class="nav-item" data-tab="access">权限与额度</button>
           <button class="nav-item" data-tab="prompts">提示词与预设</button>
@@ -48,6 +49,28 @@
           <section class="section-block">
             <div class="section-heading"><div><h2>今日用量</h2><p>成功返回的图片按用户和群分别统计；顶部总数按用户累计，避免群聊请求重复计数。不限次数名单仍会统计。</p></div><button id="refresh-usage" class="quiet-action">刷新</button></div>
             <div id="overview-usage" class="usage-table"></div>
+          </section>
+        </section>
+
+        <section id="tab-history" class="tab-pane">
+          <div class="metric-grid history-metric-grid">
+            <article class="metric"><span>已缓存成功记录</span><strong id="history-total">-</strong></article>
+            <article class="metric"><span>今日成功</span><strong id="history-today">-</strong></article>
+            <article class="metric"><span>已保护</span><strong id="history-protected">-</strong></article>
+            <article class="metric"><span>缓存占用</span><strong id="history-size">-</strong></article>
+          </div>
+          <p id="history-detail-summary" class="history-detail-summary"></p>
+          <section class="section-block">
+            <div class="section-heading">
+              <div><h2>成功记录</h2><p>展示最终成功返回的图片、请求提示词、用户、群、模型与时间。默认保留 <span id="history-retention">-</span> 天；收藏或锁定的图片及提示词不会被自动清理。</p></div>
+              <div class="history-actions"><button id="history-refresh" class="quiet-action">刷新记录</button><button id="history-cleanup" class="danger-action">清理已过期</button></div>
+            </div>
+            <div id="generation-history-list" class="generation-history-list"></div>
+            <div id="generation-history-pagination" class="history-pagination" hidden>
+              <button id="history-prev" class="icon-action" type="button" title="上一页" aria-label="上一页">&#8592;</button>
+              <span id="history-page-status" class="history-page-status"></span>
+              <button id="history-next" class="icon-action" type="button" title="下一页" aria-label="下一页">&#8594;</button>
+            </div>
           </section>
         </section>
 
@@ -156,6 +179,7 @@
               <label class="field"><span>默认分辨率</span><select id="resolution"><option>1K</option><option>2K</option><option>4K</option></select><small class="field-hint">发送给支持该参数的文生图接口；不支持时由渠道服务端自行处理。</small></label>
               <label class="field"><span>默认比例</span><select id="aspect-ratio"><option>1:1</option><option>16:9</option><option>9:16</option><option>4:3</option><option>3:4</option><option>3:2</option><option>2:3</option></select><small class="field-hint">文生图的默认画面比例，可在具体请求中被渠道能力限制。</small></label>
               <label class="field"><span>兼容超时（秒）</span><input id="default-timeout" type="number" min="5" /><small class="field-hint">仅在未配置绘图渠道时使用，超过时间后请求会失败并返回错误。</small></label>
+              <label class="field"><span>成功记录缓存保留天数</span><input id="generation-cache-retention" type="number" min="1" max="365" /><small class="field-hint">默认 7 天。启动时及每 24 小时检查并清理过期缓存；收藏或锁定的图片和提示词不会被自动清理。</small></label>
               <label class="toggle-field"><input id="show-model-info" type="checkbox" /><span class="toggle-copy"><span>成功消息显示模型</span><small class="field-hint">在生成成功消息中附带实际使用的模型名称，便于排查渠道路由。</small></span></label>
               <label class="toggle-field"><input id="enable-preset-refs" type="checkbox" /><span class="toggle-copy"><span>启用预设参考图</span><small class="field-hint">开启后，调用预设会自动附带该预设在“人设与参考图”中保存的图片。</small></span></label>
             </div>

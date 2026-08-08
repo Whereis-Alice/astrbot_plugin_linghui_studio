@@ -139,7 +139,7 @@ def _direct_command_only(handler):
     PLUGIN_NAME,
     "Whereis-Alice",
     "灵绘工坊：多渠道回退、受控群白名单、自定义绘图反向提示词与可视化管理的文生图/图生图插件",
-    "3.2.4",
+    "3.2.5",
     "https://github.com/Whereis-Alice/astrbot_plugin_linghui_studio",
 )
 class LinghuiStudioPlugin(Star):
@@ -166,6 +166,7 @@ class LinghuiStudioPlugin(Star):
         "api_mode",
         "prompt_list",
         "custom_drawing_negative_prompt",
+        "generation_cache_retention_days",
         "generic_api_url",
         "generic_api_keys",
         "gemini_api_url",
@@ -199,6 +200,7 @@ class LinghuiStudioPlugin(Star):
         "text_to_image_api_url",
         "base_url",
         "custom_drawing_negative_prompt",
+        "generation_cache_retention_days",
     }
     _COMMAND_ROUTES = (
         (("预设参考图添加", "lmref添加", "添加参考图"), "on_add_preset_ref", "灵绘预设参考图添加"),
@@ -248,6 +250,7 @@ class LinghuiStudioPlugin(Star):
         self.img_mgr = ImageManager(config)
         self.api_mgr = DrawingChannelRouter(config)
         self.access_policy = AccessPolicy(config)
+        self._generation_cache_cleanup_task: Optional[asyncio.Task] = None
 
         # 上下文管理器
         self.ctx_mgr = ContextManager(
@@ -1026,13 +1029,51 @@ class LinghuiStudioPlugin(Star):
                 logger.error(f"LinghuiStudio: 恢复动态配置失败 {e}")
 
         await self.data_mgr.initialize()
+        await self._cleanup_generation_cache()
+        if self._generation_cache_cleanup_task is None or self._generation_cache_cleanup_task.done():
+            self._generation_cache_cleanup_task = asyncio.create_task(
+                self._generation_cache_maintenance_loop()
+            )
         self.img_mgr.schedule_default_font_install(self.data_mgr.data_dir)
         if not self.api_mgr.has_available_keys():
             logger.warning("LinghuiStudio: 未配置可用的绘图渠道或 API Key")
 
         auto_detect_status = "已启用" if self._llm_auto_detect else "未启用"
         logger.info(
-            f"LinghuiStudio 已加载 v3.2.4 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
+            f"LinghuiStudio 已加载 v3.2.5 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
+
+    def _generation_cache_retention_days(self) -> int:
+        """Return a bounded retention period for successful output cache files."""
+        try:
+            return min(max(1, int(self.conf.get("generation_cache_retention_days", 7))), 365)
+        except (TypeError, ValueError):
+            return 7
+
+    async def _cleanup_generation_cache(self) -> Dict[str, int]:
+        """Delete only expired, unprotected successful-output cache entries."""
+        result = await self.data_mgr.cleanup_generation_cache(self._generation_cache_retention_days())
+        removed = sum(int(result.get(key, 0) or 0) for key in (
+            "removed_records", "removed_images", "removed_orphans"
+        ))
+        if removed:
+            logger.info(
+                "LinghuiStudio: cleaned generation cache (%s records, %s images, %s orphan files)",
+                result.get("removed_records", 0),
+                result.get("removed_images", 0),
+                result.get("removed_orphans", 0),
+            )
+        return result
+
+    async def _generation_cache_maintenance_loop(self) -> None:
+        """Run a daily expiry check; content becomes eligible after the configured week."""
+        while True:
+            try:
+                await asyncio.sleep(24 * 60 * 60)
+                await self._cleanup_generation_cache()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("LinghuiStudio: generation cache maintenance failed")
 
     def is_admin(self, event: AstrMessageEvent) -> bool:
         sender_id = norm_id(event.get_sender_id())
@@ -1553,6 +1594,43 @@ class LinghuiStudioPlugin(Star):
             return 0
         async with self._pending_generation_lock:
             return max(0, self._pending_generation_tasks.get(session_id, 0))
+
+    async def _record_generation_result(
+            self,
+            session_id: str,
+            image_bytes: bytes,
+            *,
+            user_id: str,
+            group_id: str = "",
+            prompt: str = "",
+            model: str = "",
+            preset_name: str = "",
+            task_type: str = "",
+    ) -> None:
+        """Persist one successful output without letting cache failures affect delivery.
+
+        The cache stores the exact bytes that are sent to the platform.  Usage
+        accounting and in-session PDF context keep their existing behaviour
+        even if the optional Dashboard history file cannot be written.
+        """
+        await self.data_mgr.record_usage(user_id, group_id)
+        try:
+            record = await self.data_mgr.save_generation_record(
+                image_bytes,
+                prompt=prompt,
+                user_id=user_id,
+                group_id=group_id,
+                model=model,
+                preset=preset_name,
+                task_type=task_type,
+            )
+            if record is None:
+                logger.warning("LinghuiStudio: successful output was not added to generation history")
+        except Exception:
+            logger.exception("LinghuiStudio: failed to persist successful output history")
+
+        await self._register_generation_success(session_id, 1)
+        await self._register_generated_image(session_id, image_bytes)
 
     async def _register_generation_success(self, session_id: str, count: int = 1):
         """登记会话中成功生成的图片数量"""
@@ -2547,9 +2625,16 @@ class LinghuiStudioPlugin(Star):
             if isinstance(res, bytes):
                 res = await self._prepare_send_image_bytes(res)
                 elapsed = (datetime.now() - start_time).total_seconds()
-                await self.data_mgr.record_usage(uid, gid)
-                await self._register_generation_success(event.unified_msg_origin, 1)
-                await self._register_generated_image(event.unified_msg_origin, res)
+                await self._record_generation_result(
+                    event.unified_msg_origin,
+                    res,
+                    user_id=uid,
+                    group_id=gid,
+                    prompt=prompt,
+                    model=model,
+                    preset_name=preset_name,
+                    task_type="文生图" if use_text_to_image_api else "图生图",
+                )
 
                 # 5. 检查是否处于 PDF 暂存模式
                 if await self._maybe_stage_after_grace(event.unified_msg_origin, res):
@@ -2663,9 +2748,16 @@ class LinghuiStudioPlugin(Star):
                             if isinstance(res, bytes):
                                 res = await self._prepare_send_image_bytes(res)
                                 elapsed = (datetime.now() - start_time).total_seconds()
-                                await self.data_mgr.record_usage(uid, gid)
-                                await self._register_generation_success(event.unified_msg_origin, 1)
-                                await self._register_generated_image(event.unified_msg_origin, res)
+                                await self._record_generation_result(
+                                    event.unified_msg_origin,
+                                    res,
+                                    user_id=uid,
+                                    group_id=gid,
+                                    prompt=prompt,
+                                    model=model,
+                                    preset_name=preset_name,
+                                    task_type="批量文生图",
+                                )
 
                                 # PDF 暂存模式：不发送单张图片，用 index 保证顺序
                                 if await self._maybe_stage_after_grace(event.unified_msg_origin, res, staging_index=index):
@@ -2803,9 +2895,16 @@ class LinghuiStudioPlugin(Star):
                             if isinstance(res, bytes):
                                 res = await self._prepare_send_image_bytes(res)
                                 elapsed = (datetime.now() - start_time).total_seconds()
-                                await self.data_mgr.record_usage(uid, gid)
-                                await self._register_generation_success(event.unified_msg_origin, 1)
-                                await self._register_generated_image(event.unified_msg_origin, res)
+                                await self._record_generation_result(
+                                    event.unified_msg_origin,
+                                    res,
+                                    user_id=uid,
+                                    group_id=gid,
+                                    prompt=prompt,
+                                    model=model,
+                                    preset_name=preset_name,
+                                    task_type="批量图生图版本",
+                                )
 
                                 # PDF 暂存模式：不发送单张图片，用 index 保证顺序
                                 if await self._maybe_stage_after_grace(event.unified_msg_origin, res, staging_index=index):
@@ -3539,9 +3638,16 @@ class LinghuiStudioPlugin(Star):
         if isinstance(res, bytes):
             res = await self._prepare_send_image_bytes(res)
             elapsed = (datetime.now() - start).total_seconds()
-            await self.data_mgr.record_usage(uid, gid)
-            await self._register_generation_success(event.unified_msg_origin, 1)
-            await self._register_generated_image(event.unified_msg_origin, res)
+            await self._record_generation_result(
+                event.unified_msg_origin,
+                res,
+                user_id=uid,
+                group_id=gid,
+                prompt=append_negative_prompt(user_prompt, negative_prompt),
+                model=model,
+                preset_name=preset_name,
+                task_type="自定义文生图" if is_text_to_image else "自定义图生图",
+            )
             if not is_custom_command: await self.data_mgr.save_preset_image(base_cmd, res)
 
             quota_str = self._get_quota_str(deduction, uid, gid)
@@ -3599,10 +3705,18 @@ class LinghuiStudioPlugin(Star):
         if isinstance(res, bytes):
             res = await self._prepare_send_image_bytes(res)
             elapsed = (datetime.now() - start).total_seconds()
-            await self.data_mgr.record_usage(uid, norm_id(event.get_group_id()))
-            await self._register_generation_success(event.unified_msg_origin, 1)
-            await self._register_generated_image(event.unified_msg_origin, res)
-            quota_str = self._get_quota_str(deduction, uid, norm_id(event.get_group_id()))
+            group_id = norm_id(event.get_group_id())
+            await self._record_generation_result(
+                event.unified_msg_origin,
+                res,
+                user_id=uid,
+                group_id=group_id,
+                prompt=final_prompt,
+                model=model,
+                preset_name=preset_name,
+                task_type="文生图",
+            )
+            quota_str = self._get_quota_str(deduction, uid, group_id)
             timing_text = self._format_success_timing(elapsed)
             info = f"\n✅ 生成成功 ({timing_text}) | 预设: {preset_name}"
             if extra_rules:
@@ -3653,9 +3767,16 @@ class LinghuiStudioPlugin(Star):
             return
 
         result = await self._prepare_send_image_bytes(result)
-        await self.data_mgr.record_usage(uid, gid)
-        await self._register_generation_success(event.unified_msg_origin, 1)
-        await self._register_generated_image(event.unified_msg_origin, result)
+        await self._record_generation_result(
+            event.unified_msg_origin,
+            result,
+            user_id=uid,
+            group_id=gid,
+            prompt=final_prompt,
+            model=model,
+            preset_name=preset_name,
+            task_type="头像图生图",
+        )
         elapsed = (datetime.now() - start).total_seconds()
         quota = self._get_quota_str(deduction, uid, gid)
         message = f"头像图生图完成（{self._format_success_timing(elapsed)}） | 剩余：{quota}"
@@ -5059,9 +5180,16 @@ class LinghuiStudioPlugin(Star):
             if isinstance(res, bytes):
                 res = await self._prepare_send_image_bytes(res)
                 elapsed = (datetime.now() - start_time).total_seconds()
-                await self.data_mgr.record_usage(uid, gid)
-                await self._register_generation_success(event.unified_msg_origin, 1)
-                await self._register_generated_image(event.unified_msg_origin, res)
+                await self._record_generation_result(
+                    event.unified_msg_origin,
+                    res,
+                    user_id=uid,
+                    group_id=gid,
+                    prompt=prompt,
+                    model=model,
+                    preset_name=preset_name,
+                    task_type="批量图生图",
+                )
 
                 # PDF 暂存模式：不发送单张图片，用 task_index 保证顺序
                 if await self._maybe_stage_after_grace(event.unified_msg_origin, res, staging_index=task_index):
@@ -5398,9 +5526,16 @@ class LinghuiStudioPlugin(Star):
                                 if isinstance(res, bytes):
                                     res = await self._prepare_send_image_bytes(res)
                                     pdf_result_images.append(res)
-                                    await self.data_mgr.record_usage(uid, gid)
-                                    await self._register_generation_success(event.unified_msg_origin, 1)
-                                    await self._register_generated_image(event.unified_msg_origin, res)
+                                    await self._record_generation_result(
+                                        event.unified_msg_origin,
+                                        res,
+                                        user_id=uid,
+                                        group_id=gid,
+                                        prompt=final_prompt,
+                                        model=model,
+                                        preset_name=preset_name,
+                                        task_type="批量图生图（PDF）",
+                                    )
                                     success = True
                                     error_msg = ""
                                 else:
@@ -5690,9 +5825,16 @@ class LinghuiStudioPlugin(Star):
                                     res = await self._prepare_send_image_bytes(res)
                                     async with results_lock:
                                         pdf_result_images_dict[index] = res
-                                    await self.data_mgr.record_usage(uid, gid)
-                                    await self._register_generation_success(event.unified_msg_origin, 1)
-                                    await self._register_generated_image(event.unified_msg_origin, res)
+                                    await self._record_generation_result(
+                                        event.unified_msg_origin,
+                                        res,
+                                        user_id=uid,
+                                        group_id=gid,
+                                        prompt=final_prompt,
+                                        model=model,
+                                        preset_name=preset_name,
+                                        task_type="批量图生图（PDF）",
+                                    )
                                     success = True
                                     error_msg = ""
                                 else:
@@ -6189,9 +6331,16 @@ class LinghuiStudioPlugin(Star):
         if isinstance(res, bytes):
             res = await self._prepare_send_image_bytes(res)
             elapsed = (datetime.now() - start).total_seconds()
-            await self.data_mgr.record_usage(uid, gid)
-            await self._register_generation_success(event.unified_msg_origin, 1)
-            await self._register_generated_image(event.unified_msg_origin, res)
+            await self._record_generation_result(
+                event.unified_msg_origin,
+                res,
+                user_id=uid,
+                group_id=gid,
+                prompt=full_prompt,
+                model=model,
+                preset_name=scene_name or "人设",
+                task_type="人设拍照",
+            )
 
             quota_str = self._get_quota_str(deduction, uid, gid)
             timing_text = self._format_success_timing(elapsed)
@@ -6549,5 +6698,13 @@ class LinghuiStudioPlugin(Star):
         asyncio.create_task(process_all())
 
     async def terminate(self):
-        """Release persistent HTTP sessions when AstrBot unloads the plugin."""
+        """Stop maintenance work and release persistent HTTP sessions on unload."""
+        cleanup_task = self._generation_cache_cleanup_task
+        self._generation_cache_cleanup_task = None
+        if cleanup_task is not None and not cleanup_task.done():
+            cleanup_task.cancel()
+            try:
+                await cleanup_task
+            except asyncio.CancelledError:
+                pass
         await self.api_mgr.close()

@@ -3,8 +3,9 @@ import asyncio
 import io
 import os
 import random
+import uuid
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, Tuple, List
 from PIL import Image as PILImage
 from astrbot import logger
@@ -23,8 +24,10 @@ class DataManager:
         self.preset_images_file = self.data_dir / "preset_images.json"
         self.user_prompts_file = self.data_dir / "user_prompts.json"
         self.preset_ref_images_file = self.data_dir / "preset_ref_images.json"  # 预设参考图索引
+        self.generation_history_file = self.data_dir / "generation_history.json"
         self.preset_images_dir = self.data_dir / "preset_images"
         self.preset_ref_images_dir = self.data_dir / "preset_ref_images"  # 预设参考图目录
+        self.generation_cache_dir = self.data_dir / "generation_cache"
         self.fonts_dir = self.data_dir / "fonts"
 
         # [Fix] 确保数据目录存在
@@ -37,6 +40,9 @@ class DataManager:
         if not self.preset_ref_images_dir.exists():
             self.preset_ref_images_dir.mkdir(parents=True, exist_ok=True)
 
+        if not self.generation_cache_dir.exists():
+            self.generation_cache_dir.mkdir(parents=True, exist_ok=True)
+
         if not self.fonts_dir.exists():
             self.fonts_dir.mkdir(parents=True, exist_ok=True)
 
@@ -47,6 +53,7 @@ class DataManager:
         self.preset_images: Dict[str, str] = {}
         self.user_prompts: Dict[str, str] = {}
         self.preset_ref_images: Dict[str, List[str]] = {}  # 预设参考图: {预设名: [图片文件名列表]}
+        self.generation_history: List[Dict[str, Any]] = []
         self.prompt_map: Dict[str, str] = {}
         # A single lock protects read-modify-write credit/check-in operations.
         # The upstream version could lose credits when concurrent image tasks
@@ -66,6 +73,8 @@ class DataManager:
             await self._load_json(self.daily_stats_file, "daily_stats")
 
         await self._load_json(self.preset_images_file, "preset_images")
+        await self._load_json(self.generation_history_file, "generation_history")
+        self.generation_history = self._normalize_generation_history(self.generation_history)
         self.reload_prompts()
 
     async def _load_json(self, file_path: Path, attr_name: str):
@@ -245,6 +254,336 @@ class DataManager:
                 gid = norm_id(gid)
                 self.daily_stats["groups"][gid] = self.daily_stats["groups"].get(gid, 0) + 1
             await self._save_json(self.daily_stats_file, self.daily_stats)
+
+    # --- 成功生成记录与缓存 ---
+    @staticmethod
+    def _history_bool(value: Any) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on", "开启"}
+        return bool(value)
+
+    @staticmethod
+    def _history_int(value: Any, minimum: int = 0) -> int:
+        try:
+            return max(minimum, int(value))
+        except (TypeError, ValueError):
+            return minimum
+
+    @staticmethod
+    def _inspect_generation_image(image_bytes: bytes) -> Tuple[str, str, int, int]:
+        """Validate an output image and derive a stable filename suffix."""
+        try:
+            with PILImage.open(io.BytesIO(image_bytes)) as image:
+                image.load()
+                image_format = (image.format or "UNKNOWN").upper()
+                width, height = image.size
+        except Exception as exc:
+            raise ValueError("生成结果不是可识别的图片文件。") from exc
+
+        suffixes = {
+            "JPEG": "jpg",
+            "PNG": "png",
+            "WEBP": "webp",
+            "GIF": "gif",
+            "BMP": "bmp",
+            "TIFF": "tiff",
+        }
+        return suffixes.get(image_format, "img"), image_format, int(width), int(height)
+
+    def _normalize_generation_history(self, raw_history: Any) -> List[Dict[str, Any]]:
+        """Keep only safe, forward-compatible history entries loaded from disk."""
+        if not isinstance(raw_history, list):
+            return []
+
+        normalized: List[Dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for raw in raw_history:
+            if not isinstance(raw, dict):
+                continue
+            record_id = str(raw.get("id", "") or "").strip()
+            filename_raw = str(raw.get("filename", "") or "").strip()
+            filename = Path(filename_raw).name
+            if (
+                not record_id
+                or len(record_id) > 80
+                or record_id in seen_ids
+                or not filename
+                or filename != filename_raw
+            ):
+                continue
+            seen_ids.add(record_id)
+            normalized.append({
+                "id": record_id,
+                "filename": filename,
+                "created_at": str(raw.get("created_at", "") or ""),
+                "user_id": norm_id(raw.get("user_id")),
+                "group_id": norm_id(raw.get("group_id")),
+                "prompt": str(raw.get("prompt", "") or "").strip()[:12_000],
+                "model": str(raw.get("model", "") or "").strip()[:200],
+                "preset": str(raw.get("preset", "") or "").strip()[:160],
+                "task_type": str(raw.get("task_type", "") or "").strip()[:80],
+                "image_format": str(raw.get("image_format", "") or "").strip()[:20],
+                "width": self._history_int(raw.get("width")),
+                "height": self._history_int(raw.get("height")),
+                "size_bytes": self._history_int(raw.get("size_bytes")),
+                "favorite": self._history_bool(raw.get("favorite", False)),
+                "locked": self._history_bool(raw.get("locked", False)),
+            })
+
+        return sorted(normalized, key=lambda item: item["created_at"], reverse=True)
+
+    def _generation_cache_path(self, filename: Any) -> Optional[Path]:
+        """Resolve a cache file only when it stays immediately under its root."""
+        try:
+            root = self.generation_cache_dir.resolve()
+            raw_name = str(filename or "")
+            if not raw_name or Path(raw_name).name != raw_name:
+                return None
+            candidate = (root / raw_name).resolve()
+        except (OSError, TypeError, ValueError):
+            return None
+        return candidate if candidate.parent == root else None
+
+    def get_generation_image_path(self, record: Dict[str, Any]) -> Optional[Path]:
+        if not isinstance(record, dict):
+            return None
+        path = self._generation_cache_path(record.get("filename"))
+        return path if path is not None and path.is_file() else None
+
+    async def save_generation_record(
+            self,
+            image_bytes: bytes,
+            *,
+            prompt: str,
+            user_id: str,
+            group_id: str = "",
+            model: str = "",
+            preset: str = "",
+            task_type: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """Persist a successful output image and its Dashboard-visible metadata."""
+        if not isinstance(image_bytes, bytes) or not image_bytes:
+            return None
+        try:
+            suffix, image_format, width, height = await asyncio.to_thread(
+                self._inspect_generation_image, image_bytes
+            )
+        except ValueError as exc:
+            logger.warning("Linghui skipped an unrecognizable generation result cache: %s", exc)
+            return None
+
+        record_id = uuid.uuid4().hex
+        timestamp = datetime.now()
+        filename = f"{timestamp.strftime('%Y%m%d_%H%M%S_%f')}_{record_id}.{suffix}"
+        record = {
+            "id": record_id,
+            "filename": filename,
+            "created_at": timestamp.astimezone().isoformat(timespec="seconds"),
+            "user_id": norm_id(user_id),
+            "group_id": norm_id(group_id),
+            "prompt": str(prompt or "").strip()[:12_000],
+            "model": str(model or "").strip()[:200],
+            "preset": str(preset or "").strip()[:160],
+            "task_type": str(task_type or "").strip()[:80],
+            "image_format": image_format,
+            "width": width,
+            "height": height,
+            "size_bytes": len(image_bytes),
+            "favorite": False,
+            "locked": False,
+        }
+        path = self._generation_cache_path(filename)
+        if path is None:
+            return None
+
+        async with self._state_lock:
+            try:
+                await asyncio.to_thread(path.write_bytes, image_bytes)
+            except Exception as exc:
+                logger.error("Linghui could not cache a generated image: %s", exc)
+                return None
+            self.generation_history.insert(0, record)
+            await self._save_json(self.generation_history_file, self.generation_history)
+        return dict(record)
+
+    async def get_generation_history_page(self, limit: int = 24, offset: int = 0) -> Tuple[List[Dict[str, Any]], int, Dict[str, int]]:
+        """Return a bounded history page plus aggregate cache statistics."""
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 24
+        try:
+            offset = int(offset)
+        except (TypeError, ValueError):
+            offset = 0
+        limit = min(max(1, limit), 100)
+        offset = max(0, offset)
+        async with self._state_lock:
+            records = [dict(item) for item in self.generation_history]
+
+        today = datetime.now().date()
+        unique_users = set()
+        unique_groups = set()
+        today_count = 0
+        private_count = 0
+        protected_count = 0
+        for item in records:
+            user_id = norm_id(item.get("user_id"))
+            group_id = norm_id(item.get("group_id"))
+            if user_id:
+                unique_users.add(user_id)
+            if group_id:
+                unique_groups.add(group_id)
+            else:
+                private_count += 1
+            if item.get("favorite") or item.get("locked"):
+                protected_count += 1
+            created_at = self._history_created_at(item, None)
+            if created_at is not None and created_at.date() == today:
+                today_count += 1
+
+        summary = {
+            "total": len(records),
+            "favorite": sum(1 for item in records if item.get("favorite")),
+            "locked": sum(1 for item in records if item.get("locked")),
+            "protected": protected_count,
+            "size_bytes": sum(self._history_int(item.get("size_bytes")) for item in records),
+            "today": today_count,
+            "users": len(unique_users),
+            "groups": len(unique_groups),
+            "private": private_count,
+        }
+        return records[offset:offset + limit], len(records), summary
+
+    async def update_generation_record_flags(
+            self,
+            record_id: str,
+            *,
+            favorite: Optional[bool] = None,
+            locked: Optional[bool] = None,
+    ) -> Optional[Dict[str, Any]]:
+        record_id = str(record_id or "").strip()
+        if not record_id:
+            return None
+        async with self._state_lock:
+            for record in self.generation_history:
+                if record.get("id") != record_id:
+                    continue
+                if favorite is not None:
+                    record["favorite"] = bool(favorite)
+                if locked is not None:
+                    record["locked"] = bool(locked)
+                await self._save_json(self.generation_history_file, self.generation_history)
+                return dict(record)
+        return None
+
+    async def delete_generation_record(self, record_id: str) -> bool:
+        """Explicit Dashboard deletion may remove a protected record as well."""
+        record_id = str(record_id or "").strip()
+        if not record_id:
+            return False
+        async with self._state_lock:
+            for index, record in enumerate(self.generation_history):
+                if record.get("id") != record_id:
+                    continue
+                path = self.get_generation_image_path(record)
+                if path is not None:
+                    try:
+                        await asyncio.to_thread(path.unlink)
+                    except FileNotFoundError:
+                        pass
+                    except Exception as exc:
+                        logger.warning("Linghui could not delete cached image %s: %s", path.name, exc)
+                        return False
+                self.generation_history.pop(index)
+                await self._save_json(self.generation_history_file, self.generation_history)
+                return True
+        return False
+
+    @staticmethod
+    def _history_created_at(record: Dict[str, Any], path: Optional[Path]) -> Optional[datetime]:
+        raw = str(record.get("created_at", "") or "").strip()
+        if raw:
+            try:
+                created = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                if created.tzinfo is not None:
+                    created = created.astimezone().replace(tzinfo=None)
+                return created
+            except ValueError:
+                pass
+        if path is not None:
+            try:
+                return datetime.fromtimestamp(path.stat().st_mtime)
+            except OSError:
+                pass
+        return None
+
+    async def cleanup_generation_cache(self, retention_days: int = 7) -> Dict[str, int]:
+        """Remove expired unprotected cache entries and stale orphaned files."""
+        try:
+            retention_days = min(max(1, int(retention_days)), 365)
+        except (TypeError, ValueError):
+            retention_days = 7
+        cutoff = datetime.now() - timedelta(days=retention_days)
+        removed_records = 0
+        removed_images = 0
+        removed_orphans = 0
+
+        async with self._state_lock:
+            retained: List[Dict[str, Any]] = []
+            for record in self.generation_history:
+                path = self.get_generation_image_path(record)
+                protected = bool(record.get("favorite")) or bool(record.get("locked"))
+                created_at = self._history_created_at(record, path)
+                expired = created_at is None or created_at < cutoff
+
+                if protected:
+                    retained.append(record)
+                    continue
+                if not expired and path is not None:
+                    retained.append(record)
+                    continue
+
+                if path is not None:
+                    try:
+                        await asyncio.to_thread(path.unlink)
+                        removed_images += 1
+                    except FileNotFoundError:
+                        pass
+                    except Exception as exc:
+                        logger.warning("Linghui could not clean cached image %s: %s", path.name, exc)
+                        retained.append(record)
+                        continue
+                removed_records += 1
+
+            history_changed = len(retained) != len(self.generation_history)
+            self.generation_history = retained
+            known_files = {str(record.get("filename", "")) for record in retained}
+
+            try:
+                cache_files = list(self.generation_cache_dir.iterdir())
+            except OSError:
+                cache_files = []
+            for path in cache_files:
+                if not path.is_file() or path.name in known_files:
+                    continue
+                try:
+                    if datetime.fromtimestamp(path.stat().st_mtime) < cutoff:
+                        await asyncio.to_thread(path.unlink)
+                        removed_orphans += 1
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    logger.warning("Linghui could not clean orphaned cache file %s: %s", path.name, exc)
+
+            if history_changed:
+                await self._save_json(self.generation_history_file, self.generation_history)
+
+        return {
+            "removed_records": removed_records,
+            "removed_images": removed_images,
+            "removed_orphans": removed_orphans,
+        }
 
     # --- 预设图片管理 ---
     async def save_preset_image(self, preset_key: str, image_bytes: bytes):
