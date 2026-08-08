@@ -23,6 +23,7 @@ const state = {
 };
 
 const THEME_STORAGE_KEY = "linghui-studio-theme";
+const THEME_VALUES = new Set(["dark", "light", "alice"]);
 const HISTORY_PAGE_SIZE = 24;
 const PLUGIN_API_BASE = "/api/plug/astrbot_plugin_linghui_studio";
 
@@ -48,23 +49,17 @@ const escapeHtml = (value) => String(value ?? "")
 function storedTheme() {
   try {
     const theme = window.localStorage.getItem(THEME_STORAGE_KEY);
-    return theme === "light" || theme === "dark" ? theme : "dark";
+    return THEME_VALUES.has(theme) ? theme : "dark";
   } catch {
     return "dark";
   }
 }
 
 function setTheme(theme, persist = true) {
-  const nextTheme = theme === "light" ? "light" : "dark";
+  const nextTheme = THEME_VALUES.has(theme) ? theme : "dark";
   document.documentElement.dataset.theme = nextTheme;
-  const button = byId("theme-toggle");
-  if (button) {
-    const isDark = nextTheme === "dark";
-    button.textContent = isDark ? "☀" : "☾";
-    button.title = isDark ? "切换到浅色模式" : "切换到夜间模式";
-    button.setAttribute("aria-label", button.title);
-    button.setAttribute("aria-pressed", String(isDark));
-  }
+  const selector = byId("theme-select");
+  if (selector) selector.value = nextTheme;
   if (persist) {
     try { window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme); } catch { /* Storage may be disabled. */ }
   }
@@ -730,10 +725,6 @@ function switchTab(tab) {
 
 document.addEventListener("click", async (event) => {
   try {
-    if (event.target.closest("#theme-toggle")) {
-      setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
-      return;
-    }
     const tab = event.target.closest("[data-tab]");
     if (tab) {
       const tabName = tab.dataset.tab;
@@ -825,6 +816,7 @@ document.addEventListener("error", (event) => {
 }, true);
 
 byId("reference-preset").addEventListener("change", renderReferenceImages);
+byId("theme-select").addEventListener("change", (event) => setTheme(event.target.value));
 byId("persona-upload").addEventListener("change", async (event) => {
   try { await uploadReferences(event.target.files, "_persona_"); event.target.value = ""; } catch (error) { showToast(error.message || "上传失败", true); }
 });

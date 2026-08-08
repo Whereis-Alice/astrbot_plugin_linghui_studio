@@ -9,7 +9,7 @@
   <body>
     <main class="shell">
       <aside class="sidebar" aria-label="灵绘工坊导航">
-        <div class="brand"><span class="brand-mark">LH</span><span>灵绘工坊</span></div>
+        <div class="brand"><img class="brand-mark" src="./assets/alice-sprite.png" alt="" /><span>灵绘工坊</span></div>
         <nav class="nav-list">
           <button class="nav-item active" data-tab="overview">概览</button>
           <button class="nav-item" data-tab="history">成功记录</button>
@@ -21,7 +21,11 @@
           <button class="nav-item" data-tab="settings">运行设置</button>
         </nav>
         <div class="sidebar-actions">
-          <button id="theme-toggle" class="icon-action" type="button" title="切换到浅色模式" aria-label="切换到浅色模式" aria-pressed="true">☀</button>
+          <select id="theme-select" class="theme-select" title="选择界面皮肤" aria-label="选择界面皮肤">
+            <option value="dark">深色</option>
+            <option value="light">浅色</option>
+            <option value="alice">爱丽丝</option>
+          </select>
           <button id="reload-button" class="icon-action" title="重新加载配置" aria-label="重新加载配置">↻</button>
           <button id="save-button" class="primary-action">保存更改</button>
         </div>
