@@ -1,4 +1,4 @@
-import re
+﻿import re
 import asyncio
 import json
 from functools import wraps
@@ -167,6 +167,7 @@ class LinghuiStudioPlugin(Star):
         "prompt_list",
         "custom_drawing_negative_prompt",
         "generation_cache_retention_days",
+        "dashboard_theme",
         "generic_api_url",
         "generic_api_keys",
         "gemini_api_url",
@@ -201,6 +202,7 @@ class LinghuiStudioPlugin(Star):
         "base_url",
         "custom_drawing_negative_prompt",
         "generation_cache_retention_days",
+        "dashboard_theme",
     }
     _COMMAND_ROUTES = (
         (("预设参考图添加", "lmref添加", "添加参考图"), "on_add_preset_ref", "灵绘预设参考图添加"),

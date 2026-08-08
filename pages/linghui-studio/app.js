@@ -55,6 +55,12 @@ function storedTheme() {
   }
 }
 
+function currentTheme() {
+  return THEME_VALUES.has(document.documentElement.dataset.theme)
+    ? document.documentElement.dataset.theme
+    : "dark";
+}
+
 function setTheme(theme, persist = true) {
   const nextTheme = THEME_VALUES.has(theme) ? theme : "dark";
   document.documentElement.dataset.theme = nextTheme;
@@ -62,6 +68,29 @@ function setTheme(theme, persist = true) {
   if (selector) selector.value = nextTheme;
   if (persist) {
     try { window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme); } catch { /* Storage may be disabled. */ }
+  }
+}
+
+async function changeTheme(theme) {
+  const nextTheme = THEME_VALUES.has(theme) ? theme : "dark";
+  const previousTheme = currentTheme();
+  if (nextTheme === previousTheme) return;
+
+  const selector = byId("theme-select");
+  setTheme(nextTheme);
+  if (selector) selector.disabled = true;
+  setSaveState("正在保存外观...");
+  try {
+    const response = await bridge.apiPost("dashboard_theme", { theme: nextTheme });
+    if (!response?.success) throw new Error(response?.message || "主题保存失败");
+    if (state.config) state.config.dashboard_theme = nextTheme;
+    setSaveState("外观已保存");
+  } catch (error) {
+    setTheme(previousTheme);
+    showToast(error.message || "主题保存失败", true);
+    setSaveState("外观未保存");
+  } finally {
+    if (selector) selector.disabled = false;
   }
 }
 
@@ -640,6 +669,7 @@ async function loadConfig() {
   const response = await bridge.apiGet("get_config");
   if (!response?.success) throw new Error(response?.message || "无法读取配置");
   state.config = response;
+  setTheme(THEME_VALUES.has(response.dashboard_theme) ? response.dashboard_theme : storedTheme());
   hydrateFields();
   await loadUsage();
   setSaveState("配置已加载");
@@ -816,7 +846,7 @@ document.addEventListener("error", (event) => {
 }, true);
 
 byId("reference-preset").addEventListener("change", renderReferenceImages);
-byId("theme-select").addEventListener("change", (event) => setTheme(event.target.value));
+byId("theme-select").addEventListener("change", (event) => { void changeTheme(event.target.value); });
 byId("persona-upload").addEventListener("change", async (event) => {
   try { await uploadReferences(event.target.files, "_persona_"); event.target.value = ""; } catch (error) { showToast(error.message || "上传失败", true); }
 });

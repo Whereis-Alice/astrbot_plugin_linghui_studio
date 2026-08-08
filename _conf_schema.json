@@ -37,6 +37,17 @@
     "min": 1,
     "max": 365
   },
+  "dashboard_theme": {
+    "type": "string",
+    "description": "Dashboard 外观主题",
+    "hint": "深色为默认的玻璃霓虹界面；可选浅色或爱丽丝主题。Dashboard 侧栏切换后会立即保存到插件配置，重新打开页面或更换浏览器仍会保持此选择。",
+    "options": [
+      "dark",
+      "light",
+      "alice"
+    ],
+    "default": "dark"
+  },
   "help_text": {
     "type": "text",
     "description": "帮助文本",

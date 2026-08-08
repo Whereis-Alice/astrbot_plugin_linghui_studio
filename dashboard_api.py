@@ -27,6 +27,7 @@ _MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _PREVIEW_MAX_BYTES = 300 * 1024
 _HISTORY_PREVIEW_MAX_BYTES = 120 * 1024
 _INTERFACE_MODES = {"openai_image", "openai_chat", "gemini_official", "custom_endpoint"}
+_DASHBOARD_THEMES = {"dark", "light", "alice"}
 
 
 class LinghuiDashboardApi:
@@ -39,6 +40,7 @@ class LinghuiDashboardApi:
     def register(self) -> None:
         routes = (
             ("get_config", self.get_config, ["GET"], "Get Linghui Studio configuration"),
+            ("dashboard_theme", self.save_dashboard_theme, ["POST"], "Save Linghui Studio Dashboard theme"),
             ("save_config", self.save_config, ["POST"], "Save Linghui Studio configuration"),
             ("get_usage", self.get_usage, ["GET"], "Get Linghui Studio usage and credits"),
             ("adjust_credit", self.adjust_credit, ["POST"], "Adjust Linghui Studio credits"),
@@ -72,6 +74,11 @@ class LinghuiDashboardApi:
         except (TypeError, ValueError):
             parsed = minimum
         return min(max(parsed, minimum), maximum)
+
+    @staticmethod
+    def _dashboard_theme(value: Any) -> str:
+        theme = str(value or "").strip().lower()
+        return theme if theme in _DASHBOARD_THEMES else "dark"
 
     @staticmethod
     def _id_list(value: Any) -> List[str]:
@@ -269,6 +276,7 @@ class LinghuiDashboardApi:
         )
         return jsonify({
             "success": True,
+            "dashboard_theme": self._dashboard_theme(self.plugin.conf.get("dashboard_theme", "dark")),
             "settings": {
                 "model": str(self.plugin.conf.get("model", "") or ""),
                 "text_to_image_model": str(self.plugin.conf.get("text_to_image_model", "") or ""),
@@ -332,6 +340,22 @@ class LinghuiDashboardApi:
             "presets": self._preset_rows(),
             "references": reference_summary,
         })
+
+    async def save_dashboard_theme(self):
+        """Persist the Dashboard skin without applying unrelated form edits."""
+        payload = await self._json_body()
+        theme = str(payload.get("theme", "") or "").strip().lower()
+        if theme not in _DASHBOARD_THEMES:
+            return jsonify({"success": False, "message": "无效的 Dashboard 主题。"}), 400
+
+        try:
+            async with self._lock:
+                self.plugin.conf["dashboard_theme"] = theme
+                self.plugin._save_config(["dashboard_theme"])
+        except Exception as exc:
+            logger.exception("Linghui dashboard theme save failed")
+            return jsonify({"success": False, "message": f"主题保存失败：{exc}"}), 500
+        return jsonify({"success": True, "theme": theme, "message": "Dashboard 主题已保存。"})
 
     def _existing_channels(self) -> Dict[str, Dict[str, Any]]:
         result: Dict[str, Dict[str, Any]] = {}

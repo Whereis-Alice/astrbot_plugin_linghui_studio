@@ -262,6 +262,7 @@ class DashboardRegistrationTest(unittest.TestCase):
             [path for path, _, _ in registered],
             [
                 "/astrbot_plugin_linghui_studio/get_config",
+                "/astrbot_plugin_linghui_studio/dashboard_theme",
                 "/astrbot_plugin_linghui_studio/save_config",
                 "/astrbot_plugin_linghui_studio/get_usage",
                 "/astrbot_plugin_linghui_studio/adjust_credit",
@@ -355,6 +356,44 @@ class DashboardSaveTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(response["success"])
         self.assertEqual(plugin.conf["custom_drawing_negative_prompt"], "blurry, watermark")
         self.assertEqual(plugin.conf["generation_cache_retention_days"], 14)
+
+
+class DashboardThemeSaveTest(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.DashboardApi = _load_module("dashboard_api", with_quart=True).LinghuiDashboardApi
+
+    async def test_theme_is_saved_without_submitting_the_rest_of_the_dashboard_form(self):
+        saved_keys = []
+        plugin = types.SimpleNamespace(
+            conf={"model": "leave-this-alone"},
+            _save_config=lambda changed_keys: saved_keys.append(changed_keys),
+        )
+        api = self.DashboardApi(plugin)
+
+        async def request_body():
+            return {"theme": "alice"}
+
+        api._json_body = request_body
+        response = await api.save_dashboard_theme()
+
+        self.assertTrue(response["success"])
+        self.assertEqual(plugin.conf["dashboard_theme"], "alice")
+        self.assertEqual(plugin.conf["model"], "leave-this-alone")
+        self.assertEqual(saved_keys, [["dashboard_theme"]])
+
+    async def test_invalid_theme_is_rejected(self):
+        plugin = types.SimpleNamespace(conf={}, _save_config=lambda changed_keys: None)
+        api = self.DashboardApi(plugin)
+
+        async def request_body():
+            return {"theme": "not-a-theme"}
+
+        api._json_body = request_body
+        response, status = await api.save_dashboard_theme()
+
+        self.assertFalse(response["success"])
+        self.assertEqual(status, 400)
 
 
 class DashboardUsageTest(unittest.IsolatedAsyncioTestCase):
