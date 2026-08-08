@@ -20,12 +20,18 @@ const state = {
   usage: { users: [], groups: [], daily_stats: {} },
   history: { records: [], pagination: { offset: 0, limit: 24, total: 0 }, summary: {}, favorite_only: false },
   historyFavoriteOnly: false,
+  historyCache: new Map(),
 };
 
 const THEME_STORAGE_KEY = "linghui-studio-theme";
 const THEME_VALUES = new Set(["dark", "light", "alice"]);
 const HISTORY_PAGE_SIZE = 24;
+const HISTORY_CACHE_TTL_MS = 30_000;
 const PLUGIN_API_BASE = "/api/plug/astrbot_plugin_linghui_studio";
+
+let generationPreviewObserver = null;
+let generationPreviewRenderToken = 0;
+const generationPreviewObjectUrls = new Set();
 
 const titles = {
   overview: ["概览", "查看当前绘图服务状态和今日用量。"],
@@ -364,7 +370,76 @@ function formatHistoryTime(rawValue) {
   return date.toLocaleString("zh-CN", { hour12: false });
 }
 
+function historyCacheKey(offset) {
+  return `${state.historyFavoriteOnly ? "favorites" : "history"}:${Math.max(0, Number(offset) || 0)}`;
+}
+
+function invalidateGenerationHistoryCache() {
+  state.historyCache.clear();
+}
+
+function clearGenerationPreviewLoading() {
+  generationPreviewRenderToken += 1;
+  generationPreviewObserver?.disconnect();
+  generationPreviewObserver = null;
+  generationPreviewObjectUrls.forEach((url) => URL.revokeObjectURL(url));
+  generationPreviewObjectUrls.clear();
+}
+
+async function loadGenerationPreview(image, renderToken) {
+  const recordId = String(image.dataset.generationPreviewId || "").trim();
+  if (!recordId || image.dataset.previewLoading === "true") return;
+  image.dataset.previewLoading = "true";
+  const container = image.closest(".generation-preview");
+  container?.classList.add("loading");
+
+  try {
+    const response = await fetch(
+      `${PLUGIN_API_BASE}/generation_preview?id=${encodeURIComponent(recordId)}`,
+      { credentials: "same-origin" },
+    );
+    if (!response.ok) throw new Error(`预览请求失败 (${response.status})`);
+    const blob = await response.blob();
+    if (!blob.size) throw new Error("预览内容为空");
+    const objectUrl = URL.createObjectURL(blob);
+    if (renderToken !== generationPreviewRenderToken || !image.isConnected) {
+      URL.revokeObjectURL(objectUrl);
+      return;
+    }
+    generationPreviewObjectUrls.add(objectUrl);
+    image.src = objectUrl;
+    container?.classList.remove("loading");
+  } catch (error) {
+    console.warn("Linghui generation preview unavailable", error);
+    container?.classList.remove("loading");
+    container?.classList.add("failed");
+  } finally {
+    delete image.dataset.previewLoading;
+  }
+}
+
+function queueGenerationPreviews() {
+  const images = [...document.querySelectorAll(".generation-preview img[data-generation-preview-id]")];
+  if (!images.length) return;
+  const renderToken = generationPreviewRenderToken;
+  const beginLoad = (image) => { void loadGenerationPreview(image, renderToken); };
+
+  if (!("IntersectionObserver" in window)) {
+    images.forEach(beginLoad);
+    return;
+  }
+  generationPreviewObserver = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      if (!entry.isIntersecting) return;
+      generationPreviewObserver?.unobserve(entry.target);
+      beginLoad(entry.target);
+    });
+  }, { rootMargin: "360px 0px" });
+  images.forEach((image) => generationPreviewObserver.observe(image));
+}
+
 function renderGenerationHistory() {
+  clearGenerationPreviewLoading();
   const history = state.history || {};
   const summary = history.summary || {};
   const pagination = history.pagination || {};
@@ -397,7 +472,6 @@ function renderGenerationHistory() {
       const id = String(record.id || "");
       const isFavorite = bool(record.favorite);
       const isLocked = bool(record.locked);
-      const preview = typeof record.preview === "string" ? record.preview : "";
       const prompt = String(record.prompt || "");
       const user = formatIdentity(record.user_name, record.user_id, "用户");
       const owner = record.group_id ? formatIdentity(record.group_name, record.group_id, "群") : "私聊";
@@ -406,12 +480,13 @@ function renderGenerationHistory() {
       const preset = record.preset || "无预设";
       const taskType = record.task_type || "成功图片";
       const protection = [isFavorite ? "已收藏" : "", isLocked ? "已锁定" : ""].filter(Boolean);
-      const image = preview
-        ? `<img src="${escapeHtml(preview)}" alt="成功图片预览" loading="lazy" />`
+      const previewId = record.image_available && id ? id : "";
+      const image = previewId
+        ? `<img data-generation-preview-id="${escapeHtml(previewId)}" alt="成功图片预览" loading="lazy" decoding="async" />`
         : `<span class="generation-preview-fallback">${record.image_available ? "预览不可用" : "缓存图片不可用"}</span>`;
       return `
         <article class="generation-record${isFavorite || isLocked ? " protected" : ""}">
-          <div class="generation-preview">${image}</div>
+          <div class="generation-preview${previewId ? " loading" : ""}">${image}</div>
           <div class="generation-record-main">
             <div class="generation-record-topline">
               <div class="generation-record-title"><strong>${escapeHtml(taskType)}</strong><span>${escapeHtml(formatHistoryTime(record.created_at))}</span></div>
@@ -442,6 +517,7 @@ function renderGenerationHistory() {
   byId("history-page-status").textContent = `第 ${page} / ${pages} 页，共 ${total} 条`;
   byId("history-prev").disabled = offset <= 0;
   byId("history-next").disabled = offset + limit >= total;
+  queueGenerationPreviews();
 }
 
 function setListValue(id, items) { byId(id).value = (items || []).join("\n"); }
@@ -603,13 +679,21 @@ async function loadUsage() {
   renderCreditTable();
 }
 
-async function loadGenerationHistory(offset = 0) {
+async function loadGenerationHistory(offset = 0, force = false) {
   const safeOffset = Math.max(0, Number(offset) || 0);
-  const response = await bridge.apiGet("generation_history", {
-    limit: HISTORY_PAGE_SIZE,
-    offset: safeOffset,
-    favorite_only: state.historyFavoriteOnly ? "1" : "0",
-  });
+  const cacheKey = historyCacheKey(safeOffset);
+  const cached = state.historyCache.get(cacheKey);
+  let response = cached?.response;
+  if (force || !response || Date.now() - cached.loadedAt > HISTORY_CACHE_TTL_MS) {
+    response = await bridge.apiGet("generation_history", {
+      limit: HISTORY_PAGE_SIZE,
+      offset: safeOffset,
+      favorite_only: state.historyFavoriteOnly ? "1" : "0",
+    });
+    if (response?.success) {
+      state.historyCache.set(cacheKey, { response, loadedAt: Date.now() });
+    }
+  }
   if (!response?.success) throw new Error(response?.message || "无法读取成功记录");
   state.history = response;
   renderGenerationHistory();
@@ -624,6 +708,7 @@ async function updateGenerationRecord(action, id, nextValue) {
   if (!response?.success) throw new Error(response?.message || "成功记录操作失败");
   showToast(response.message || "成功记录已更新");
   const mustRestartFavoritePage = state.historyFavoriteOnly && action === "favorite" && !nextValue;
+  invalidateGenerationHistoryCache();
   await loadGenerationHistory(mustRestartFavoritePage ? 0 : (state.history?.pagination?.offset || 0));
 }
 
@@ -666,6 +751,7 @@ async function deleteGenerationRecord(id) {
   const response = await bridge.apiPost("generation_record", { action: "delete", id });
   if (!response?.success) throw new Error(response?.message || "删除成功记录失败");
   showToast(response.message || "成功记录已删除");
+  invalidateGenerationHistoryCache();
   await loadGenerationHistory(0);
 }
 
@@ -678,11 +764,13 @@ async function cleanupGenerationHistory() {
   const response = await bridge.apiPost("generation_record", { action: "cleanup" });
   if (!response?.success) throw new Error(response?.message || "清理缓存失败");
   showToast(response.message || "过期缓存已清理");
+  invalidateGenerationHistoryCache();
   await loadGenerationHistory(0);
 }
 
 async function loadConfig() {
   setSaveState("正在加载...");
+  invalidateGenerationHistoryCache();
   const response = await bridge.apiGet("get_config");
   if (!response?.success) throw new Error(response?.message || "无法读取配置");
   state.config = response;
@@ -763,6 +851,7 @@ async function clearReference(preset) {
 
 function switchTab(tab) {
   const contentTab = tab === "favorites" ? "history" : tab;
+  if (contentTab !== "history") clearGenerationPreviewLoading();
   document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.tab === tab));
   document.querySelectorAll(".tab-pane").forEach((pane) => pane.classList.toggle("active", pane.id === `tab-${contentTab}`));
   const [title, subtitle] = titles[tab] || titles.overview;
@@ -786,7 +875,7 @@ document.addEventListener("click", async (event) => {
     const themeOption = event.target.closest("[data-theme-option]");
     if (themeOption) { await changeTheme(themeOption.dataset.themeOption); return; }
     if (event.target.closest("#refresh-usage")) { await loadUsage(); showToast("用量已刷新"); return; }
-    if (event.target.closest("#history-refresh")) { await loadGenerationHistory(state.history?.pagination?.offset || 0); showToast("成功记录已刷新"); return; }
+    if (event.target.closest("#history-refresh")) { await loadGenerationHistory(state.history?.pagination?.offset || 0, true); showToast("成功记录已刷新"); return; }
     if (event.target.closest("#history-favorites")) {
       state.historyFavoriteOnly = !state.historyFavoriteOnly;
       switchTab(state.historyFavoriteOnly ? "favorites" : "history");

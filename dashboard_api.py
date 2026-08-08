@@ -25,7 +25,6 @@ DRAWING_CHANNEL_TEMPLATE_KEY = "drawing_channel"
 _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _PREVIEW_MAX_BYTES = 300 * 1024
-_HISTORY_PREVIEW_MAX_BYTES = 120 * 1024
 _INTERFACE_MODES = {"openai_image", "openai_chat", "gemini_official", "custom_endpoint"}
 _DASHBOARD_THEMES = {"dark", "light", "alice"}
 
@@ -48,6 +47,7 @@ class LinghuiDashboardApi:
             ("reference", self.reference, ["POST"], "Manage Linghui Studio reference images"),
             ("asset", self.asset, ["GET"], "Preview Linghui Studio reference image"),
             ("generation_history", self.generation_history, ["GET"], "Get Linghui Studio successful generation history"),
+            ("generation_preview", self.generation_preview, ["GET"], "Preview one Linghui Studio successful image"),
             ("generation_download", self.generation_download, ["GET"], "Download one Linghui Studio successful image"),
             ("generation_record", self.generation_record, ["POST"], "Manage Linghui Studio successful generation history"),
         )
@@ -734,16 +734,9 @@ class LinghuiDashboardApi:
         public_records: List[Dict[str, Any]] = []
         for record in records:
             image_path = manager.get_generation_image_path(record)
-            preview = ""
-            if image_path is not None:
-                preview = await asyncio.to_thread(
-                    self._image_preview_data_url,
-                    image_path,
-                    max_bytes=_HISTORY_PREVIEW_MAX_BYTES,
-                    max_edge=440,
-                )
+            record_id = str(record.get("id", "") or "")
             public_records.append({
-                "id": str(record.get("id", "") or ""),
+                "id": record_id,
                 "created_at": str(record.get("created_at", "") or ""),
                 "user_id": norm_id(record.get("user_id")),
                 "group_id": norm_id(record.get("group_id")),
@@ -762,7 +755,9 @@ class LinghuiDashboardApi:
                 "favorite": self._as_bool(record.get("favorite", False)),
                 "locked": self._as_bool(record.get("locked", False)),
                 "image_available": image_path is not None,
-                "preview": preview,
+                # Keep the list response small. The Dashboard fetches this
+                # authenticated thumbnail lazily only when its tile is visible.
+                "preview_url": f"generation_preview?id={record_id}" if image_path is not None else "",
             })
 
         return jsonify({
@@ -780,6 +775,25 @@ class LinghuiDashboardApi:
                 self.plugin.conf.get("generation_cache_retention_days", 7), 1, 365
             ),
         })
+
+    async def generation_preview(self):
+        """Return one on-demand JPEG thumbnail for the authenticated Dashboard page."""
+        record_id = str(request.args.get("id", "") or "").strip()
+        if not record_id or len(record_id) > 80:
+            return jsonify({"success": False, "message": "请提供有效的成功记录 ID。"}), 400
+
+        manager = self.plugin.data_mgr
+        record = await manager.get_generation_record(record_id)
+        if record is None:
+            return jsonify({"success": False, "message": "未找到成功记录。"}), 404
+        preview_path = await manager.get_or_create_generation_preview(record)
+        if preview_path is None:
+            return jsonify({"success": False, "message": "成功图片预览不可用。"}), 404
+        return await send_file(
+            preview_path,
+            mimetype="image/jpeg",
+            cache_timeout=7 * 24 * 60 * 60,
+        )
 
     async def generation_download(self):
         """Send one cached original image as an authenticated attachment."""
@@ -860,16 +874,18 @@ class LinghuiDashboardApi:
                     )
                 removed_records = self._as_int(result.get("removed_records"), 0, 1_000_000)
                 removed_images = self._as_int(result.get("removed_images"), 0, 1_000_000)
+                removed_previews = self._as_int(result.get("removed_previews"), 0, 1_000_000)
                 removed_orphans = self._as_int(result.get("removed_orphans"), 0, 1_000_000)
                 return jsonify({
                     "success": True,
                     "message": (
                         f"已清理 {removed_records} 条过期记录、{removed_images} 张缓存图片"
-                        f"和 {removed_orphans} 个遗留文件。"
+                        f"、{removed_previews} 张缩略图和 {removed_orphans} 个遗留文件。"
                     ),
                     "result": {
                         "removed_records": removed_records,
                         "removed_images": removed_images,
+                        "removed_previews": removed_previews,
                         "removed_orphans": removed_orphans,
                     },
                 })

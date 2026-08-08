@@ -1,4 +1,4 @@
-import re
+﻿import re
 import asyncio
 import json
 from functools import wraps
@@ -22,6 +22,7 @@ from .dashboard_api import DRAWING_CHANNEL_TEMPLATE_KEY, LinghuiDashboardApi, PL
 from .utils import (
     append_negative_prompt,
     extract_image_urls_from_text,
+    is_ambiguous_message_delivery_timeout,
     is_custom_drawing_command,
     norm_id,
     normalize_model_list,
@@ -1052,7 +1053,7 @@ class LinghuiStudioPlugin(Star):
 
         auto_detect_status = "已启用" if self._llm_auto_detect else "未启用"
         logger.info(
-            f"LinghuiStudio 已加载 v3.3.1 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
+            f"LinghuiStudio 已加载 v3.3.2 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
 
     def _generation_cache_retention_days(self) -> int:
         """Return a bounded retention period for successful output cache files."""
@@ -1065,13 +1066,14 @@ class LinghuiStudioPlugin(Star):
         """Delete only expired, unprotected successful-output cache entries."""
         result = await self.data_mgr.cleanup_generation_cache(self._generation_cache_retention_days())
         removed = sum(int(result.get(key, 0) or 0) for key in (
-            "removed_records", "removed_images", "removed_orphans"
+            "removed_records", "removed_images", "removed_previews", "removed_orphans"
         ))
         if removed:
             logger.info(
-                "LinghuiStudio: cleaned generation cache (%s records, %s images, %s orphan files)",
+                "LinghuiStudio: cleaned generation cache (%s records, %s images, %s previews, %s orphan files)",
                 result.get("removed_records", 0),
                 result.get("removed_images", 0),
+                result.get("removed_previews", 0),
                 result.get("removed_orphans", 0),
             )
         return result
@@ -2477,6 +2479,18 @@ class LinghuiStudioPlugin(Star):
         """发送前保持原图，避免任何有损压缩或缩放。"""
         return image_bytes
 
+    async def _send_generated_result(self, event: AstrMessageEvent, chain: Any) -> None:
+        """Send one completed image result without duplicating QQ late-ACK sends."""
+        try:
+            await event.send(chain)
+        except Exception as exc:
+            if not is_ambiguous_message_delivery_timeout(exc):
+                raise
+            logger.warning(
+                "Linghui image result has a late QQ send receipt; keeping the completed task successful without retrying: %s",
+                exc,
+            )
+
     async def _get_active_session_task(self, session_id: str) -> Optional[Dict[str, Any]]:
         """获取当前会话中的进行中任务"""
         if not session_id:
@@ -2730,7 +2744,7 @@ class LinghuiStudioPlugin(Star):
                     chain_nodes.append(Plain(" "))  # 防止某些适配器丢弃纯图片消息
 
                 chain = event.chain_result(chain_nodes)
-                await event.send(chain)
+                await self._send_generated_result(event, chain)
                 return True, ""
             else:
                 error_msg = self._resolve_debug_error_message(res,
@@ -2846,7 +2860,7 @@ class LinghuiStudioPlugin(Star):
                                         info_text += f" | 规则: {extra_rules[:15]}..."
                                     chain_nodes.append(Plain(info_text))
 
-                                await event.send(event.chain_result(chain_nodes))
+                                await self._send_generated_result(event, event.chain_result(chain_nodes))
                                 success = True
                                 break
                             else:
@@ -2994,7 +3008,7 @@ class LinghuiStudioPlugin(Star):
                                         info_text += f" | 规则: {extra_rules[:15]}..."
                                     chain_nodes.append(Plain(info_text))
 
-                                await event.send(event.chain_result(chain_nodes))
+                                await self._send_generated_result(event, event.chain_result(chain_nodes))
                                 success = True
                                 break
                             else:
@@ -5286,7 +5300,7 @@ class LinghuiStudioPlugin(Star):
 
                 # 发送结果
                 chain = event.chain_result(chain_nodes)
-                await event.send(chain)
+                await self._send_generated_result(event, chain)
                 return True, ""
             else:
                 # API返回错误

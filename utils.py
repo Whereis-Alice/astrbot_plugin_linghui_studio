@@ -4,6 +4,10 @@ from urllib.parse import urlsplit, urlunsplit
 
 
 _API_VERSION_SEGMENT = re.compile(r"^v\d+(?:(?:alpha|beta)\d*)?$", re.IGNORECASE)
+_QQ_AMBIGUOUS_DELIVERY_TIMEOUT_MARKERS = (
+    "sendmsg",
+    "nodeikernelmsgservice",
+)
 
 
 def norm_id(raw_id: Any) -> str:
@@ -65,6 +69,21 @@ def append_negative_prompt(prompt: Any, negative_prompt: Any) -> str:
     if clause.casefold() in final_prompt.casefold():
         return final_prompt
     return f"{final_prompt}\n\n{clause}"
+
+
+def is_ambiguous_message_delivery_timeout(error: Any) -> bool:
+    """Identify QQ send-receipt timeouts whose delivery state is unknown.
+
+    The QQ adapter can report ``ActionFailed ... Timeout`` after the image
+    payload has already reached QQ.  Retrying that case sends duplicate
+    pictures, while treating every timeout as successful would hide real
+    delivery failures.  Restrict the exception to the adapter's send-message
+    markers only.
+    """
+    text = str(error or "").casefold()
+    return "timeout" in text and any(
+        marker in text for marker in _QQ_AMBIGUOUS_DELIVERY_TIMEOUT_MARKERS
+    )
 
 
 def normalize_api_root(raw_url: Any) -> str:

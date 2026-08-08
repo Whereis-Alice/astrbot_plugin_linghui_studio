@@ -113,6 +113,22 @@ class PromptProcessorTest(unittest.TestCase):
         )
 
 
+class QqDeliveryTimeoutTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.is_ambiguous_timeout = _load_module("utils").is_ambiguous_message_delivery_timeout
+
+    def test_qq_send_receipt_timeout_is_the_only_delivery_timeout_treated_as_ambiguous(self):
+        self.assertTrue(type(self).is_ambiguous_timeout(
+            "ActionFailed: Timeout: NodeIKernelMsgService/sendMsg ListenerName:onMsgInfoListUpdate"
+        ))
+        self.assertTrue(type(self).is_ambiguous_timeout(
+            "timeout while waiting for sendMsg response"
+        ))
+        self.assertFalse(type(self).is_ambiguous_timeout("Timeout while contacting the drawing provider"))
+        self.assertFalse(type(self).is_ambiguous_timeout("NodeIKernelMsgService/sendMsg rejected the request"))
+
+
 class DrawingChannelRouterTest(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls):
@@ -298,6 +314,7 @@ class DashboardRegistrationTest(unittest.TestCase):
                 "/astrbot_plugin_linghui_studio/reference",
                 "/astrbot_plugin_linghui_studio/asset",
                 "/astrbot_plugin_linghui_studio/generation_history",
+                "/astrbot_plugin_linghui_studio/generation_preview",
                 "/astrbot_plugin_linghui_studio/generation_download",
                 "/astrbot_plugin_linghui_studio/generation_record",
             ],
@@ -526,6 +543,12 @@ class GenerationHistoryStorageTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(manager.get_generation_image_path(record).is_file())
             self.assertEqual(record["prompt"], "cinematic portrait")
             self.assertEqual(record["group_id"], "20002")
+            preview_path = await manager.get_or_create_generation_preview(record)
+            self.assertIsNotNone(preview_path)
+            self.assertTrue(preview_path.is_file())
+            with Image.open(preview_path) as preview:
+                self.assertEqual(preview.format, "JPEG")
+                self.assertLessEqual(max(preview.size), 440)
 
             manager.generation_history[0]["created_at"] = (
                 datetime.now() - timedelta(days=10)
@@ -544,7 +567,9 @@ class GenerationHistoryStorageTest(unittest.IsolatedAsyncioTestCase):
             await manager.update_generation_record_flags(record["id"], locked=False)
             expired_cleanup = await manager.cleanup_generation_cache(7)
             self.assertEqual(expired_cleanup["removed_records"], 1)
+            self.assertEqual(expired_cleanup["removed_previews"], 1)
             self.assertEqual(manager.generation_history, [])
+            self.assertFalse(preview_path.exists())
 
 
 class IdentityLabelStorageTest(unittest.IsolatedAsyncioTestCase):
@@ -607,7 +632,7 @@ class DashboardGenerationHistoryTest(unittest.IsolatedAsyncioTestCase):
         cls.DashboardApi = cls.dashboard_module.LinghuiDashboardApi
         cls.DataManager = _load_module("data_manager").DataManager
 
-    async def test_history_returns_inline_preview_and_favorite_operation(self):
+    async def test_history_returns_lazy_preview_endpoint_and_favorite_operation(self):
         output = io.BytesIO()
         Image.new("RGB", (800, 500), (100, 60, 220)).save(output, "PNG")
 
@@ -640,8 +665,25 @@ class DashboardGenerationHistoryTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(payload["records"][0]["prompt"], "a violet neon city")
             self.assertEqual(payload["records"][0]["user_name"], "Alice")
             self.assertEqual(payload["records"][0]["group_name"], "Example Group")
-            self.assertTrue(payload["records"][0]["preview"].startswith("data:image/jpeg;base64,"))
-            self.assertNotIn(str(manager.generation_cache_dir), payload["records"][0]["preview"])
+            self.assertEqual(
+                payload["records"][0]["preview_url"],
+                f"generation_preview?id={record['id']}",
+            )
+            self.assertNotIn("preview", payload["records"][0])
+
+            self.dashboard_module.request.args = {"id": record["id"]}
+            try:
+                previewed = await api.generation_preview()
+            finally:
+                self.dashboard_module.request.args = original_args
+            preview_args, preview_kwargs = previewed
+            preview_path = preview_args[0]
+            self.assertTrue(preview_path.is_file())
+            self.assertEqual(preview_kwargs["mimetype"], "image/jpeg")
+            self.assertEqual(preview_path.parent, manager.generation_preview_cache_dir)
+            with Image.open(preview_path) as preview:
+                self.assertEqual(preview.format, "JPEG")
+                self.assertLessEqual(max(preview.size), 440)
 
             self.dashboard_module.request.args = {"id": record["id"]}
             try:

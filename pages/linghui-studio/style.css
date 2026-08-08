@@ -122,7 +122,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   width: min(1600px, 100%);
   min-height: calc(100vh - 48px);
   display: grid;
-  grid-template-columns: 270px minmax(0, 1fr);
+  grid-template-columns: 236px minmax(0, 1fr);
   margin: 0 auto;
   overflow: hidden;
   border: 1px solid var(--frame-line);
@@ -133,10 +133,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 .sidebar {
   min-height: 100%;
-  padding: 24px 16px 16px;
+  padding: 20px 13px 14px;
   display: flex;
   flex-direction: column;
-  gap: 17px;
+  gap: 14px;
   color: var(--sidebar-ink);
   background: var(--sidebar);
   border-right: 1px solid var(--line);
@@ -164,10 +164,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .brand-copy small { overflow: hidden; color: var(--cyan); font-size: 10px; font-weight: 700; line-height: 1.2; letter-spacing: .11em; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar-rule { height: 1px; margin: 0 3px; background: var(--line); box-shadow: 0 1px 0 var(--glass-shine); }
 
-.nav-list { display: grid; gap: 6px; }
+.nav-list { display: grid; gap: 5px; }
 .nav-item {
-  min-height: 42px;
-  padding: 10px 11px 10px 13px;
+  min-height: 40px;
+  padding: 9px 9px 9px 11px;
   border: 1px solid transparent;
   border-left: 3px solid transparent;
   border-radius: 6px;
@@ -176,7 +176,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   text-align: left;
   transition: border-color .16s ease, background .16s ease, color .16s ease, box-shadow .16s ease, transform .16s ease;
 }
-.nav-item::before { content: "//"; display: inline-block; width: 23px; color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .04em; }
 .nav-item:hover {
   color: var(--sidebar-ink);
   border-color: var(--line);
@@ -190,7 +189,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   background: var(--cyan-wash);
   box-shadow: inset 0 0 18px rgba(65, 230, 221, 0.1), 0 0 16px rgba(65, 230, 221, 0.08);
 }
-.nav-item.active::before { color: var(--cyan-bright); }
 
 .sidebar-actions {
   display: grid;
@@ -392,9 +390,12 @@ h3 { color: var(--subtle); font-size: 14px; }
 .generation-record.protected { border-left-color: var(--amber); }
 .generation-preview { position: relative; min-width: 0; min-height: 148px; display: grid; place-items: center; overflow: hidden; background: var(--input); border-right: 1px solid var(--line); }
 .generation-preview img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.generation-preview.loading::after { content: ""; position: absolute; width: 34px; height: 34px; border: 2px solid var(--line-strong); border-top-color: var(--cyan); border-right-color: var(--magenta); border-radius: 50%; animation: history-preview-spin .8s linear infinite; }
+.generation-preview.loading img:not([src]) { opacity: 0; }
 .generation-preview-fallback { padding: 14px; color: var(--muted); font-size: 12px; line-height: 1.45; text-align: center; }
 .generation-preview.failed img { opacity: 0; }
 .generation-preview.failed::after { content: "预览不可用"; position: absolute; inset: 0; display: grid; place-items: center; padding: 14px; color: var(--muted); background: var(--input); font-size: 12px; text-align: center; }
+@keyframes history-preview-spin { to { transform: rotate(360deg); } }
 .generation-record-main { min-width: 0; padding: 12px 14px; display: grid; align-content: start; gap: 9px; }
 .generation-record-topline { min-width: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .generation-record-title { min-width: 0; display: grid; gap: 3px; }
@@ -453,7 +454,6 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: .5; }
   .sidebar { min-height: auto; padding: 14px; gap: 12px; border-right: 0; border-bottom: 1px solid var(--line); }
   .nav-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .nav-item { padding: 8px 5px; border-left-width: 1px; text-align: center; font-size: 13px; }
-  .nav-item::before { display: none; }
   .nav-item.active { border-left-color: rgba(65, 230, 221, 0.34); border-bottom-color: var(--cyan); }
   .sidebar-actions { width: min(500px, 100%); margin-top: 0; }
   .workspace { padding: 20px 16px 40px; }
