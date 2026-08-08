@@ -78,6 +78,7 @@ class DataManager:
         self._state_lock = asyncio.Lock()
         self._generation_preview_lock = asyncio.Lock()
         self._generation_history_summary_cache: Optional[Tuple[str, Dict[str, int]]] = None
+        self._generation_history_favorites_cache: Optional[List[Dict[str, Any]]] = None
 
     async def initialize(self):
         await self._load_json(self.user_counts_file, "user_counts")
@@ -572,6 +573,15 @@ class DataManager:
 
     def _invalidate_generation_history_summary_locked(self) -> None:
         self._generation_history_summary_cache = None
+        self._generation_history_favorites_cache = None
+
+    def _favorite_generation_history_locked(self) -> List[Dict[str, Any]]:
+        """Reuse the favorite-only view until the history changes."""
+        cached = self._generation_history_favorites_cache
+        if cached is None:
+            cached = [item for item in self.generation_history if self._history_bool(item.get("favorite", False))]
+            self._generation_history_favorites_cache = cached
+        return cached
 
     def _generation_history_summary_locked(self) -> Dict[str, int]:
         """Compute history statistics once per mutation instead of once per page request."""
@@ -727,10 +737,7 @@ class DataManager:
         limit = min(max(1, limit), 100)
         offset = max(0, offset)
         async with self._state_lock:
-            source_records = (
-                [item for item in self.generation_history if item.get("favorite")]
-                if favorite_only else self.generation_history
-            )
+            source_records = self._favorite_generation_history_locked() if favorite_only else self.generation_history
             total = len(source_records)
             page = [dict(item) for item in source_records[offset:offset + limit]]
             summary = self._generation_history_summary_locked()

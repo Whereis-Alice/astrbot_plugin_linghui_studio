@@ -93,6 +93,10 @@ class ConfigurationDocumentationTest(unittest.TestCase):
 
         for name, definition in schema.items():
             self.assertTrue(definition.get("hint"), f"{name} is missing a configuration hint")
+            self.assertTrue(
+                str(definition.get("description", "")).startswith("【"),
+                f"{name} is missing its configuration module label",
+            )
             for template in (definition.get("templates") or {}).values():
                 for field_name, field in (template.get("items") or {}).items():
                     self.assertTrue(field.get("hint"), f"{name}.{field_name} is missing a configuration hint")
@@ -315,6 +319,7 @@ class DashboardRegistrationTest(unittest.TestCase):
                 "/astrbot_plugin_linghui_studio/asset",
                 "/astrbot_plugin_linghui_studio/generation_history",
                 "/astrbot_plugin_linghui_studio/generation_preview",
+                "/astrbot_plugin_linghui_studio/generation_prompt",
                 "/astrbot_plugin_linghui_studio/generation_download",
                 "/astrbot_plugin_linghui_studio/generation_record",
             ],
@@ -632,7 +637,7 @@ class DashboardGenerationHistoryTest(unittest.IsolatedAsyncioTestCase):
         cls.DashboardApi = cls.dashboard_module.LinghuiDashboardApi
         cls.DataManager = _load_module("data_manager").DataManager
 
-    async def test_history_returns_lazy_preview_endpoint_and_favorite_operation(self):
+    async def test_history_returns_lazy_bridge_payloads_and_favorite_operation(self):
         output = io.BytesIO()
         Image.new("RGB", (800, 500), (100, 60, 220)).save(output, "PNG")
 
@@ -662,13 +667,10 @@ class DashboardGenerationHistoryTest(unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(payload["success"])
             self.assertEqual(payload["summary"]["groups"], 1)
-            self.assertEqual(payload["records"][0]["prompt"], "a violet neon city")
+            self.assertTrue(payload["records"][0]["has_prompt"])
+            self.assertNotIn("prompt", payload["records"][0])
             self.assertEqual(payload["records"][0]["user_name"], "Alice")
             self.assertEqual(payload["records"][0]["group_name"], "Example Group")
-            self.assertEqual(
-                payload["records"][0]["preview_url"],
-                f"generation_preview?id={record['id']}",
-            )
             self.assertNotIn("preview", payload["records"][0])
 
             self.dashboard_module.request.args = {"id": record["id"]}
@@ -676,14 +678,22 @@ class DashboardGenerationHistoryTest(unittest.IsolatedAsyncioTestCase):
                 previewed = await api.generation_preview()
             finally:
                 self.dashboard_module.request.args = original_args
-            preview_args, preview_kwargs = previewed
-            preview_path = preview_args[0]
+            self.assertTrue(previewed["success"])
+            self.assertTrue(previewed["preview"].startswith("data:image/jpeg;base64,"))
+            preview_path = manager.get_generation_preview_path(record)
+            self.assertIsNotNone(preview_path)
             self.assertTrue(preview_path.is_file())
-            self.assertEqual(preview_kwargs["mimetype"], "image/jpeg")
-            self.assertEqual(preview_path.parent, manager.generation_preview_cache_dir)
-            with Image.open(preview_path) as preview:
+            with Image.open(io.BytesIO(base64.b64decode(previewed["preview"].split(",", 1)[1]))) as preview:
                 self.assertEqual(preview.format, "JPEG")
                 self.assertLessEqual(max(preview.size), 440)
+
+            self.dashboard_module.request.args = {"id": record["id"]}
+            try:
+                prompted = await api.generation_prompt()
+            finally:
+                self.dashboard_module.request.args = original_args
+            self.assertTrue(prompted["success"])
+            self.assertEqual(prompted["prompt"], "a violet neon city")
 
             self.dashboard_module.request.args = {"id": record["id"]}
             try:

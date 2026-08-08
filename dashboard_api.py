@@ -48,6 +48,7 @@ class LinghuiDashboardApi:
             ("asset", self.asset, ["GET"], "Preview Linghui Studio reference image"),
             ("generation_history", self.generation_history, ["GET"], "Get Linghui Studio successful generation history"),
             ("generation_preview", self.generation_preview, ["GET"], "Preview one Linghui Studio successful image"),
+            ("generation_prompt", self.generation_prompt, ["GET"], "Get one Linghui Studio successful generation prompt"),
             ("generation_download", self.generation_download, ["GET"], "Download one Linghui Studio successful image"),
             ("generation_record", self.generation_record, ["POST"], "Manage Linghui Studio successful generation history"),
         )
@@ -744,7 +745,9 @@ class LinghuiDashboardApi:
                 or identity_labels["users"].get(norm_id(record.get("user_id")), ""),
                 "group_name": str(record.get("group_name", "") or "").strip()[:160]
                 or identity_labels["groups"].get(norm_id(record.get("group_id")), ""),
-                "prompt": str(record.get("prompt", "") or ""),
+                # Prompts can be up to 12,000 characters. Fetch the full text
+                # only when an administrator expands a record in the Dashboard.
+                "has_prompt": bool(str(record.get("prompt", "") or "").strip()),
                 "model": str(record.get("model", "") or ""),
                 "preset": str(record.get("preset", "") or ""),
                 "task_type": str(record.get("task_type", "") or ""),
@@ -755,9 +758,6 @@ class LinghuiDashboardApi:
                 "favorite": self._as_bool(record.get("favorite", False)),
                 "locked": self._as_bool(record.get("locked", False)),
                 "image_available": image_path is not None,
-                # Keep the list response small. The Dashboard fetches this
-                # authenticated thumbnail lazily only when its tile is visible.
-                "preview_url": f"generation_preview?id={record_id}" if image_path is not None else "",
             })
 
         return jsonify({
@@ -777,7 +777,7 @@ class LinghuiDashboardApi:
         })
 
     async def generation_preview(self):
-        """Return one on-demand JPEG thumbnail for the authenticated Dashboard page."""
+        """Return one on-demand JPEG data URL through the Plugin Page bridge."""
         record_id = str(request.args.get("id", "") or "").strip()
         if not record_id or len(record_id) > 80:
             return jsonify({"success": False, "message": "请提供有效的成功记录 ID。"}), 400
@@ -789,11 +789,35 @@ class LinghuiDashboardApi:
         preview_path = await manager.get_or_create_generation_preview(record)
         if preview_path is None:
             return jsonify({"success": False, "message": "成功图片预览不可用。"}), 404
-        return await send_file(
-            preview_path,
-            mimetype="image/jpeg",
-            cache_timeout=7 * 24 * 60 * 60,
-        )
+        try:
+            preview_bytes = await asyncio.to_thread(preview_path.read_bytes)
+        except OSError as exc:
+            logger.warning("Linghui dashboard could not read cached generation preview: %s", exc)
+            return jsonify({"success": False, "message": "成功图片预览不可用。"}), 404
+        if not preview_bytes:
+            return jsonify({"success": False, "message": "成功图片预览不可用。"}), 404
+        return jsonify({
+            "success": True,
+            "id": record_id,
+            "preview": f"data:image/jpeg;base64,{base64.b64encode(preview_bytes).decode('ascii')}",
+        })
+
+    async def generation_prompt(self):
+        """Return a single prompt on demand so list pages stay lightweight."""
+        record_id = str(request.args.get("id", "") or "").strip()
+        if not record_id or len(record_id) > 80:
+            return jsonify({"success": False, "message": "请提供有效的成功记录 ID。"}), 400
+
+        record = await self.plugin.data_mgr.get_generation_record(record_id)
+        if record is None:
+            return jsonify({"success": False, "message": "未找到成功记录。"}), 404
+        prompt = str(record.get("prompt", "") or "")
+        return jsonify({
+            "success": True,
+            "id": record_id,
+            "has_prompt": bool(prompt.strip()),
+            "prompt": prompt,
+        })
 
     async def generation_download(self):
         """Send one cached original image as an authenticated attachment."""

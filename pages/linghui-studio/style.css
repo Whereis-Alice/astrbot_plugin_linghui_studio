@@ -30,6 +30,8 @@
   --primary-fill: rgba(65, 230, 221, 0.86);
   --panel-shadow: 0 22px 48px rgba(0, 0, 0, 0.3);
   --frame-shadow: 0 24px 64px rgba(1, 2, 12, 0.58), 0 0 30px rgba(130, 108, 238, 0.1);
+  --grid-line-minor: rgba(129, 117, 221, 0.1);
+  --grid-line-major: rgba(226, 97, 218, 0.22);
 }
 
 html[data-theme="light"] {
@@ -63,6 +65,8 @@ html[data-theme="light"] {
   --primary-fill: rgba(0, 143, 147, 0.92);
   --panel-shadow: 0 16px 36px rgba(43, 55, 104, 0.1);
   --frame-shadow: 0 20px 54px rgba(46, 58, 111, 0.14), 0 0 24px rgba(104, 87, 201, 0.08);
+  --grid-line-minor: rgba(87, 112, 176, 0.12);
+  --grid-line-major: rgba(118, 89, 195, 0.22);
 }
 
 html[data-theme="alice"] {
@@ -96,6 +100,8 @@ html[data-theme="alice"] {
   --primary-fill: rgba(228, 108, 255, 0.86);
   --panel-shadow: 0 22px 48px rgba(4, 1, 12, 0.42);
   --frame-shadow: 0 24px 64px rgba(4, 1, 12, 0.62), 0 0 34px rgba(227, 111, 255, 0.13);
+  --grid-line-minor: rgba(228, 136, 255, 0.11);
+  --grid-line-major: rgba(80, 238, 222, 0.22);
 }
 
 * { box-sizing: border-box; }
@@ -103,12 +109,29 @@ html[data-theme="alice"] {
 ::selection { color: var(--button-ink); background: var(--cyan); }
 
 body {
+  position: relative;
+  isolation: isolate;
   min-width: 320px;
   min-height: 100vh;
   margin: 0;
   padding: 24px;
   color: var(--ink);
   background: var(--canvas);
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  z-index: 0;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, var(--grid-line-minor) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line-minor) 1px, transparent 1px),
+    linear-gradient(to right, var(--grid-line-major) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line-major) 1px, transparent 1px);
+  background-position: center;
+  background-size: 32px 32px, 32px 32px, 160px 160px, 160px 160px;
 }
 
 button, input, textarea, select { font: inherit; color: inherit; }
@@ -119,6 +142,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 
 .shell {
+  position: relative;
+  z-index: 1;
   width: min(1600px, 100%);
   min-height: calc(100vh - 48px);
   display: grid;

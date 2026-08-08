@@ -21,6 +21,8 @@ const state = {
   history: { records: [], pagination: { offset: 0, limit: 24, total: 0 }, summary: {}, favorite_only: false },
   historyFavoriteOnly: false,
   historyCache: new Map(),
+  generationPreviewCache: new Map(),
+  generationPromptCache: new Map(),
 };
 
 const THEME_STORAGE_KEY = "linghui-studio-theme";
@@ -28,10 +30,14 @@ const THEME_VALUES = new Set(["dark", "light", "alice"]);
 const HISTORY_PAGE_SIZE = 24;
 const HISTORY_CACHE_TTL_MS = 30_000;
 const PLUGIN_API_BASE = "/api/plug/astrbot_plugin_linghui_studio";
+const GENERATION_PREVIEW_CONCURRENCY = 2;
+const GENERATION_PREVIEW_CACHE_LIMIT = 48;
+const GENERATION_PROMPT_CACHE_LIMIT = 60;
 
 let generationPreviewObserver = null;
 let generationPreviewRenderToken = 0;
-const generationPreviewObjectUrls = new Set();
+let generationPreviewQueue = [];
+let generationPreviewActive = 0;
 
 const titles = {
   overview: ["概览", "查看当前绘图服务状态和今日用量。"],
@@ -382,32 +388,37 @@ function clearGenerationPreviewLoading() {
   generationPreviewRenderToken += 1;
   generationPreviewObserver?.disconnect();
   generationPreviewObserver = null;
-  generationPreviewObjectUrls.forEach((url) => URL.revokeObjectURL(url));
-  generationPreviewObjectUrls.clear();
+  generationPreviewQueue = [];
+}
+
+function setBoundedCache(cache, key, value, limit) {
+  cache.delete(key);
+  cache.set(key, value);
+  while (cache.size > limit) cache.delete(cache.keys().next().value);
 }
 
 async function loadGenerationPreview(image, renderToken) {
   const recordId = String(image.dataset.generationPreviewId || "").trim();
   if (!recordId || image.dataset.previewLoading === "true") return;
+  delete image.dataset.previewQueued;
   image.dataset.previewLoading = "true";
   const container = image.closest(".generation-preview");
   container?.classList.add("loading");
 
   try {
-    const response = await fetch(
-      `${PLUGIN_API_BASE}/generation_preview?id=${encodeURIComponent(recordId)}`,
-      { credentials: "same-origin" },
-    );
-    if (!response.ok) throw new Error(`预览请求失败 (${response.status})`);
-    const blob = await response.blob();
-    if (!blob.size) throw new Error("预览内容为空");
-    const objectUrl = URL.createObjectURL(blob);
+    let preview = state.generationPreviewCache.get(recordId);
+    if (!preview) {
+      const response = await bridge.apiGet("generation_preview", { id: recordId });
+      if (!response?.success || typeof response.preview !== "string" || !response.preview.startsWith("data:image/")) {
+        throw new Error(response?.message || "预览内容不可用");
+      }
+      preview = response.preview;
+      setBoundedCache(state.generationPreviewCache, recordId, preview, GENERATION_PREVIEW_CACHE_LIMIT);
+    }
     if (renderToken !== generationPreviewRenderToken || !image.isConnected) {
-      URL.revokeObjectURL(objectUrl);
       return;
     }
-    generationPreviewObjectUrls.add(objectUrl);
-    image.src = objectUrl;
+    image.src = preview;
     container?.classList.remove("loading");
   } catch (error) {
     console.warn("Linghui generation preview unavailable", error);
@@ -418,11 +429,33 @@ async function loadGenerationPreview(image, renderToken) {
   }
 }
 
+function drainGenerationPreviewQueue() {
+  while (generationPreviewActive < GENERATION_PREVIEW_CONCURRENCY && generationPreviewQueue.length) {
+    const job = generationPreviewQueue.shift();
+    if (!job?.image?.isConnected || job.renderToken !== generationPreviewRenderToken) {
+      delete job?.image?.dataset.previewQueued;
+      continue;
+    }
+    generationPreviewActive += 1;
+    void loadGenerationPreview(job.image, job.renderToken).finally(() => {
+      generationPreviewActive -= 1;
+      drainGenerationPreviewQueue();
+    });
+  }
+}
+
+function queueGenerationPreview(image, renderToken) {
+  if (!image?.isConnected || image.dataset.previewQueued === "true" || image.dataset.previewLoading === "true") return;
+  image.dataset.previewQueued = "true";
+  generationPreviewQueue.push({ image, renderToken });
+  drainGenerationPreviewQueue();
+}
+
 function queueGenerationPreviews() {
   const images = [...document.querySelectorAll(".generation-preview img[data-generation-preview-id]")];
   if (!images.length) return;
   const renderToken = generationPreviewRenderToken;
-  const beginLoad = (image) => { void loadGenerationPreview(image, renderToken); };
+  const beginLoad = (image) => queueGenerationPreview(image, renderToken);
 
   if (!("IntersectionObserver" in window)) {
     images.forEach(beginLoad);
@@ -436,6 +469,33 @@ function queueGenerationPreviews() {
     });
   }, { rootMargin: "360px 0px" });
   images.forEach((image) => generationPreviewObserver.observe(image));
+}
+
+async function loadGenerationPrompt(details) {
+  const recordId = String(details?.dataset.generationPromptId || "").trim();
+  const output = details?.querySelector("pre");
+  if (!recordId || !output || details.dataset.promptLoaded === "true" || details.dataset.promptLoading === "true") return;
+  details.dataset.promptLoading = "true";
+  output.textContent = "正在加载提示词...";
+
+  try {
+    let prompt;
+    if (state.generationPromptCache.has(recordId)) {
+      prompt = state.generationPromptCache.get(recordId);
+    } else {
+      const response = await bridge.apiGet("generation_prompt", { id: recordId });
+      if (!response?.success) throw new Error(response?.message || "提示词加载失败");
+      prompt = String(response.prompt || "");
+      setBoundedCache(state.generationPromptCache, recordId, prompt, GENERATION_PROMPT_CACHE_LIMIT);
+    }
+    output.textContent = prompt.trim() || "未记录提示词";
+    details.dataset.promptLoaded = "true";
+  } catch (error) {
+    console.warn("Linghui generation prompt unavailable", error);
+    output.textContent = "提示词加载失败，请稍后重试。";
+  } finally {
+    delete details.dataset.promptLoading;
+  }
 }
 
 function renderGenerationHistory() {
@@ -472,7 +532,7 @@ function renderGenerationHistory() {
       const id = String(record.id || "");
       const isFavorite = bool(record.favorite);
       const isLocked = bool(record.locked);
-      const prompt = String(record.prompt || "");
+      const hasPrompt = bool(record.has_prompt);
       const user = formatIdentity(record.user_name, record.user_id, "用户");
       const owner = record.group_id ? formatIdentity(record.group_name, record.group_id, "群") : "私聊";
       const dimension = record.width && record.height ? `${record.width} × ${record.height}` : "尺寸未知";
@@ -501,7 +561,7 @@ function renderGenerationHistory() {
               <span>用户 ${escapeHtml(user)}</span><span>${escapeHtml(owner)}</span><span>${escapeHtml(dimension)}</span><span>${escapeHtml(formatBytes(record.size_bytes))}</span><span>${escapeHtml(model)}</span><span>${escapeHtml(preset)}</span>
             </div>
             ${protection.length ? `<div class="generation-protection">${protection.map((label) => `<span>${label}</span>`).join("")}</div>` : ""}
-            <details class="generation-prompt"><summary>请求提示词</summary><pre>${escapeHtml(prompt || "未记录提示词")}</pre></details>
+            <details class="generation-prompt"${hasPrompt && id ? ` data-generation-prompt-id="${escapeHtml(id)}"` : ""}><summary>请求提示词</summary><pre>${hasPrompt ? "展开后加载" : "未记录提示词"}</pre></details>
           </div>
         </article>`;
     }).join("");
@@ -751,6 +811,8 @@ async function deleteGenerationRecord(id) {
   const response = await bridge.apiPost("generation_record", { action: "delete", id });
   if (!response?.success) throw new Error(response?.message || "删除成功记录失败");
   showToast(response.message || "成功记录已删除");
+  state.generationPreviewCache.delete(String(id || ""));
+  state.generationPromptCache.delete(String(id || ""));
   invalidateGenerationHistoryCache();
   await loadGenerationHistory(0);
 }
@@ -764,6 +826,8 @@ async function cleanupGenerationHistory() {
   const response = await bridge.apiPost("generation_record", { action: "cleanup" });
   if (!response?.success) throw new Error(response?.message || "清理缓存失败");
   showToast(response.message || "过期缓存已清理");
+  state.generationPreviewCache.clear();
+  state.generationPromptCache.clear();
   invalidateGenerationHistoryCache();
   await loadGenerationHistory(0);
 }
@@ -936,6 +1000,12 @@ document.addEventListener("click", async (event) => {
     setSaveState("操作失败");
   }
 });
+
+document.addEventListener("toggle", (event) => {
+  const details = event.target;
+  if (!(details instanceof HTMLDetailsElement) || !details.matches(".generation-prompt") || !details.open) return;
+  void loadGenerationPrompt(details);
+}, true);
 
 document.addEventListener("error", (event) => {
   const image = event.target;
