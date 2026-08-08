@@ -7,6 +7,7 @@ import sys
 import tempfile
 import types
 import unittest
+from datetime import datetime
 
 from PIL import Image
 
@@ -347,6 +348,37 @@ class DashboardSaveTest(unittest.IsolatedAsyncioTestCase):
         response = await api.save_config()
         self.assertTrue(response["success"])
         self.assertEqual(plugin.conf["custom_drawing_negative_prompt"], "blurry, watermark")
+
+
+class DashboardUsageTest(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.DashboardApi = _load_module("dashboard_api", with_quart=True).LinghuiDashboardApi
+
+    async def test_daily_usage_exposes_group_and_user_counts(self):
+        today = datetime.now().strftime("%Y-%m-%d")
+        manager = types.SimpleNamespace(
+            user_counts={"user-1": 8},
+            group_counts={"group-1": 12},
+            user_checkin_data={},
+            daily_stats={"date": today, "users": {"user-1": 3}, "groups": {"group-1": 2}},
+            get_preset_ref_stats=lambda: {},
+        )
+        payload = await self.DashboardApi(types.SimpleNamespace(data_mgr=manager)).get_usage()
+        self.assertEqual(payload["daily_stats"]["users"], {"user-1": 3})
+        self.assertEqual(payload["daily_stats"]["groups"], {"group-1": 2})
+
+    async def test_stale_daily_usage_is_not_returned_as_today(self):
+        manager = types.SimpleNamespace(
+            user_counts={},
+            group_counts={},
+            user_checkin_data={},
+            daily_stats={"date": "2000-01-01", "users": {"user-1": 3}, "groups": {"group-1": 2}},
+            get_preset_ref_stats=lambda: {},
+        )
+        payload = await self.DashboardApi(types.SimpleNamespace(data_mgr=manager)).get_usage()
+        self.assertEqual(payload["daily_stats"]["users"], {})
+        self.assertEqual(payload["daily_stats"]["groups"], {})
 
 
 class DashboardReferencePreviewTest(unittest.IsolatedAsyncioTestCase):

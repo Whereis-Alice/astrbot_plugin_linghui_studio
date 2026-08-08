@@ -190,7 +190,8 @@ function renderOverview() {
   const config = state.config || {};
   const channels = config.channels || [];
   const enabled = channels.filter((item) => item.enabled).length;
-  const daily = config && state.usage?.daily_stats?.users ? Object.values(state.usage.daily_stats.users).reduce((sum, count) => sum + Number(count || 0), 0) : 0;
+  const dailyStats = state.usage?.daily_stats || {};
+  const daily = dailyStats.users ? Object.values(dailyStats.users).reduce((sum, count) => sum + Number(count || 0), 0) : 0;
   byId("metric-channels").textContent = String(enabled);
   byId("metric-today").textContent = String(daily);
   byId("metric-presets").textContent = String((config.presets || []).length);
@@ -198,16 +199,22 @@ function renderOverview() {
   const active = config.active_drawing_channel || "自动";
   byId("overview-channels").innerHTML = channels.map((channel, index) => `
     <div class="summary-row"><span><i class="status-dot ${channel.enabled ? "ok" : "off"}"></i> ${escapeHtml(channel.id)}</span><small>${escapeHtml(channel.name || channel.interface_mode)} · ${escapeHtml(channel.model || "未填模型")}</small><span>${channel.id === active ? "主渠道" : (channel.fallback_enabled ? "备用" : "不回退")}</span></div>`).join("") || '<p class="empty">未配置绘图渠道，当前会使用兼容单接口模式。</p>';
-  renderUsage("overview-usage", [...(state.usage?.users || [])].slice(0, 12), "用户");
+  renderDailyUsage("overview-usage", dailyStats);
 }
 
-function renderUsage(targetId, rows, kind) {
+function renderDailyUsage(targetId, dailyStats) {
   const target = byId(targetId);
+  const stats = dailyStats && typeof dailyStats === "object" ? dailyStats : {};
+  const toRows = (records, kind) => Object.entries(records && typeof records === "object" ? records : {})
+    .map(([id, count]) => ({ id, kind, count: Number(count || 0) }))
+    .filter((row) => row.id && row.count > 0);
+  const rows = [...toRows(stats.groups, "群"), ...toRows(stats.users, "用户")]
+    .sort((left, right) => right.count - left.count || left.kind.localeCompare(right.kind) || left.id.localeCompare(right.id));
   if (!rows.length) {
     target.innerHTML = '<p class="empty">暂无用量记录。</p>';
     return;
   }
-  target.innerHTML = `<table><thead><tr><th>${kind}</th><th>额度</th><th>签到</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${escapeHtml(row.id)}</td><td>${escapeHtml(row.credits ?? row.count ?? "-")}</td><td>${escapeHtml(row.checked_in || "-")}</td></tr>`).join("")}</tbody></table>`;
+  target.innerHTML = `<table><thead><tr><th>类型</th><th>ID / 群号</th><th>今日成功数</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${escapeHtml(row.kind)}</td><td>${escapeHtml(row.id)}</td><td>${escapeHtml(row.count)}</td></tr>`).join("")}</tbody></table>`;
 }
 
 function renderCreditTable() {

@@ -8,6 +8,7 @@ import binascii
 import io
 import mimetypes
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -513,7 +514,18 @@ class LinghuiDashboardApi:
             for user_id, credits in sorted(manager.user_counts.items())
         ]
         groups = [{"id": group_id, "credits": credits} for group_id, credits in sorted(manager.group_counts.items())]
-        stats = manager.daily_stats if isinstance(manager.daily_stats, dict) else {}
+        raw_stats = manager.daily_stats if isinstance(manager.daily_stats, dict) else {}
+        today = datetime.now().strftime("%Y-%m-%d")
+        # The data file is reset on the next successful request. Until then,
+        # do not label a prior day's records as today's Dashboard usage.
+        is_current_day = raw_stats.get("date") == today
+        daily_users = raw_stats.get("users", {})
+        daily_groups = raw_stats.get("groups", {})
+        stats = {
+            "date": today,
+            "users": daily_users if is_current_day and isinstance(daily_users, dict) else {},
+            "groups": daily_groups if is_current_day and isinstance(daily_groups, dict) else {},
+        }
         return jsonify({
             "success": True,
             "users": users,
