@@ -10,6 +10,7 @@ from astrbot import logger
 
 from .api_manager import ApiManager
 from .prompt_processor import PromptProcessor
+from .utils import append_negative_prompt
 
 
 class DrawingChannelRouter:
@@ -150,8 +151,12 @@ class DrawingChannelRouter:
         use_text_to_image_api: bool = False,
         aspect_ratio: str | None = None,
         resolution: str | None = None,
+        negative_prompt: str | None = None,
     ) -> bytes | str:
         prepared_prompt = await self.prompt_processor.prepare(prompt)
+        # Keep configured negative constraints out of the optional translator
+        # and optimizer, then send the identical final prompt to every route.
+        prepared_prompt = append_negative_prompt(prepared_prompt, negative_prompt)
         channels = self._ordered_channels()
         if not channels:
             # Compatibility path for an installation upgraded from upstream.

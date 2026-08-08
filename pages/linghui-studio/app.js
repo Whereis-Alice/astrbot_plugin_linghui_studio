@@ -253,6 +253,7 @@ function hydrateFields() {
   byId("processor-timeout").value = tools.prompt_processor_timeout ?? 30;
   byId("translation-system").value = tools.prompt_translation_system_prompt || "";
   byId("optimization-system").value = tools.prompt_optimization_system_prompt || "";
+  byId("custom-negative-prompt").value = tools.custom_drawing_negative_prompt || "";
   byId("enable-persona").checked = bool(settings.enable_persona_mode);
   byId("command-namespace").value = commands.namespace || "";
   byId("enable-direct-commands").checked = bool(commands.enable_direct_commands);
@@ -355,6 +356,7 @@ function buildPayload() {
       prompt_processor_timeout: Number(value("processor-timeout")) || 30,
       prompt_translation_system_prompt: value("translation-system").trim(),
       prompt_optimization_system_prompt: value("optimization-system").trim(),
+      custom_drawing_negative_prompt: value("custom-negative-prompt").trim(),
     },
     persona: {
       name: value("persona-name").trim(),

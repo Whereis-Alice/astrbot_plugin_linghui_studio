@@ -1,6 +1,6 @@
 import unittest
 
-from utils import is_custom_drawing_command, normalize_api_root, normalize_model_list
+from utils import append_negative_prompt, is_custom_drawing_command, normalize_api_root, normalize_model_list
 
 
 class UrlNormalizationTest(unittest.TestCase):
@@ -53,6 +53,14 @@ class CustomDrawingCommandTest(unittest.TestCase):
         self.assertTrue(is_custom_drawing_command("bnn(2)".split("(")[0], "生成"))
         self.assertTrue(is_custom_drawing_command("生成", "生成"))
         self.assertFalse(is_custom_drawing_command("手办化", "生成"))
+
+
+class NegativePromptTest(unittest.TestCase):
+    def test_negative_prompt_is_appended_once_as_a_portable_clause(self):
+        result = append_negative_prompt("cinematic portrait", "blurry, watermark")
+        self.assertEqual(result, "cinematic portrait\n\nNegative prompt: blurry, watermark")
+        self.assertEqual(append_negative_prompt(result, "blurry, watermark"), result)
+        self.assertEqual(append_negative_prompt("cinematic portrait", ""), "cinematic portrait")
 
 
 if __name__ == "__main__":

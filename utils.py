@@ -49,6 +49,24 @@ def is_custom_drawing_command(command: Any, configured_command: Any) -> bool:
     return normalized in aliases
 
 
+def append_negative_prompt(prompt: Any, negative_prompt: Any) -> str:
+    """Append one portable negative-prompt clause without duplicating it.
+
+    OpenAI Images, Gemini, and chat-compatible image models do not share a
+    common ``negative_prompt`` request field. Keeping this as a prompt clause
+    lets the drawing-channel router send the same constraint to every route.
+    """
+    final_prompt = str(prompt or "").strip()
+    negative = str(negative_prompt or "").strip()
+    if not final_prompt or not negative:
+        return final_prompt
+
+    clause = f"Negative prompt: {negative}"
+    if clause.casefold() in final_prompt.casefold():
+        return final_prompt
+    return f"{final_prompt}\n\n{clause}"
+
+
 def normalize_api_root(raw_url: Any) -> str:
     """提取 API 基础地址，忽略用户填写的版本段和已拼接接口路径。
 

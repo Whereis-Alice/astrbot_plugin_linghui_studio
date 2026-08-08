@@ -266,6 +266,7 @@ class LinghuiDashboardApi:
                 "prompt_processor_timeout": self._as_int(self.plugin.conf.get("prompt_processor_timeout", 30), 5, 300),
                 "prompt_optimization_system_prompt": str(self.plugin.conf.get("prompt_optimization_system_prompt", "") or ""),
                 "prompt_translation_system_prompt": str(self.plugin.conf.get("prompt_translation_system_prompt", "") or ""),
+                "custom_drawing_negative_prompt": str(self.plugin.conf.get("custom_drawing_negative_prompt", "") or ""),
             },
             "persona": {
                 "name": str(self.plugin.conf.get("persona_name", "") or ""),
@@ -450,6 +451,10 @@ class LinghuiDashboardApi:
                     ):
                         if key in prompt_tools:
                             self.plugin.conf[key] = str(prompt_tools[key] or "").strip()
+                    if "custom_drawing_negative_prompt" in prompt_tools:
+                        self.plugin.conf["custom_drawing_negative_prompt"] = str(
+                            prompt_tools["custom_drawing_negative_prompt"] or ""
+                        ).strip()[:12_000]
                     if str(prompt_tools.get("prompt_processor_api_key", "") or "").strip():
                         self.plugin.conf["prompt_processor_api_key"] = str(prompt_tools["prompt_processor_api_key"]).strip()
                     if self._as_bool(prompt_tools.get("clear_prompt_processor_api_key", False)):

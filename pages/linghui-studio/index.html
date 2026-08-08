@@ -114,6 +114,7 @@
                 <label class="field"><span>超时（秒）</span><input id="processor-timeout" type="number" min="5" /><small class="field-hint">超时后跳过提示词处理，继续使用原始提示词生图。</small></label>
                 <label class="field full"><span>翻译系统提示词</span><textarea id="translation-system" rows="4"></textarea><small class="field-hint">发送给翻译模型的系统说明。建议要求模型只输出可直接用于生图的提示词。</small></label>
                 <label class="field full"><span>优化系统提示词</span><textarea id="optimization-system" rows="4"></textarea><small class="field-hint">发送给优化模型的系统说明。建议保留用户意图和安全限制，并只输出优化后的提示词。</small></label>
+                <label class="field full"><span>自定义绘图反向提示词</span><textarea id="custom-negative-prompt" rows="4" placeholder="例如：lowres, blurry, watermark, text, malformed hands"></textarea><small class="field-hint">仅用于 #bnn 和自定义绘图指令（默认 #画）的文生图、图生图。会在翻译/优化完成后以 <code>Negative prompt:</code> 形式追加；留空即关闭，不影响预设和其他入口。</small></label>
               </div>
             </section>
           </div>

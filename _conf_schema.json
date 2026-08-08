@@ -23,6 +23,12 @@
     "hint": "默认“画”：#画 <提示词>。设置命名空间后使用 #绘图 画 <提示词>。上游兼容指令 #bnn <提示词> 始终保留。",
     "default": "画"
   },
+  "custom_drawing_negative_prompt": {
+    "type": "text",
+    "description": "自定义绘图反向提示词",
+    "hint": "仅对 #bnn 和“自定义绘图子命令”（默认 #画）生效，包含带图和不带图两种请求。会在翻译/优化完成后以 Negative prompt: ... 形式追加；留空则关闭，不影响预设、#文生图、头像图生图、人设拍照或 LLM 工具。",
+    "default": ""
+  },
   "help_text": {
     "type": "text",
     "description": "帮助文本",

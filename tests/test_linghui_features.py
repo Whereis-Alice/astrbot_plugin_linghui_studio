@@ -121,6 +121,7 @@ class DrawingChannelRouterTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         class FakeApiManager:
             calls = []
+            prompts = []
             outcomes = {}
 
             def __init__(self, config):
@@ -138,6 +139,7 @@ class DrawingChannelRouterTest(unittest.IsolatedAsyncioTestCase):
             async def call_api(self, *args, **kwargs):
                 name = self.config.get("base_url")
                 FakeApiManager.calls.append(name)
+                FakeApiManager.prompts.append(args[1])
                 return FakeApiManager.outcomes[name]
 
             def get_last_metrics(self):
@@ -213,6 +215,33 @@ class DrawingChannelRouterTest(unittest.IsolatedAsyncioTestCase):
         })
         self.assertTrue(router.has_available_keys())
 
+    async def test_custom_negative_prompt_is_added_after_prompt_preparation(self):
+        self.fake_api_manager.outcomes = {"primary": "primary failed", "backup": b"result"}
+        router = self._router({
+            "drawing_channels": [
+                {"id": "primary", "base_url": "primary", "api_keys": "one"},
+                {"id": "backup", "base_url": "backup", "api_keys": "two"},
+            ],
+        })
+
+        class PreparedPrompt:
+            async def prepare(self, prompt):
+                return f"prepared: {prompt}"
+
+        router.prompt_processor = PreparedPrompt()
+        result = await router.call_api(
+            [], "cinematic portrait", "model", negative_prompt="blurry, watermark"
+        )
+        self.assertEqual(result, b"result")
+        self.assertEqual(
+            self.fake_api_manager.prompts,
+            [
+                "prepared: cinematic portrait\n\nNegative prompt: blurry, watermark",
+                "prepared: cinematic portrait\n\nNegative prompt: blurry, watermark",
+            ],
+        )
+        await router.close()
+
 
 class DashboardRegistrationTest(unittest.TestCase):
     @classmethod
@@ -287,6 +316,39 @@ class DashboardRegistrationTest(unittest.TestCase):
         self.assertEqual(cleared[0]["__template_key"], "drawing_channel")
 
 
+class DashboardSaveTest(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.DashboardApi = _load_module("dashboard_api", with_quart=True).LinghuiDashboardApi
+
+    async def test_custom_negative_prompt_is_saved_from_dashboard(self):
+        class DataManager:
+            user_prompts = {}
+
+            def reload_prompts(self):
+                pass
+
+        async def refresh():
+            pass
+
+        plugin = types.SimpleNamespace(
+            conf={},
+            data_mgr=DataManager(),
+            _load_persona_scenes=lambda: None,
+            _save_config=lambda: None,
+            api_mgr=types.SimpleNamespace(refresh=refresh),
+        )
+        api = self.DashboardApi(plugin)
+
+        async def request_body():
+            return {"prompt_tools": {"custom_drawing_negative_prompt": "blurry, watermark"}}
+
+        api._json_body = request_body
+        response = await api.save_config()
+        self.assertTrue(response["success"])
+        self.assertEqual(plugin.conf["custom_drawing_negative_prompt"], "blurry, watermark")
+
+
 class DashboardReferencePreviewTest(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls):
@@ -300,12 +362,19 @@ class DashboardReferencePreviewTest(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             manager = self.DataManager(pathlib.Path(directory), {})
             await manager.save_preset_ref_image("_persona_", output.getvalue())
-            plugin = types.SimpleNamespace(conf={}, data_mgr=manager)
+            plugin = types.SimpleNamespace(
+                conf={"custom_drawing_negative_prompt": "blurry, watermark"},
+                data_mgr=manager,
+            )
 
             payload = await self.DashboardApi(plugin).get_config()
             preview = payload["persona"]["reference_images"][0]
             self.assertTrue(preview.startswith("data:image/jpeg;base64,"))
             self.assertNotIn(str(manager.preset_ref_images_dir), preview)
+            self.assertEqual(
+                payload["prompt_tools"]["custom_drawing_negative_prompt"],
+                "blurry, watermark",
+            )
 
             image_data = base64.b64decode(preview.split(",", 1)[1])
             with Image.open(io.BytesIO(image_data)) as image:
