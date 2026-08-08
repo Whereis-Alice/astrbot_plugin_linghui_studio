@@ -138,7 +138,7 @@ def _direct_command_only(handler):
 @register(
     PLUGIN_NAME,
     "Whereis-Alice",
-    "灵绘工坊：多渠道回退、受控群白名单、自定义绘图反向提示词与可视化管理的文生图/图生图插件",
+    "灵绘工坊：带参考图专用渠道回退、受控群白名单、自定义绘图反向提示词与可视化管理的文生图/图生图插件",
     "3.3.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_linghui_studio",
 )
@@ -198,6 +198,7 @@ class LinghuiStudioPlugin(Star):
         "api_keys",
         "api_mode",
         "prompt_list",
+        "active_drawing_channel",
     }
     _PANEL_PRIORITY_DYNAMIC_KEYS = {
         "generic_api_url",
