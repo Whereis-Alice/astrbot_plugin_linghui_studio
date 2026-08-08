@@ -100,6 +100,61 @@ function showToast(message, error = false) {
   showToast.timer = setTimeout(() => toast.classList.remove("show"), 3200);
 }
 
+let settleConfirmation = null;
+
+function confirmAction({ title = "确认操作", message, confirmLabel = "确认", danger = true }) {
+  const dialog = byId("action-confirm");
+  const titleNode = byId("confirm-title");
+  const messageNode = byId("confirm-message");
+  const cancelButton = byId("confirm-cancel");
+  const proceedButton = byId("confirm-proceed");
+  if (!dialog || typeof dialog.showModal !== "function") {
+    showToast("当前页面无法显示确认窗口，操作未执行。", true);
+    return Promise.resolve(false);
+  }
+
+  if (settleConfirmation) settleConfirmation(false);
+  const lastFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  titleNode.textContent = title;
+  messageNode.textContent = message || "此操作无法撤销。";
+  proceedButton.textContent = confirmLabel;
+  proceedButton.classList.toggle("danger-action", danger);
+  proceedButton.classList.toggle("primary-action", !danger);
+
+  return new Promise((resolve) => {
+    const cleanup = () => {
+      cancelButton.removeEventListener("click", onCancel);
+      proceedButton.removeEventListener("click", onProceed);
+      dialog.removeEventListener("cancel", onDialogCancel);
+      dialog.removeEventListener("click", onBackdropClick);
+      if (settleConfirmation === finish) settleConfirmation = null;
+      lastFocused?.focus?.();
+    };
+    const finish = (accepted) => {
+      cleanup();
+      if (dialog.open) dialog.close();
+      resolve(accepted);
+    };
+    const onCancel = () => finish(false);
+    const onProceed = () => finish(true);
+    const onDialogCancel = (event) => {
+      event.preventDefault();
+      finish(false);
+    };
+    const onBackdropClick = (event) => {
+      if (event.target === dialog) finish(false);
+    };
+
+    settleConfirmation = finish;
+    cancelButton.addEventListener("click", onCancel);
+    proceedButton.addEventListener("click", onProceed);
+    dialog.addEventListener("cancel", onDialogCancel);
+    dialog.addEventListener("click", onBackdropClick);
+    dialog.showModal();
+    proceedButton.focus();
+  });
+}
+
 function setSaveState(message = "") {
   byId("save-state").textContent = message;
 }
@@ -562,7 +617,11 @@ async function downloadGenerationImage(id) {
 }
 
 async function deleteGenerationRecord(id) {
-  if (!window.confirm("确认删除这条成功记录吗？即使已收藏或锁定，手动删除也会移除图片和提示词。")) return;
+  if (!await confirmAction({
+    title: "删除成功记录",
+    message: "确认删除这条成功记录吗？即使已收藏或锁定，手动删除也会移除图片和提示词。",
+    confirmLabel: "删除记录",
+  })) return;
   const response = await bridge.apiPost("generation_record", { action: "delete", id });
   if (!response?.success) throw new Error(response?.message || "删除成功记录失败");
   showToast(response.message || "成功记录已删除");
@@ -570,7 +629,11 @@ async function deleteGenerationRecord(id) {
 }
 
 async function cleanupGenerationHistory() {
-  if (!window.confirm("确认清理已过期的成功记录吗？已收藏或锁定的图片和提示词会保留。")) return;
+  if (!await confirmAction({
+    title: "清理过期缓存",
+    message: "确认清理已过期的成功记录吗？已收藏或锁定的图片和提示词会保留。",
+    confirmLabel: "清理缓存",
+  })) return;
   const response = await bridge.apiPost("generation_record", { action: "cleanup" });
   if (!response?.success) throw new Error(response?.message || "清理缓存失败");
   showToast(response.message || "过期缓存已清理");
@@ -598,7 +661,11 @@ async function saveConfig() {
 async function updateCredit(reset = false) {
   const id = value("credit-id").trim();
   if (!id) { showToast("请填写 ID 或群号", true); return; }
-  if (reset && !window.confirm(`确认重置 ${id} 的额度和签到状态吗？`)) return;
+  if (reset && !await confirmAction({
+    title: "重置额度",
+    message: `确认重置 ${id} 的额度和签到状态吗？`,
+    confirmLabel: "重置额度",
+  })) return;
   const endpoint = reset ? "reset_credit" : "adjust_credit";
   const body = { kind: value("credit-kind"), id, amount: Number(value("credit-amount")) || 1 };
   const response = await bridge.apiPost(endpoint, body);
@@ -629,7 +696,11 @@ async function uploadReferences(files, preset) {
 }
 
 async function deleteReference(preset, index) {
-  if (!preset || !window.confirm("确认删除这张参考图吗？")) return;
+  if (!preset || !await confirmAction({
+    title: "删除参考图",
+    message: "确认删除这张参考图吗？删除后无法恢复。",
+    confirmLabel: "删除图片",
+  })) return;
   const response = await bridge.apiPost("reference", { action: "delete", preset, index: Number(index) });
   if (!response?.success) throw new Error(response?.message || "删除失败");
   showToast("参考图已删除");
@@ -637,7 +708,11 @@ async function deleteReference(preset, index) {
 }
 
 async function clearReference(preset) {
-  if (!preset || !window.confirm("确认清空该集合中的全部参考图吗？")) return;
+  if (!preset || !await confirmAction({
+    title: "清空参考图",
+    message: "确认清空该集合中的全部参考图吗？删除后无法恢复。",
+    confirmLabel: "清空全部",
+  })) return;
   const response = await bridge.apiPost("reference", { action: "clear", preset });
   if (!response?.success) throw new Error(response?.message || "清空失败");
   showToast(response.message || "参考图已清空");
@@ -711,7 +786,7 @@ document.addEventListener("click", async (event) => {
     if (deleteButton) { await deleteReference(deleteButton.dataset.deleteReference, deleteButton.dataset.index); return; }
     const clearButton = event.target.closest("[data-clear-ref]");
     if (clearButton) { await clearReference(clearButton.dataset.clearRef); return; }
-    if (event.target.closest("#reference-clear")) { await clearReference(value("reference-preset")); }
+    if (event.target.closest("#reference-clear")) { await clearReference(value("reference-preset")); return; }
     const downloadButton = event.target.closest("[data-history-download]");
     if (downloadButton) { await downloadGenerationImage(downloadButton.dataset.historyDownload); return; }
     const favoriteButton = event.target.closest("[data-history-favorite]");

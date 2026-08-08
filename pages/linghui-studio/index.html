@@ -157,7 +157,7 @@
                 <label class="field full"><span>默认场景提示词</span><textarea id="persona-default-prompt" rows="3"></textarea><small class="field-hint">未指定场景时使用的默认环境与构图要求。</small></label>
                 <label class="field full"><span>场景预设</span><textarea id="persona-scene-prompts" rows="5" placeholder="每行一个：场景名:提示词"></textarea><small class="field-hint">每行一个“场景名:提示词”，例如“咖啡馆:窗边自然光人像”。</small></label>
               </div>
-              <div class="asset-toolbar"><label class="upload-action">上传人设图<input id="persona-upload" type="file" accept="image/*" multiple /></label><button class="quiet-action" data-clear-ref="_persona_">清空人设图</button></div>
+              <div class="asset-toolbar"><label class="upload-action">上传人设图<input id="persona-upload" type="file" accept="image/*" multiple /></label><button class="quiet-action" type="button" data-clear-ref="_persona_">清空人设图</button></div>
               <div id="persona-images" class="image-grid"></div>
             </section>
             <section class="section-block">
@@ -188,6 +188,17 @@
         </section>
       </section>
     </main>
+    <dialog id="action-confirm" class="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+      <section class="confirm-panel">
+        <span class="confirm-eyebrow">请确认</span>
+        <h2 id="confirm-title">确认操作</h2>
+        <p id="confirm-message"></p>
+        <div class="confirm-actions">
+          <button id="confirm-cancel" class="quiet-action" type="button">取消</button>
+          <button id="confirm-proceed" class="danger-action" type="button">确认</button>
+        </div>
+      </section>
+    </dialog>
     <div id="toast" class="toast" role="status"></div>
     <script type="module" src="./app.js"></script>
   </body>

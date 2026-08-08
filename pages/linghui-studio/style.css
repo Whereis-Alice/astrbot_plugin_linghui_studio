@@ -217,6 +217,13 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .toast { position: fixed; right: 22px; bottom: 20px; max-width: min(390px, calc(100vw - 44px)); padding: 10px 13px; border: 1px solid rgba(53, 231, 223, 0.52); border-radius: 4px; color: var(--ink); background: var(--surface-raised); box-shadow: 0 0 22px var(--cyan-wash); font-size: 13px; opacity: 0; pointer-events: none; transform: translateY(10px); transition: opacity .18s ease, transform .18s ease; }
 .toast.show { opacity: 1; transform: translateY(0); }
 .toast.error { border-color: rgba(255, 109, 125, 0.7); color: #ffd5da; box-shadow: 0 0 22px rgba(255, 109, 125, 0.18); }
+.confirm-dialog { width: min(420px, calc(100vw - 32px)); margin: auto; padding: 0; overflow: hidden; border: 1px solid var(--cyan); border-radius: 6px; color: var(--ink); background: var(--surface); box-shadow: 0 0 0 1px rgba(53, 231, 223, 0.14), 0 0 34px var(--cyan-wash), 0 28px 72px rgba(0, 0, 0, 0.52); }
+.confirm-dialog::backdrop { background: rgba(3, 7, 17, 0.72); backdrop-filter: blur(3px); }
+.confirm-panel { display: grid; gap: 11px; padding: 22px; border-top: 3px solid var(--magenta); background: linear-gradient(145deg, var(--surface-raised), var(--surface)); }
+.confirm-eyebrow { color: var(--cyan); font-size: 11px; font-weight: 700; letter-spacing: 0; text-transform: uppercase; }
+.confirm-panel h2 { color: var(--ink); font-size: 18px; }
+.confirm-panel p { color: var(--subtle); font-size: 13px; line-height: 1.6; }
+.confirm-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 7px; }
 
 @media (max-width: 900px) {
   .shell { grid-template-columns: 1fr; }
