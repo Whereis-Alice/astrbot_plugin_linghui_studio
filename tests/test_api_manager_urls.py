@@ -91,6 +91,20 @@ class ApiEndpointBuildTest(unittest.TestCase):
         )
         self.assertEqual(normalized, requested)
 
+    def test_gpt_image_edit_keeps_multiple_reference_images(self):
+        images, field_name = self.manager._edit_upload_images(
+            [b"first", b"second"], "gpt-image-2"
+        )
+        self.assertEqual(images, [b"first", b"second"])
+        self.assertEqual(field_name, "image[]")
+
+    def test_legacy_image_edit_keeps_a_single_reference_image(self):
+        images, field_name = self.manager._edit_upload_images(
+            [b"first", b"second"], "dall-e-2"
+        )
+        self.assertEqual(images, [b"first"])
+        self.assertEqual(field_name, "image")
+
     def test_gemini_mode_always_uses_v1beta(self):
         self.assertEqual(
             self.manager._build_gemini_api_url(

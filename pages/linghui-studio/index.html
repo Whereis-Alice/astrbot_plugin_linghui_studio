@@ -9,7 +9,11 @@
   <body>
     <main class="shell">
       <aside class="sidebar" aria-label="灵绘工坊导航">
-        <div class="brand"><img class="brand-mark" src="./assets/alice-sprite.png" alt="" /><span class="brand-copy"><strong>灵绘工坊</strong><small>LINGHUI / STUDIO</small></span></div>
+        <div class="brand">
+          <span class="brand-mark-wrap"><img class="brand-mark" src="./assets/alice-sprite.png" alt="" /><i class="brand-signal" aria-hidden="true"></i></span>
+          <span class="brand-copy"><strong>灵绘工坊</strong><small>LINGHUI / STUDIO</small></span>
+        </div>
+        <div class="sidebar-rule" aria-hidden="true"></div>
         <nav class="nav-list">
           <button class="nav-item active" data-tab="overview">概览</button>
           <button class="nav-item" data-tab="history">成功记录</button>
@@ -20,15 +24,24 @@
           <button class="nav-item" data-tab="persona">人设与参考图</button>
           <button class="nav-item" data-tab="settings">运行设置</button>
         </nav>
-        <div class="sidebar-actions">
-          <select id="theme-select" class="theme-select" title="选择界面皮肤" aria-label="选择界面皮肤">
+        <footer class="sidebar-actions" aria-label="工作台控制">
+          <div class="dock-heading"><span>INTERFACE PROFILE</span><i><b></b>已连接</i></div>
+          <div class="theme-switcher" role="group" aria-label="选择界面皮肤">
+            <button class="theme-option" type="button" data-theme-option="dark" aria-pressed="true"><span class="theme-swatch dark" aria-hidden="true"></span><span>深色</span></button>
+            <button class="theme-option" type="button" data-theme-option="light" aria-pressed="false"><span class="theme-swatch light" aria-hidden="true"></span><span>浅色</span></button>
+            <button class="theme-option" type="button" data-theme-option="alice" aria-pressed="false"><span class="theme-swatch alice" aria-hidden="true"></span><span>爱丽丝</span></button>
+          </div>
+          <select id="theme-select" class="theme-select" title="选择界面皮肤" aria-label="选择界面皮肤" tabindex="-1">
             <option value="dark">深色</option>
             <option value="light">浅色</option>
             <option value="alice">爱丽丝</option>
           </select>
-          <button id="reload-button" class="icon-action" title="重新加载配置" aria-label="重新加载配置">↻</button>
-          <button id="save-button" class="primary-action">保存更改</button>
-        </div>
+          <div class="dock-actions">
+            <button id="reload-button" class="reload-action" title="重新加载配置" aria-label="重新加载配置">↻</button>
+            <button id="save-button" class="primary-action"><span>保存更改</span><small>APPLY CHANGES</small></button>
+          </div>
+          <p class="dock-caption">皮肤选择即时保存，其余表单请单独确认。</p>
+        </footer>
       </aside>
 
       <section class="workspace">
@@ -83,7 +96,10 @@
         <section id="tab-channels" class="tab-pane">
           <section class="section-block">
             <div class="section-heading"><div><h2>绘图渠道</h2><p>顺序就是默认优先级。仅启用且允许回退的渠道会成为备用渠道。</p></div><button id="add-channel" class="quiet-action">添加渠道</button></div>
-            <label class="field compact"><span>当前主渠道</span><select id="active-channel"></select><small class="field-hint">留在“自动”时按渠道列表顺序开始尝试；指定渠道后会优先使用该渠道，失败时仍可回退。</small></label>
+            <div class="channel-routing-grid">
+              <label class="field"><span>当前主渠道</span><select id="active-channel"></select><small class="field-hint">留在“自动”时按渠道列表顺序开始尝试；指定渠道后会优先使用该渠道，失败时仍可回退。</small></label>
+              <label class="field"><span>带参考图优先渠道</span><select id="reference-image-channel"></select><small class="field-hint">仅用于人设拍照、QQ 头像图生图、预设参考图和普通图生图。留在“跟随主渠道”时会复用当前主渠道；请为此路径选择实际支持带图请求的渠道。</small></label>
+            </div>
             <div id="channel-list" class="channel-list"></div>
           </section>
         </section>

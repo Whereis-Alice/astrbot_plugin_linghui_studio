@@ -509,6 +509,28 @@ class ApiManager:
         })
         return resolved
 
+    def _edit_upload_images(self, images: List[bytes], model: str) -> tuple[List[bytes], str]:
+        """Select standard multipart fields for a reference-image request.
+
+        GPT Image accepts up to sixteen input files. Older edit APIs such as
+        DALL-E 2 accept one image, so retain that compatible path and make any
+        reduction visible instead of silently changing persona references.
+        """
+        selected = [image for image in (images or []) if isinstance(image, bytes) and image]
+        if not selected:
+            return [], "image"
+        if self._is_gpt_image_model(model):
+            if len(selected) > 16:
+                logger.warning("GPT Image edit received %s references; keeping the first 16.", len(selected))
+                selected = selected[:16]
+            return selected, "image[]" if len(selected) > 1 else "image"
+        if len(selected) > 1:
+            logger.warning(
+                "Image edit model %s supports a single reference in this compatibility path; keeping the first image.",
+                model,
+            )
+        return selected[:1], "image"
+
     def _build_gemini_api_url(self, base_url: str, model: str) -> str:
         """忽略用户填写的版本/接口尾部，按 Gemini 官方模式统一补全。"""
         root = normalize_api_root(base_url)
@@ -636,12 +658,12 @@ class ApiManager:
                 if not self._is_gpt_image_model(model):
                     form.add_field("response_format", "b64_json")
 
-                if images:
-                    img = images[0]
+                upload_images, image_field = self._edit_upload_images(images, model)
+                for image_index, img in enumerate(upload_images, start=1):
                     mime = self.get_mime_type(img)
                     ext = mime.split("/")[-1] if "/" in mime else "png"
-                    filename = f"input.{ext}"
-                    form.add_field("image", img, filename=filename, content_type=mime)
+                    filename = f"input-{image_index}.{ext}"
+                    form.add_field(image_field, img, filename=filename, content_type=mime)
 
                 current_proxy = self._get_request_proxy(url, proxy)
                 async with session.post(url, data=form, headers=headers, proxy=current_proxy, timeout=timeout) as resp:
@@ -732,14 +754,15 @@ class ApiManager:
         # 如果有输入图片，兼容不同 Images API 的字段要求
         # 一些服务要求 image_url；另一些只认 image / input_image / images
         if images:
-            img = images[0]
-            mime = self.get_mime_type(img)
-            b64_img = base64.b64encode(img).decode()
-            data_uri = f"data:{mime};base64,{b64_img}"
-            payload["image"] = data_uri
-            payload["image_url"] = data_uri
-            payload["input_image"] = data_uri
-            payload["images"] = [data_uri]
+            data_uris = []
+            for img in images:
+                mime = self.get_mime_type(img)
+                b64_img = base64.b64encode(img).decode()
+                data_uris.append(f"data:{mime};base64,{b64_img}")
+            payload["image"] = data_uris[0]
+            payload["image_url"] = data_uris[0]
+            payload["input_image"] = data_uris[0]
+            payload["images"] = data_uris
 
         try:
             timeout_val = self.config.get("timeout", 120)

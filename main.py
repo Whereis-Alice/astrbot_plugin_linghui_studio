@@ -139,7 +139,7 @@ def _direct_command_only(handler):
     PLUGIN_NAME,
     "Whereis-Alice",
     "灵绘工坊：多渠道回退、受控群白名单、自定义绘图反向提示词与可视化管理的文生图/图生图插件",
-    "3.2.6",
+    "3.3.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_linghui_studio",
 )
 class LinghuiStudioPlugin(Star):
@@ -168,6 +168,9 @@ class LinghuiStudioPlugin(Star):
         "custom_drawing_negative_prompt",
         "generation_cache_retention_days",
         "dashboard_theme",
+        "drawing_channels",
+        "active_drawing_channel",
+        "reference_image_drawing_channel",
         "generic_api_url",
         "generic_api_keys",
         "gemini_api_url",
@@ -176,13 +179,14 @@ class LinghuiStudioPlugin(Star):
     _DYNAMIC_CONFIG_META_KEY = "__dynamic_overrides__"
     _DYNAMIC_CONFIG_VERSION_KEY = "__dynamic_config_version__"
     _DYNAMIC_CONFIG_UPDATED_AT_KEY = "__dynamic_updated_at__"
-    _DYNAMIC_CONFIG_VERSION = 2
+    _DYNAMIC_CONFIG_VERSION = 3
     _LEGACY_DYNAMIC_RESTORE_KEYS = {
         "model",
         "text_to_image_model",
         "interface_mode",
         "api_mode",
         "prompt_list",
+        "active_drawing_channel",
         "generic_api_keys",
         "gemini_api_keys",
         "text_to_image_api_keys",
@@ -203,6 +207,8 @@ class LinghuiStudioPlugin(Star):
         "custom_drawing_negative_prompt",
         "generation_cache_retention_days",
         "dashboard_theme",
+        "drawing_channels",
+        "reference_image_drawing_channel",
     }
     _COMMAND_ROUTES = (
         (("预设参考图添加", "lmref添加", "添加参考图"), "on_add_preset_ref", "灵绘预设参考图添加"),
@@ -1042,7 +1048,7 @@ class LinghuiStudioPlugin(Star):
 
         auto_detect_status = "已启用" if self._llm_auto_detect else "未启用"
         logger.info(
-            f"LinghuiStudio 已加载 v3.2.6 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
+            f"LinghuiStudio 已加载 v3.3.0 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
 
     def _generation_cache_retention_days(self) -> int:
         """Return a bounded retention period for successful output cache files."""
@@ -2679,15 +2685,20 @@ class LinghuiStudioPlugin(Star):
             if isinstance(res, bytes):
                 res = await self._prepare_send_image_bytes(res)
                 elapsed = (datetime.now() - start_time).total_seconds()
+                route_metrics = self.api_mgr.get_last_metrics()
+                actual_model = str(route_metrics.get("model", "") or model)
+                task_type = "文生图" if use_text_to_image_api else (
+                    "人设拍照" if preset_name.startswith("人设-") else "图生图"
+                )
                 await self._record_generation_result(
                     event.unified_msg_origin,
                     res,
                     user_id=uid,
                     group_id=gid,
                     prompt=prompt,
-                    model=model,
+                    model=actual_model,
                     preset_name=preset_name,
-                    task_type="文生图" if use_text_to_image_api else "图生图",
+                    task_type=task_type,
                     event=event,
                 )
 
@@ -2706,7 +2717,7 @@ class LinghuiStudioPlugin(Star):
                         info_text += f" | 规则: {extra_rules[:20]}{'...' if len(extra_rules) > 20 else ''}"
                     info_text += f" | 剩余: {quota_str}"
                     if self.conf.get("show_model_info", False):
-                        info_text += f" | {model}"
+                        info_text += f" | {actual_model}"
                     chain_nodes.append(Plain(info_text))
                 else:
                     chain_nodes.append(Plain(" "))  # 防止某些适配器丢弃纯图片消息

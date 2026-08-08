@@ -136,10 +136,12 @@ class LinghuiDashboardApi:
             "name": str(channel.get("name", "") or ""),
             "enabled": self._as_bool(channel.get("enabled", True)),
             "fallback_enabled": self._as_bool(channel.get("fallback_enabled", True)),
+            "reference_image_enabled": self._as_bool(channel.get("reference_image_enabled", True)),
             "interface_mode": str(channel.get("interface_mode", "openai_chat") or "openai_chat"),
             "image_edit_transport": str(channel.get("image_edit_transport", "auto") or "auto"),
             "base_url": str(channel.get("base_url", "") or ""),
             "model": str(channel.get("model", "") or ""),
+            "image_edit_model": str(channel.get("image_edit_model", "") or ""),
             "text_to_image_model": str(channel.get("text_to_image_model", "") or ""),
             "timeout": self._as_int(channel.get("timeout", 120), 5, 900),
             "api_keys_masked": self._mask_keys(channel.get("api_keys", "")),
@@ -292,6 +294,9 @@ class LinghuiDashboardApi:
             },
             "channels": [self._public_channel(channel, index) for index, channel in enumerate(channels) if isinstance(channel, dict)],
             "active_drawing_channel": str(self.plugin.conf.get("active_drawing_channel", "") or ""),
+            "reference_image_drawing_channel": str(
+                self.plugin.conf.get("reference_image_drawing_channel", "") or ""
+            ),
             "commands": {
                 "namespace": str(self.plugin.conf.get("command_namespace", "") or ""),
                 "enable_direct_commands": self._as_bool(self.plugin.conf.get("enable_direct_commands", True)),
@@ -400,11 +405,13 @@ class LinghuiDashboardApi:
                 "name": str(raw.get("name", "") or "").strip()[:80],
                 "enabled": self._as_bool(raw.get("enabled", True)),
                 "fallback_enabled": self._as_bool(raw.get("fallback_enabled", True)),
+                "reference_image_enabled": self._as_bool(raw.get("reference_image_enabled", True)),
                 "interface_mode": interface_mode,
                 "image_edit_transport": image_edit_transport,
                 "base_url": str(raw.get("base_url", "") or "").strip()[:500],
                 "api_keys": api_keys,
                 "model": str(raw.get("model", "") or "").strip()[:160],
+                "image_edit_model": str(raw.get("image_edit_model", "") or "").strip()[:160],
                 "text_to_image_model": str(raw.get("text_to_image_model", "") or "").strip()[:160],
                 "timeout": self._as_int(raw.get("timeout", 120), 5, 900),
             })
@@ -481,6 +488,16 @@ class LinghuiDashboardApi:
                     if active_channel and active_channel not in channel_ids:
                         raise ValueError("当前主渠道必须是已配置的渠道 ID。")
                     self.plugin.conf["active_drawing_channel"] = active_channel
+                if "reference_image_drawing_channel" in payload:
+                    reference_channel = str(payload["reference_image_drawing_channel"] or "").strip()
+                    channel_ids = {
+                        str(item.get("id", ""))
+                        for item in self.plugin.conf.get("drawing_channels", []) or []
+                        if isinstance(item, dict)
+                    }
+                    if reference_channel and reference_channel not in channel_ids:
+                        raise ValueError("带参考图优先渠道必须是已配置的渠道 ID。")
+                    self.plugin.conf["reference_image_drawing_channel"] = reference_channel
 
                 commands = payload.get("commands", {})
                 if isinstance(commands, dict):

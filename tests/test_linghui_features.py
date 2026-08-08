@@ -196,6 +196,34 @@ class DrawingChannelRouterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(router._resolve_model("custom-model", channel, True), "custom-model")
         await router.close()
 
+    async def test_reference_image_route_can_use_its_own_channel_and_model(self):
+        self.fake_api_manager.outcomes = {"image-route": b"reference result"}
+        router = self._router({
+            "model": "global-model",
+            "active_drawing_channel": "text-only",
+            "reference_image_drawing_channel": "image-route",
+            "drawing_channels": [
+                {
+                    "id": "text-only",
+                    "base_url": "text-only",
+                    "api_keys": "one",
+                    "reference_image_enabled": False,
+                },
+                {
+                    "id": "image-route",
+                    "base_url": "image-route",
+                    "api_keys": "two",
+                    "image_edit_model": "reference-model",
+                },
+            ],
+        })
+        self.assertEqual([item["id"] for item in router._ordered_channels(True)], ["image-route"])
+        result = await router.call_api([b"reference"], "portrait", "global-model")
+        self.assertEqual(result, b"reference result")
+        self.assertEqual(self.fake_api_manager.calls, ["image-route"])
+        self.assertEqual(router.get_last_metrics()["model"], "reference-model")
+        await router.close()
+
     def test_channel_specific_image_edit_transport_overrides_the_shared_default(self):
         router = self._router({
             "image_edit_transport": "json",
@@ -304,6 +332,8 @@ class DashboardRegistrationTest(unittest.TestCase):
                 "original_id": "primary",
                 "base_url": "https://new.example",
                 "image_edit_transport": "multipart",
+                "reference_image_enabled": False,
+                "image_edit_model": "reference-model",
                 "api_keys": "",
             }
         ])
@@ -316,6 +346,8 @@ class DashboardRegistrationTest(unittest.TestCase):
         ])
         self.assertEqual(renamed[0]["api_keys"], "existing-key")
         self.assertEqual(renamed[0]["image_edit_transport"], "multipart")
+        self.assertFalse(renamed[0]["reference_image_enabled"])
+        self.assertEqual(renamed[0]["image_edit_model"], "reference-model")
         self.assertEqual(cleared[0]["api_keys"], "")
         self.assertEqual(renamed[0]["__template_key"], "drawing_channel")
         self.assertEqual(cleared[0]["__template_key"], "drawing_channel")

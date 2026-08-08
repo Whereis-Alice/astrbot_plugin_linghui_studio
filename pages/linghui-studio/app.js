@@ -66,6 +66,11 @@ function setTheme(theme, persist = true) {
   document.documentElement.dataset.theme = nextTheme;
   const selector = byId("theme-select");
   if (selector) selector.value = nextTheme;
+  document.querySelectorAll("[data-theme-option]").forEach((button) => {
+    const selected = button.dataset.themeOption === nextTheme;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  });
   if (persist) {
     try { window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme); } catch { /* Storage may be disabled. */ }
   }
@@ -79,6 +84,7 @@ async function changeTheme(theme) {
   const selector = byId("theme-select");
   setTheme(nextTheme);
   if (selector) selector.disabled = true;
+  document.querySelectorAll("[data-theme-option]").forEach((button) => { button.disabled = true; });
   setSaveState("正在保存外观...");
   try {
     const response = await bridge.apiPost("dashboard_theme", { theme: nextTheme });
@@ -91,6 +97,7 @@ async function changeTheme(theme) {
     setSaveState("外观未保存");
   } finally {
     if (selector) selector.disabled = false;
+    document.querySelectorAll("[data-theme-option]").forEach((button) => { button.disabled = false; });
   }
 }
 
@@ -189,10 +196,12 @@ function channelTemplate(channel = {}, index = 0) {
     name: channel.name || "",
     enabled: channel.enabled !== false,
     fallback_enabled: channel.fallback_enabled !== false,
+    reference_image_enabled: channel.reference_image_enabled !== false,
     interface_mode: channel.interface_mode || "openai_chat",
     image_edit_transport: channel.image_edit_transport || "auto",
     base_url: channel.base_url || "",
     model: channel.model || "",
+    image_edit_model: channel.image_edit_model || "",
     text_to_image_model: channel.text_to_image_model || "",
     timeout: channel.timeout || 120,
     api_keys_masked: channel.api_keys_masked || "",
@@ -218,8 +227,10 @@ function channelTemplate(channel = {}, index = 0) {
         <label class="field full"><span>API Key</span><textarea data-channel="api_keys" rows="2" placeholder="${escapeHtml(masked)}"></textarea><small class="field-hint">每行一个 Key，可轮换使用。已有 Key 不会回显；留空保存会保留原值。</small></label>
         ${item.api_keys_masked ? '<label class="toggle-field full"><input data-channel="clear_api_keys" type="checkbox" /><span class="toggle-copy"><span>清除已保存的 API Key</span><small class="field-hint">保存后永久删除该渠道的所有 Key。</small></span></label>' : ""}
         <label class="field"><span>默认模型</span><input data-channel="model" value="${escapeHtml(item.model)}" /><small class="field-hint">图生图和未指定模型的请求使用此模型。</small></label>
+        <label class="field"><span>带参考图模型（可选）</span><input data-channel="image_edit_model" value="${escapeHtml(item.image_edit_model)}" /><small class="field-hint">人设拍照、头像图生图和参考图请求优先使用；留空时用默认模型。应填写该渠道实际支持的图片编辑/多模态模型。</small></label>
         <label class="field"><span>文生图模型（可选）</span><input data-channel="text_to_image_model" value="${escapeHtml(item.text_to_image_model)}" /><small class="field-hint">显式文生图优先使用此模型；留空时使用默认模型。</small></label>
         <label class="toggle-field"><input data-channel="enabled" type="checkbox" ${item.enabled ? "checked" : ""} /><span class="toggle-copy"><span>启用渠道</span><small class="field-hint">关闭后该渠道不会被主路由或回退流程调用。</small></span></label>
+        <label class="toggle-field"><input data-channel="reference_image_enabled" type="checkbox" ${item.reference_image_enabled ? "checked" : ""} /><span class="toggle-copy"><span>允许带参考图请求</span><small class="field-hint">关闭后渠道仍可文生图，但人设拍照、头像图生图和带参考图请求会跳过它。</small></span></label>
         <label class="toggle-field"><input data-channel="fallback_enabled" type="checkbox" ${item.fallback_enabled ? "checked" : ""} /><span class="toggle-copy"><span>允许作为回退渠道</span><small class="field-hint">前方已尝试的渠道报错后，才会按列表顺序尝试此渠道。</small></span></label>
       </div>
     </article>`;
@@ -240,8 +251,10 @@ function readChannels() {
       api_keys: clearApiKeys ? "" : get("api_keys").value.trim(),
       clear_api_keys: clearApiKeys,
       model: get("model").value.trim(),
+      image_edit_model: get("image_edit_model").value.trim(),
       text_to_image_model: get("text_to_image_model").value.trim(),
       enabled: get("enabled").checked,
+      reference_image_enabled: get("reference_image_enabled").checked,
       fallback_enabled: get("fallback_enabled").checked,
     };
   });
@@ -251,8 +264,11 @@ function renderChannels() {
   const channels = state.config?.channels || [];
   byId("channel-list").innerHTML = channels.map(channelTemplate).join("") || '<p class="empty">尚未配置渠道。添加至少一个渠道后才能开始绘图。</p>';
   const current = state.config?.active_drawing_channel || "";
+  const referenceCurrent = state.config?.reference_image_drawing_channel || "";
   const options = ['<option value="">自动（按列表顺序）</option>'].concat(channels.map((channel) => `<option value="${escapeHtml(channel.id)}" ${channel.id === current ? "selected" : ""}>${escapeHtml(channel.id)}${channel.name ? ` - ${escapeHtml(channel.name)}` : ""}</option>`));
   byId("active-channel").innerHTML = options.join("");
+  const referenceOptions = ['<option value="">跟随主渠道</option>'].concat(channels.map((channel) => `<option value="${escapeHtml(channel.id)}" ${channel.id === referenceCurrent ? "selected" : ""}>${escapeHtml(channel.id)}${channel.name ? ` - ${escapeHtml(channel.name)}` : ""}</option>`));
+  byId("reference-image-channel").innerHTML = referenceOptions.join("");
 }
 
 function renderPresets() {
@@ -530,6 +546,7 @@ function buildPayload() {
     },
     channels: readChannels(),
     active_drawing_channel: value("active-channel"),
+    reference_image_drawing_channel: value("reference-image-channel"),
     commands: {
       namespace: value("command-namespace").trim(),
       enable_direct_commands: checked("enable-direct-commands"),
@@ -766,6 +783,8 @@ document.addEventListener("click", async (event) => {
     }
     if (event.target.closest("#save-button")) { await saveConfig(); return; }
     if (event.target.closest("#reload-button")) { await loadConfig(); return; }
+    const themeOption = event.target.closest("[data-theme-option]");
+    if (themeOption) { await changeTheme(themeOption.dataset.themeOption); return; }
     if (event.target.closest("#refresh-usage")) { await loadUsage(); showToast("用量已刷新"); return; }
     if (event.target.closest("#history-refresh")) { await loadGenerationHistory(state.history?.pagination?.offset || 0); showToast("成功记录已刷新"); return; }
     if (event.target.closest("#history-favorites")) {

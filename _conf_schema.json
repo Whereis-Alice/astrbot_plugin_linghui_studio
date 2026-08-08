@@ -87,6 +87,12 @@
             "hint": "仅在前方已尝试的渠道失败时，按列表顺序尝试此渠道。",
             "default": true
           },
+          "reference_image_enabled": {
+            "type": "bool",
+            "description": "允许带参考图请求",
+            "hint": "控制人设拍照、QQ 头像图生图、预设参考图和普通图生图是否可使用本渠道。关闭后本渠道仍可用于纯文生图，但会被上述带图请求跳过。",
+            "default": true
+          },
           "interface_mode": {
             "type": "string",
             "description": "接口模式",
@@ -128,6 +134,12 @@
             "hint": "图生图以及未指定模型的请求使用此模型。",
             "default": ""
           },
+          "image_edit_model": {
+            "type": "string",
+            "description": "带参考图模型（可选）",
+            "hint": "仅用于人设拍照、QQ 头像图生图、预设参考图和普通图生图。留空时使用“图生图/默认模型”；可填入明确支持图片编辑或多模态参考图的模型。",
+            "default": ""
+          },
           "text_to_image_model": {
             "type": "string",
             "description": "文生图模型（可选）",
@@ -150,6 +162,12 @@
     "type": "string",
     "description": "当前主绘图渠道",
     "hint": "留空为自动，按渠道列表顺序选择。可用 #通道 <ID> 修改。",
+    "default": ""
+  },
+  "reference_image_drawing_channel": {
+    "type": "string",
+    "description": "带参考图优先渠道",
+    "hint": "仅影响人设拍照、QQ 头像图生图、预设参考图和普通图生图。留空时跟随当前主渠道；填写渠道 ID 后，带参考图请求会优先从该渠道开始，失败后仍按回退顺序尝试其他允许带参考图请求的渠道。",
     "default": ""
   },
   "interface_mode": {

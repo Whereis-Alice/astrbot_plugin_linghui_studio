@@ -64,17 +64,38 @@ class DrawingChannelRouter:
             return any(self._normalize_keys(channel.get("api_keys")) or shared_keys for channel in channels)
         return bool(shared_keys)
 
-    def _ordered_channels(self) -> List[Dict[str, Any]]:
+    def _ordered_channels(self, requires_input_image: bool = False) -> List[Dict[str, Any]]:
         channels = self._raw_channels()
         if not channels:
             return []
-        selected = str(self.config.get("active_drawing_channel", "") or "").strip()
+
+        # A channel can be perfectly suitable for text-to-image while not
+        # exposing a usable reference-image endpoint. Keep those paths apart:
+        # persona photos, QQ-avatar edits, and preset reference images all
+        # arrive here with input bytes and use this filtered route.
+        if requires_input_image:
+            channels = [
+                item for item in channels
+                if item.get("reference_image_enabled", True) is not False
+            ]
+            if not channels:
+                logger.warning("Linghui has no enabled drawing channel for reference-image requests.")
+                return []
+            selected = str(self.config.get("reference_image_drawing_channel", "") or "").strip()
+        else:
+            selected = str(self.config.get("active_drawing_channel", "") or "").strip()
+
         if not selected or selected.lower() in {"auto", "自动"}:
             primary = channels[0]
         else:
             active = next((item for item in channels if item["id"] == selected), None)
             if active is None:
-                logger.warning("Linghui active drawing channel %s is unavailable; using configured order.", selected)
+                route_name = "reference-image" if requires_input_image else "active drawing"
+                logger.warning(
+                    "Linghui %s channel %s is unavailable; using configured order.",
+                    route_name,
+                    selected,
+                )
                 primary = channels[0]
             else:
                 primary = active
@@ -97,6 +118,7 @@ class DrawingChannelRouter:
             "base_url",
             "api_keys",
             "model",
+            "image_edit_model",
             "text_to_image_model",
             "text_to_image_api_url",
             "text_to_image_api_keys",
@@ -120,12 +142,23 @@ class DrawingChannelRouter:
         # contract.  Let every independently configured channel have a chance.
         return not isinstance(result, bytes)
 
-    def _resolve_model(self, requested: str, channel: Dict[str, Any], text_to_image: bool) -> str:
+    def _resolve_model(
+        self,
+        requested: str,
+        channel: Dict[str, Any],
+        text_to_image: bool,
+        has_input_image: bool = False,
+    ) -> str:
         global_default = str(self.config.get("model", "") or "").strip()
         global_t2i = str(self.config.get("text_to_image_model", "") or "").strip()
         channel_default = str(channel.get("model", "") or "").strip()
+        channel_image_edit = str(channel.get("image_edit_model", "") or "").strip()
         channel_t2i = str(channel.get("text_to_image_model", "") or "").strip()
         requested = str(requested or "").strip()
+        if has_input_image and channel_image_edit and (
+            not requested or requested in {global_default, global_t2i}
+        ):
+            return channel_image_edit
         if text_to_image and channel_t2i and (not requested or requested in {global_default, global_t2i}):
             return channel_t2i
         if channel_default and (not requested or requested == global_default):
@@ -157,7 +190,12 @@ class DrawingChannelRouter:
         # Keep configured negative constraints out of the optional translator
         # and optimizer, then send the identical final prompt to every route.
         prepared_prompt = append_negative_prompt(prepared_prompt, negative_prompt)
-        channels = self._ordered_channels()
+        channels = self._ordered_channels(requires_input_image=bool(images))
+        if images and not channels and self._raw_channels():
+            return (
+                "没有可用于带参考图请求的绘图渠道：请在 Dashboard 的绘图渠道中，"
+                "至少为一个已启用渠道打开“允许带参考图请求”。"
+            )
         if not channels:
             # Compatibility path for an installation upgraded from upstream.
             client = await self._client_for({"id": "legacy"})
@@ -173,7 +211,12 @@ class DrawingChannelRouter:
         failures: List[str] = []
         for index, channel in enumerate(channels):
             client = await self._client_for(channel)
-            resolved_model = self._resolve_model(model, channel, use_text_to_image_api)
+            resolved_model = self._resolve_model(
+                model,
+                channel,
+                use_text_to_image_api,
+                has_input_image=bool(images),
+            )
             try:
                 result = await client.call_api(
                     images, prepared_prompt, resolved_model, legacy_use_power_or_proxy, proxy,
@@ -190,6 +233,7 @@ class DrawingChannelRouter:
                 "channel_name": str(channel.get("name", channel["id"])),
                 "model": resolved_model,
                 "fallback_count": index,
+                "has_input_image": bool(images),
             }
             if self._is_success(result):
                 if index:
