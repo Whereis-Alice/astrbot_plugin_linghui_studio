@@ -55,21 +55,26 @@
           <div id="save-state" class="save-state" role="status"></div>
         </header>
 
-        <section id="tab-overview" class="tab-pane active">
-          <div class="metric-grid">
-            <article class="metric"><span>启用渠道</span><strong id="metric-channels">-</strong></article>
-            <article class="metric"><span>今日生成</span><strong id="metric-today">-</strong></article>
-            <article class="metric"><span>预设数量</span><strong id="metric-presets">-</strong></article>
-            <article class="metric"><span>参考图</span><strong id="metric-references">-</strong></article>
+        <section id="tab-overview" class="tab-pane active overview-pane">
+          <div class="overview-toolbar" aria-label="概览统计">
+            <div class="overview-metric-strip" aria-label="灵绘工坊统计">
+              <span class="overview-quick-stat"><small>渠道</small><strong id="metric-channels">-</strong></span>
+              <span class="overview-quick-stat"><small>今日</small><strong id="metric-today">-</strong></span>
+              <span class="overview-quick-stat"><small>预设</small><strong id="metric-presets">-</strong></span>
+              <span class="overview-quick-stat"><small>参考图</small><strong id="metric-references">-</strong></span>
+            </div>
+            <button id="refresh-usage" class="quiet-action">刷新概览</button>
           </div>
-          <section class="section-block">
-            <div class="section-heading"><div><h2>当前调度</h2><p>主渠道失败后，将按渠道列表中的回退设置继续尝试。</p></div></div>
-            <div id="overview-channels" class="channel-summary"></div>
-          </section>
-          <section class="section-block">
-            <div class="section-heading"><div><h2>今日用量</h2><p>成功返回的图片按用户和群分别统计；顶部总数按用户累计，避免群聊请求重复计数。不限次数名单仍会统计。</p></div><button id="refresh-usage" class="quiet-action">刷新</button></div>
-            <div id="overview-usage" class="usage-table"></div>
-          </section>
+          <div class="overview-content-grid">
+            <section class="overview-panel">
+              <div class="overview-panel-heading"><div><h2>当前调度</h2><p>主渠道与回退顺序</p></div></div>
+              <div id="overview-channels" class="channel-summary"></div>
+            </section>
+            <section class="overview-panel">
+              <div class="overview-panel-heading"><div><h2>今日用量</h2><p>按用户与群聊分别统计</p></div></div>
+              <div id="overview-usage" class="usage-table"></div>
+            </section>
+          </div>
         </section>
 
         <section id="tab-history" class="tab-pane history-pane">

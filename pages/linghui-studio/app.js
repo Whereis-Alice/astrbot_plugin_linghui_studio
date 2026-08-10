@@ -1234,6 +1234,7 @@ byId("reference-upload").addEventListener("change", async (event) => {
 });
 
 setTheme(storedTheme(), false);
+document.body.dataset.activeTab = "overview";
 
 try {
   await bridge.ready();
