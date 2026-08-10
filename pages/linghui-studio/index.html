@@ -72,34 +72,30 @@
           </section>
         </section>
 
-        <section id="tab-history" class="tab-pane">
-          <div class="metric-grid history-metric-grid">
-            <article class="metric"><span>已缓存成功记录</span><strong id="history-total">-</strong></article>
-            <article class="metric"><span>今日成功</span><strong id="history-today">-</strong></article>
-            <article class="metric"><span>已保护</span><strong id="history-protected">-</strong></article>
-            <article class="metric"><span>缓存占用</span><strong id="history-size">-</strong></article>
-          </div>
-          <p id="history-detail-summary" class="history-detail-summary"></p>
-          <section class="section-block">
-            <div class="section-heading">
-              <div><h2>成功记录</h2><p>文生图与图生图分开管理。图生图记录可展开查看本次实际输入原图、结果图和提示词，并分别下载。默认保留 <span id="history-retention">-</span> 天；收藏或锁定会同时保护结果图、输入原图、提示词和缩略图。</p></div>
-              <div class="history-actions">
-                <div class="history-mode-switch" role="group" aria-label="记录类型筛选">
-                  <button class="quiet-action" type="button" data-history-mode="text_to_image">文生图</button>
-                  <button class="quiet-action" type="button" data-history-mode="image_to_image">图生图</button>
-                  <button class="quiet-action" type="button" data-history-mode="all">全部</button>
-                </div>
-                <button id="history-refresh" class="quiet-action">刷新记录</button>
-                <button id="history-cleanup" class="danger-action">清理已过期</button>
+        <section id="tab-history" class="tab-pane history-pane">
+          <div class="history-toolbar" aria-label="成功记录概览与筛选">
+            <div class="history-metric-strip" aria-label="成功记录统计">
+              <span class="history-quick-stat"><small>记录</small><strong id="history-total">-</strong></span>
+              <span class="history-quick-stat"><small>今日</small><strong id="history-today">-</strong></span>
+              <span class="history-quick-stat"><small>保护</small><strong id="history-protected">-</strong></span>
+              <span class="history-quick-stat"><small>占用</small><strong id="history-size">-</strong></span>
+            </div>
+            <div class="history-actions">
+              <div class="history-mode-switch" role="group" aria-label="记录类型筛选">
+                <button class="quiet-action" type="button" data-history-mode="text_to_image">文生图</button>
+                <button class="quiet-action" type="button" data-history-mode="image_to_image">图生图</button>
+                <button class="quiet-action" type="button" data-history-mode="all">全部</button>
               </div>
+              <button id="history-refresh" class="quiet-action">刷新</button>
+              <button id="history-cleanup" class="danger-action">清理过期</button>
             </div>
-            <div id="generation-history-list" class="generation-history-list"></div>
-            <div id="generation-history-pagination" class="history-pagination" hidden>
-              <button id="history-prev" class="icon-action" type="button" title="上一页" aria-label="上一页">&#8592;</button>
-              <span id="history-page-status" class="history-page-status"></span>
-              <button id="history-next" class="icon-action" type="button" title="下一页" aria-label="下一页">&#8594;</button>
-            </div>
-          </section>
+          </div>
+          <div id="generation-history-list" class="generation-history-list"></div>
+          <div id="generation-history-pagination" class="history-pagination" hidden>
+            <button id="history-prev" class="icon-action" type="button" title="上一页" aria-label="上一页">&#8592;</button>
+            <span id="history-page-status" class="history-page-status"></span>
+            <button id="history-next" class="icon-action" type="button" title="下一页" aria-label="下一页">&#8594;</button>
+          </div>
         </section>
 
         <section id="tab-channels" class="tab-pane">

@@ -578,7 +578,9 @@ function renderGenerationSources(details, response) {
       <figcaption><strong>${escapeHtml(candidate.label || "当前参考图候选")}</strong><small>${escapeHtml(candidate.notice || "这不是生成当时的输入原图。")}</small></figcaption>
     </figure>`;
   }).join("");
-  const noActual = !actualTiles && !candidateTiles
+  // Legacy records already have one explicit warning below. Avoid adding a
+  // second, identical empty-state sentence below it.
+  const noActual = status !== "legacy_unavailable" && !actualTiles && !candidateTiles
     ? `<p class="generation-source-empty">${escapeHtml(message || sourceStatusText(status, response?.source_count, response?.available_count))}</p>`
     : "";
   const legacyNote = status === "legacy_unavailable"
@@ -631,14 +633,12 @@ function renderGenerationHistory() {
   byId("history-today").textContent = String(summary.today ?? 0);
   byId("history-protected").textContent = String(summary.protected ?? 0);
   byId("history-size").textContent = formatBytes(summary.size_bytes);
-  byId("history-retention").textContent = String(retentionDays);
-  byId("history-detail-summary").textContent = [
-    `覆盖 ${Number(summary.users) || 0} 位用户`,
-    `${Number(summary.groups) || 0} 个群`,
-    `${Number(summary.private) || 0} 条私聊记录`,
-    `收藏 ${Number(summary.favorite) || 0} 条`,
-    `锁定 ${Number(summary.locked) || 0} 条`,
-  ].join(" · ");
+  const cleanupButton = byId("history-cleanup");
+  if (cleanupButton) {
+    const cleanupHint = `自动清理超过 ${retentionDays} 天且未收藏、未锁定的缓存`;
+    cleanupButton.title = cleanupHint;
+    cleanupButton.setAttribute("aria-label", cleanupHint);
+  }
   document.querySelectorAll("[data-history-mode]").forEach((button) => {
     const selected = button.dataset.historyMode === mode;
     button.classList.toggle("active", selected);
@@ -667,14 +667,17 @@ function renderGenerationHistory() {
       const taskType = record.task_type || "成功图片";
       const protection = [isFavorite ? "已收藏" : "", isLocked ? "已锁定" : ""].filter(Boolean);
       const sourceBadge = isImageToImage
-        ? `<span class="generation-kind-badge image">图生图 · ${escapeHtml(sourceStatusText(sourceStatus, sourceCount, sourceAvailableCount))}</span>`
+        ? '<span class="generation-kind-badge image">图生图</span>'
         : "<span class=\"generation-kind-badge text\">文生图</span>";
       const previewId = record.image_available && id ? id : "";
       const image = previewId
         ? `<img data-generation-preview-id="${escapeHtml(previewId)}" alt="成功图片预览" loading="lazy" decoding="async" />`
         : `<span class="generation-preview-fallback">${record.image_available ? "预览不可用" : "缓存图片不可用"}</span>`;
+      const sourceSummary = sourceStatus === "cached"
+        ? `输入原图 · 已缓存 ${sourceCount} 张`
+        : (sourceStatus === "partial" ? `输入原图 · 已缓存 ${sourceAvailableCount} / ${sourceCount} 张` : "输入原图");
       const sourceSection = isImageToImage && id
-        ? `<details class="generation-sources" data-generation-sources-id="${escapeHtml(id)}"><summary>输入原图 · ${escapeHtml(sourceStatusText(sourceStatus, sourceCount, sourceAvailableCount))}</summary><div class="generation-source-list"><p class="generation-source-empty">展开后加载实际用于本次请求的输入原图。</p></div></details>`
+        ? `<details class="generation-sources" data-generation-sources-id="${escapeHtml(id)}"><summary>${escapeHtml(sourceSummary)}</summary><div class="generation-source-list"><p class="generation-source-empty">展开后加载实际用于本次请求的输入原图。</p></div></details>`
         : "";
       return `
         <article class="generation-record${isFavorite || isLocked ? " protected" : ""}${isImageToImage ? " image-to-image" : ""}">
@@ -1087,6 +1090,7 @@ async function clearReference(preset) {
 function switchTab(tab) {
   const contentTab = tab === "favorites" || tab === "image-to-image" ? "history" : tab;
   if (contentTab !== "history") clearGenerationPreviewLoading();
+  document.body.dataset.activeTab = tab;
   document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.tab === tab));
   document.querySelectorAll(".tab-pane").forEach((pane) => pane.classList.toggle("active", pane.id === `tab-${contentTab}`));
   const [title, subtitle] = titles[tab] || titles.overview;
