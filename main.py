@@ -1,4 +1,4 @@
-﻿import re
+import re
 import asyncio
 import json
 from functools import wraps
@@ -144,7 +144,7 @@ def _direct_command_only(handler):
     PLUGIN_NAME,
     "Whereis-Alice",
     "灵绘工坊：带参考图专用渠道回退、受控群白名单、自定义绘图反向提示词与可视化管理的文生图/图生图插件",
-    "3.3.4",
+    "3.4.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_linghui_studio",
 )
 class LinghuiStudioPlugin(Star):
@@ -1002,27 +1002,30 @@ class LinghuiStudioPlugin(Star):
 
         auto_detect_status = "已启用" if self._llm_auto_detect else "未启用"
         logger.info(
-            f"LinghuiStudio 已加载 v3.3.4 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
+            f"LinghuiStudio 已加载 v3.4.0 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
 
     def _generation_cache_retention_days(self) -> int:
-        """Return a bounded retention period for successful output cache files."""
+        """Return a bounded retention period for output and input image cache files."""
         try:
             return min(max(1, int(self.conf.get("generation_cache_retention_days", 7))), 365)
         except (TypeError, ValueError):
             return 7
 
     async def _cleanup_generation_cache(self) -> Dict[str, int]:
-        """Delete only expired, unprotected successful-output cache entries."""
+        """Delete only expired, unprotected output and image-to-image input cache entries."""
         result = await self.data_mgr.cleanup_generation_cache(self._generation_cache_retention_days())
         removed = sum(int(result.get(key, 0) or 0) for key in (
-            "removed_records", "removed_images", "removed_previews", "removed_orphans"
+            "removed_records", "removed_images", "removed_previews", "removed_source_images",
+            "removed_source_previews", "removed_orphans"
         ))
         if removed:
             logger.info(
-                "LinghuiStudio: cleaned generation cache (%s records, %s images, %s previews, %s orphan files)",
+                "LinghuiStudio: cleaned generation cache (%s records, %s result images, %s input images, %s previews, %s input previews, %s orphan files)",
                 result.get("removed_records", 0),
                 result.get("removed_images", 0),
+                result.get("removed_source_images", 0),
                 result.get("removed_previews", 0),
+                result.get("removed_source_previews", 0),
                 result.get("removed_orphans", 0),
             )
         return result
@@ -1652,13 +1655,15 @@ class LinghuiStudioPlugin(Star):
             model: str = "",
             preset_name: str = "",
             task_type: str = "",
+            reference_images: Optional[List[bytes]] = None,
             event: Optional[AstrMessageEvent] = None,
     ) -> None:
         """Persist one successful output without letting cache failures affect delivery.
 
-        The cache stores the exact bytes that are sent to the platform.  Usage
-        accounting and in-session PDF context keep their existing behaviour
-        even if the optional Dashboard history file cannot be written.
+        The cache stores the exact output bytes sent to the platform plus the
+        actual image inputs used by an image-to-image request. Usage accounting
+        and in-session PDF context keep their existing behaviour even if the
+        optional Dashboard history file cannot be written.
         """
         user_name, group_name = self._event_identity_labels(event)
         await self.data_mgr.record_usage(
@@ -1678,6 +1683,7 @@ class LinghuiStudioPlugin(Star):
                 model=model,
                 preset=preset_name,
                 task_type=task_type,
+                reference_images=reference_images,
             )
             if record is None:
                 logger.warning("LinghuiStudio: successful output was not added to generation history")
@@ -2709,6 +2715,7 @@ class LinghuiStudioPlugin(Star):
                     model=actual_model,
                     preset_name=preset_name,
                     task_type=task_type,
+                    reference_images=images,
                     event=event,
                 )
 
@@ -2833,6 +2840,7 @@ class LinghuiStudioPlugin(Star):
                                     model=model,
                                     preset_name=preset_name,
                                     task_type="批量文生图",
+                                    reference_images=images,
                                     event=event,
                                 )
 
@@ -2981,6 +2989,7 @@ class LinghuiStudioPlugin(Star):
                                     model=model,
                                     preset_name=preset_name,
                                     task_type="批量图生图版本",
+                                    reference_images=images,
                                     event=event,
                                 )
 
@@ -3725,6 +3734,7 @@ class LinghuiStudioPlugin(Star):
                 model=model,
                 preset_name=preset_name,
                 task_type="自定义文生图" if is_text_to_image else "自定义图生图",
+                reference_images=images,
                 event=event,
             )
             if not is_custom_command: await self.data_mgr.save_preset_image(base_cmd, res)
@@ -3794,6 +3804,7 @@ class LinghuiStudioPlugin(Star):
                 model=model,
                 preset_name=preset_name,
                 task_type="文生图",
+                reference_images=images,
                 event=event,
             )
             quota_str = self._get_quota_str(deduction, uid, group_id)
@@ -3856,6 +3867,7 @@ class LinghuiStudioPlugin(Star):
             model=model,
             preset_name=preset_name,
             task_type="头像图生图",
+            reference_images=[avatar],
             event=event,
         )
         elapsed = (datetime.now() - start).total_seconds()
@@ -5271,6 +5283,7 @@ class LinghuiStudioPlugin(Star):
                     model=model,
                     preset_name=preset_name,
                     task_type="批量图生图",
+                    reference_images=images,
                     event=event,
                 )
 
@@ -5618,6 +5631,7 @@ class LinghuiStudioPlugin(Star):
                                         model=model,
                                         preset_name=preset_name,
                                         task_type="批量图生图（PDF）",
+                                        reference_images=images,
                                         event=event,
                                     )
                                     success = True
@@ -5918,6 +5932,7 @@ class LinghuiStudioPlugin(Star):
                                         model=model,
                                         preset_name=preset_name,
                                         task_type="批量图生图（PDF）",
+                                        reference_images=images,
                                         event=event,
                                     )
                                     success = True
@@ -6425,6 +6440,7 @@ class LinghuiStudioPlugin(Star):
                 model=model,
                 preset_name=scene_name or "人设",
                 task_type="人设拍照",
+                reference_images=final_images,
                 event=event,
             )
 

@@ -18,11 +18,14 @@ const bridge = window.AstrBotPluginPage || {
 const state = {
   config: null,
   usage: { users: [], groups: [], daily_stats: {} },
-  history: { records: [], pagination: { offset: 0, limit: 24, total: 0 }, summary: {}, favorite_only: false },
+  history: { records: [], pagination: { offset: 0, limit: 24, total: 0 }, summary: {}, favorite_only: false, mode: "text_to_image" },
   historyFavoriteOnly: false,
+  historyMode: "text_to_image",
   historyCache: new Map(),
   generationPreviewCache: new Map(),
   generationPromptCache: new Map(),
+  generationSourceCache: new Map(),
+  generationSourcePreviewCache: new Map(),
 };
 
 const THEME_STORAGE_KEY = "linghui-studio-theme";
@@ -33,6 +36,8 @@ const PLUGIN_API_BASE = "/api/plug/astrbot_plugin_linghui_studio";
 const GENERATION_PREVIEW_CONCURRENCY = 2;
 const GENERATION_PREVIEW_CACHE_LIMIT = 48;
 const GENERATION_PROMPT_CACHE_LIMIT = 60;
+const GENERATION_SOURCE_CACHE_LIMIT = 60;
+const GENERATION_SOURCE_PREVIEW_CACHE_LIMIT = 100;
 
 let generationPreviewObserver = null;
 let generationPreviewRenderToken = 0;
@@ -41,7 +46,8 @@ let generationPreviewActive = 0;
 
 const titles = {
   overview: ["概览", "查看当前绘图服务状态和今日用量。"],
-  history: ["成功记录", "查看成功图片、请求提示词与缓存保护状态。"],
+  history: ["文生图记录", "查看纯文生图的结果图、请求提示词与缓存保护状态。"],
+  "image-to-image": ["图生图工作台", "查看每次图生图使用的实际输入原图、结果图、提示词和下载入口。"],
   favorites: ["收藏", "快速查看已收藏且不会自动清理的成功图片。"],
   channels: ["绘图渠道", "配置主渠道、模型和失败后的回退顺序。"],
   access: ["权限与额度", "把访问权限与无限次数名单分开管理。"],
@@ -377,7 +383,7 @@ function formatHistoryTime(rawValue) {
 }
 
 function historyCacheKey(offset) {
-  return `${state.historyFavoriteOnly ? "favorites" : "history"}:${Math.max(0, Number(offset) || 0)}`;
+  return `${state.historyFavoriteOnly ? "favorites" : "history"}:${state.historyMode}:${Math.max(0, Number(offset) || 0)}`;
 }
 
 function invalidateGenerationHistoryCache() {
@@ -498,6 +504,114 @@ async function loadGenerationPrompt(details) {
   }
 }
 
+function sourceStatusText(status, sourceCount, availableCount) {
+  const total = Math.max(0, Number(sourceCount) || 0);
+  const available = Math.max(0, Number(availableCount) || 0);
+  if (status === "cached") return `已缓存 ${total} 张实际输入原图`;
+  if (status === "partial") return `已缓存 ${available} / ${total} 张输入原图`;
+  if (status === "legacy_unavailable") return "旧版记录未缓存输入原图";
+  if (status === "missing") return "本条输入原图缓存不可用";
+  return "不含输入原图";
+}
+
+function sourcePreviewKey(recordId, sourceIndex) {
+  return `${String(recordId || "").trim()}:${Math.max(0, Number(sourceIndex) || 0)}`;
+}
+
+async function loadGenerationSourcePreview(image) {
+  const recordId = String(image?.dataset?.generationSourceId || "").trim();
+  const sourceIndex = Number(image?.dataset?.generationSourceIndex || 0);
+  if (!recordId || !Number.isInteger(sourceIndex) || sourceIndex < 1 || image.dataset.sourcePreviewLoading === "true") return;
+  image.dataset.sourcePreviewLoading = "true";
+  const tile = image.closest(".generation-source-tile");
+  tile?.classList.add("loading");
+  const cacheKey = sourcePreviewKey(recordId, sourceIndex);
+  try {
+    let preview = state.generationSourcePreviewCache.get(cacheKey);
+    if (!preview) {
+      const response = await bridge.apiGet("generation_source_preview", { id: recordId, index: sourceIndex });
+      if (!response?.success || typeof response.preview !== "string" || !response.preview.startsWith("data:image/")) {
+        throw new Error(response?.message || "输入原图预览不可用");
+      }
+      preview = response.preview;
+      setBoundedCache(state.generationSourcePreviewCache, cacheKey, preview, GENERATION_SOURCE_PREVIEW_CACHE_LIMIT);
+    }
+    if (!image.isConnected) return;
+    image.src = preview;
+    tile?.classList.remove("loading");
+  } catch (error) {
+    console.warn("Linghui input-image preview unavailable", error);
+    tile?.classList.remove("loading");
+    tile?.classList.add("failed");
+  } finally {
+    delete image.dataset.sourcePreviewLoading;
+  }
+}
+
+function renderGenerationSources(details, response) {
+  const target = details?.querySelector(".generation-source-list");
+  if (!target) return;
+  const recordId = String(response?.id || details.dataset.generationSourcesId || "").trim();
+  const status = String(response?.source_status || "");
+  const sources = Array.isArray(response?.sources) ? response.sources : [];
+  const candidates = Array.isArray(response?.legacy_candidates) ? response.legacy_candidates : [];
+  const message = String(response?.message || "").trim();
+  const actualTiles = sources.map((source) => {
+    const index = Number(source.source_index || 0);
+    const available = bool(source.available);
+    const size = source.width && source.height ? `${source.width} × ${source.height}` : "尺寸未知";
+    const image = available
+      ? `<img class="generation-source-image" data-generation-source-id="${escapeHtml(recordId)}" data-generation-source-index="${index}" alt="输入原图 ${index}" loading="lazy" decoding="async" />`
+      : "<span class=\"generation-source-fallback\">原图缓存不可用</span>";
+    return `<figure class="generation-source-tile${available ? " loading" : " failed"}">
+      <div class="generation-source-preview">${image}</div>
+      <figcaption>输入原图 ${index} · ${escapeHtml(size)} · ${escapeHtml(formatBytes(source.size_bytes))}</figcaption>
+      <button type="button" class="quiet-action source-download" data-history-source-download="${escapeHtml(recordId)}" data-history-source-index="${index}" ${available ? "" : "disabled"}>下载原图</button>
+    </figure>`;
+  }).join("");
+  const candidateTiles = candidates.map((candidate) => {
+    const preview = typeof candidate.preview === "string" && candidate.preview.startsWith("data:image/")
+      ? `<img class="generation-source-image candidate" src="${escapeHtml(candidate.preview)}" alt="${escapeHtml(candidate.label || "当前参考图候选")}" loading="lazy" decoding="async" />`
+      : "<span class=\"generation-source-fallback\">当前候选图不可用</span>";
+    return `<figure class="generation-source-tile candidate">
+      <div class="generation-source-preview">${preview}</div>
+      <figcaption><strong>${escapeHtml(candidate.label || "当前参考图候选")}</strong><small>${escapeHtml(candidate.notice || "这不是生成当时的输入原图。")}</small></figcaption>
+    </figure>`;
+  }).join("");
+  const noActual = !actualTiles && !candidateTiles
+    ? `<p class="generation-source-empty">${escapeHtml(message || sourceStatusText(status, response?.source_count, response?.available_count))}</p>`
+    : "";
+  const legacyNote = status === "legacy_unavailable"
+    ? `<p class="generation-source-legacy">${escapeHtml(message || "旧版记录未缓存当次输入图，下面若显示候选，仅来自当前预设或人设配置，并非历史原图。")}</p>`
+    : "";
+  target.innerHTML = `${legacyNote}<div class="generation-source-grid">${actualTiles}${candidateTiles}</div>${noActual}`;
+  target.querySelectorAll("img[data-generation-source-id]").forEach((image) => { void loadGenerationSourcePreview(image); });
+}
+
+async function loadGenerationSources(details) {
+  const recordId = String(details?.dataset?.generationSourcesId || "").trim();
+  const target = details?.querySelector(".generation-source-list");
+  if (!recordId || !target || details.dataset.sourcesLoading === "true" || details.dataset.sourcesLoaded === "true") return;
+  details.dataset.sourcesLoading = "true";
+  target.innerHTML = '<p class="generation-source-empty">正在加载输入原图…</p>';
+  try {
+    let response = state.generationSourceCache.get(recordId);
+    if (!response) {
+      response = await bridge.apiGet("generation_sources", { id: recordId });
+      if (!response?.success) throw new Error(response?.message || "输入原图加载失败");
+      setBoundedCache(state.generationSourceCache, recordId, response, GENERATION_SOURCE_CACHE_LIMIT);
+    }
+    if (!details.isConnected) return;
+    renderGenerationSources(details, response);
+    details.dataset.sourcesLoaded = "true";
+  } catch (error) {
+    console.warn("Linghui input-image metadata unavailable", error);
+    target.innerHTML = `<p class="generation-source-empty">${escapeHtml(error.message || "输入原图加载失败，请稍后重试。")}</p>`;
+  } finally {
+    delete details.dataset.sourcesLoading;
+  }
+}
+
 function renderGenerationHistory() {
   clearGenerationPreviewLoading();
   const history = state.history || {};
@@ -506,9 +620,14 @@ function renderGenerationHistory() {
   const records = history.records || [];
   const retentionDays = Math.max(1, Number(history.retention_days) || 7);
   const favoriteOnly = bool(history.favorite_only);
+  const responseMode = String(history.mode || state.historyMode || "all");
+  const mode = ["all", "text_to_image", "image_to_image"].includes(responseMode) ? responseMode : "all";
   state.historyFavoriteOnly = favoriteOnly;
+  state.historyMode = mode;
 
-  byId("history-total").textContent = String(summary.total ?? pagination.total ?? 0);
+  byId("history-total").textContent = String(
+    mode === "all" ? (summary.total ?? pagination.total ?? 0) : (summary[mode] ?? pagination.total ?? 0)
+  );
   byId("history-today").textContent = String(summary.today ?? 0);
   byId("history-protected").textContent = String(summary.protected ?? 0);
   byId("history-size").textContent = formatBytes(summary.size_bytes);
@@ -520,9 +639,11 @@ function renderGenerationHistory() {
     `收藏 ${Number(summary.favorite) || 0} 条`,
     `锁定 ${Number(summary.locked) || 0} 条`,
   ].join(" · ");
-  const favoritesButton = byId("history-favorites");
-  favoritesButton.textContent = favoriteOnly ? "显示全部" : `只看收藏（${Number(summary.favorite) || 0}）`;
-  favoritesButton.setAttribute("aria-pressed", String(favoriteOnly));
+  document.querySelectorAll("[data-history-mode]").forEach((button) => {
+    const selected = button.dataset.historyMode === mode;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  });
 
   const target = byId("generation-history-list");
   if (!records.length) {
@@ -533,6 +654,11 @@ function renderGenerationHistory() {
       const isFavorite = bool(record.favorite);
       const isLocked = bool(record.locked);
       const hasPrompt = bool(record.has_prompt);
+      const generationKind = String(record.generation_kind || "text_to_image");
+      const sourceStatus = String(record.source_status || "not_applicable");
+      const sourceCount = Math.max(0, Number(record.source_count) || 0);
+      const sourceAvailableCount = Math.max(0, Number(record.source_available_count) || 0);
+      const isImageToImage = generationKind === "image_to_image";
       const user = formatIdentity(record.user_name, record.user_id, "用户");
       const owner = record.group_id ? formatIdentity(record.group_name, record.group_id, "群") : "私聊";
       const dimension = record.width && record.height ? `${record.width} × ${record.height}` : "尺寸未知";
@@ -540,16 +666,22 @@ function renderGenerationHistory() {
       const preset = record.preset || "无预设";
       const taskType = record.task_type || "成功图片";
       const protection = [isFavorite ? "已收藏" : "", isLocked ? "已锁定" : ""].filter(Boolean);
+      const sourceBadge = isImageToImage
+        ? `<span class="generation-kind-badge image">图生图 · ${escapeHtml(sourceStatusText(sourceStatus, sourceCount, sourceAvailableCount))}</span>`
+        : "<span class=\"generation-kind-badge text\">文生图</span>";
       const previewId = record.image_available && id ? id : "";
       const image = previewId
         ? `<img data-generation-preview-id="${escapeHtml(previewId)}" alt="成功图片预览" loading="lazy" decoding="async" />`
         : `<span class="generation-preview-fallback">${record.image_available ? "预览不可用" : "缓存图片不可用"}</span>`;
+      const sourceSection = isImageToImage && id
+        ? `<details class="generation-sources" data-generation-sources-id="${escapeHtml(id)}"><summary>输入原图 · ${escapeHtml(sourceStatusText(sourceStatus, sourceCount, sourceAvailableCount))}</summary><div class="generation-source-list"><p class="generation-source-empty">展开后加载实际用于本次请求的输入原图。</p></div></details>`
+        : "";
       return `
-        <article class="generation-record${isFavorite || isLocked ? " protected" : ""}">
+        <article class="generation-record${isFavorite || isLocked ? " protected" : ""}${isImageToImage ? " image-to-image" : ""}">
           <div class="generation-preview${previewId ? " loading" : ""}">${image}</div>
           <div class="generation-record-main">
             <div class="generation-record-topline">
-              <div class="generation-record-title"><strong>${escapeHtml(taskType)}</strong><span>${escapeHtml(formatHistoryTime(record.created_at))}</span></div>
+              <div class="generation-record-title"><strong>${escapeHtml(taskType)}</strong><span>${escapeHtml(formatHistoryTime(record.created_at))}</span>${sourceBadge}</div>
               <div class="generation-record-actions">
                 <button type="button" class="history-icon-button download" data-history-download="${escapeHtml(id)}" title="下载原图" aria-label="下载原图" ${record.image_available ? "" : "disabled"}>↓</button>
                 <button type="button" class="history-icon-button${isFavorite ? " active" : ""}" data-history-favorite="${escapeHtml(id)}" data-history-value="${String(!isFavorite)}" title="${isFavorite ? "取消收藏" : "收藏并永久保留"}" aria-label="${isFavorite ? "取消收藏" : "收藏并永久保留"}" aria-pressed="${String(isFavorite)}">★</button>
@@ -561,6 +693,7 @@ function renderGenerationHistory() {
               <span>用户 ${escapeHtml(user)}</span><span>${escapeHtml(owner)}</span><span>${escapeHtml(dimension)}</span><span>${escapeHtml(formatBytes(record.size_bytes))}</span><span>${escapeHtml(model)}</span><span>${escapeHtml(preset)}</span>
             </div>
             ${protection.length ? `<div class="generation-protection">${protection.map((label) => `<span>${label}</span>`).join("")}</div>` : ""}
+            ${sourceSection}
             <details class="generation-prompt"${hasPrompt && id ? ` data-generation-prompt-id="${escapeHtml(id)}"` : ""}><summary>请求提示词</summary><pre>${hasPrompt ? "展开后加载" : "未记录提示词"}</pre></details>
           </div>
         </article>`;
@@ -749,6 +882,7 @@ async function loadGenerationHistory(offset = 0, force = false) {
       limit: HISTORY_PAGE_SIZE,
       offset: safeOffset,
       favorite_only: state.historyFavoriteOnly ? "1" : "0",
+      mode: state.historyMode,
     });
     if (response?.success) {
       state.historyCache.set(cacheKey, { response, loadedAt: Date.now() });
@@ -802,6 +936,37 @@ async function downloadGenerationImage(id) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }
 
+async function downloadGenerationSource(id, index) {
+  const recordId = String(id || "").trim();
+  const sourceIndex = Number(index || 0);
+  if (!recordId || !Number.isInteger(sourceIndex) || sourceIndex < 1) throw new Error("缺少输入原图信息");
+  const params = { id: recordId, index: sourceIndex };
+  if (typeof bridge.download === "function") {
+    await bridge.download("generation_source_download", params, `linghui_${recordId}_source_${sourceIndex}`);
+    return;
+  }
+  const query = new URLSearchParams(params).toString();
+  const response = await fetch(`${PLUGIN_API_BASE}/generation_source_download?${query}`, { credentials: "same-origin" });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload?.message || "输入原图下载失败");
+  }
+  const blob = await response.blob();
+  if (!blob.size) throw new Error("输入原图缓存为空");
+  const header = response.headers.get("content-disposition") || "";
+  const matchedName = /filename="?([^";]+)"?/i.exec(header);
+  const filename = matchedName?.[1] || `linghui_${recordId}_source_${sourceIndex}.png`;
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+}
+
 async function deleteGenerationRecord(id) {
   if (!await confirmAction({
     title: "删除成功记录",
@@ -813,6 +978,10 @@ async function deleteGenerationRecord(id) {
   showToast(response.message || "成功记录已删除");
   state.generationPreviewCache.delete(String(id || ""));
   state.generationPromptCache.delete(String(id || ""));
+  state.generationSourceCache.delete(String(id || ""));
+  for (const key of state.generationSourcePreviewCache.keys()) {
+    if (key.startsWith(`${String(id || "")}:`)) state.generationSourcePreviewCache.delete(key);
+  }
   invalidateGenerationHistoryCache();
   await loadGenerationHistory(0);
 }
@@ -828,6 +997,8 @@ async function cleanupGenerationHistory() {
   showToast(response.message || "过期缓存已清理");
   state.generationPreviewCache.clear();
   state.generationPromptCache.clear();
+  state.generationSourceCache.clear();
+  state.generationSourcePreviewCache.clear();
   invalidateGenerationHistoryCache();
   await loadGenerationHistory(0);
 }
@@ -914,7 +1085,7 @@ async function clearReference(preset) {
 }
 
 function switchTab(tab) {
-  const contentTab = tab === "favorites" ? "history" : tab;
+  const contentTab = tab === "favorites" || tab === "image-to-image" ? "history" : tab;
   if (contentTab !== "history") clearGenerationPreviewLoading();
   document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.tab === tab));
   document.querySelectorAll(".tab-pane").forEach((pane) => pane.classList.toggle("active", pane.id === `tab-${contentTab}`));
@@ -928,10 +1099,20 @@ document.addEventListener("click", async (event) => {
     const tab = event.target.closest("[data-tab]");
     if (tab) {
       const tabName = tab.dataset.tab;
-      if (tabName === "favorites") state.historyFavoriteOnly = true;
-      if (tabName === "history") state.historyFavoriteOnly = false;
+      if (tabName === "favorites") {
+        state.historyFavoriteOnly = true;
+        state.historyMode = "all";
+      }
+      if (tabName === "history") {
+        state.historyFavoriteOnly = false;
+        state.historyMode = "text_to_image";
+      }
+      if (tabName === "image-to-image") {
+        state.historyFavoriteOnly = false;
+        state.historyMode = "image_to_image";
+      }
       switchTab(tabName);
-      if (tabName === "history" || tabName === "favorites") await loadGenerationHistory(0);
+      if (["history", "image-to-image", "favorites"].includes(tabName)) await loadGenerationHistory(0);
       return;
     }
     if (event.target.closest("#save-button")) { await saveConfig(); return; }
@@ -940,10 +1121,13 @@ document.addEventListener("click", async (event) => {
     if (themeOption) { await changeTheme(themeOption.dataset.themeOption); return; }
     if (event.target.closest("#refresh-usage")) { await loadUsage(); showToast("用量已刷新"); return; }
     if (event.target.closest("#history-refresh")) { await loadGenerationHistory(state.history?.pagination?.offset || 0, true); showToast("成功记录已刷新"); return; }
-    if (event.target.closest("#history-favorites")) {
-      state.historyFavoriteOnly = !state.historyFavoriteOnly;
-      switchTab(state.historyFavoriteOnly ? "favorites" : "history");
-      await loadGenerationHistory(0);
+    const historyModeButton = event.target.closest("[data-history-mode]");
+    if (historyModeButton) {
+      const nextMode = historyModeButton.dataset.historyMode;
+      if (["all", "text_to_image", "image_to_image"].includes(nextMode)) {
+        state.historyMode = nextMode;
+        await loadGenerationHistory(0);
+      }
       return;
     }
     if (event.target.closest("#history-cleanup")) { await cleanupGenerationHistory(); return; }
@@ -982,6 +1166,11 @@ document.addEventListener("click", async (event) => {
     if (event.target.closest("#reference-clear")) { await clearReference(value("reference-preset")); return; }
     const downloadButton = event.target.closest("[data-history-download]");
     if (downloadButton) { await downloadGenerationImage(downloadButton.dataset.historyDownload); return; }
+    const sourceDownloadButton = event.target.closest("[data-history-source-download]");
+    if (sourceDownloadButton) {
+      await downloadGenerationSource(sourceDownloadButton.dataset.historySourceDownload, sourceDownloadButton.dataset.historySourceIndex);
+      return;
+    }
     const favoriteButton = event.target.closest("[data-history-favorite]");
     if (favoriteButton) {
       await updateGenerationRecord("favorite", favoriteButton.dataset.historyFavorite, bool(favoriteButton.dataset.historyValue));
@@ -1003,8 +1192,9 @@ document.addEventListener("click", async (event) => {
 
 document.addEventListener("toggle", (event) => {
   const details = event.target;
-  if (!(details instanceof HTMLDetailsElement) || !details.matches(".generation-prompt") || !details.open) return;
-  void loadGenerationPrompt(details);
+  if (!(details instanceof HTMLDetailsElement) || !details.open) return;
+  if (details.matches(".generation-prompt")) void loadGenerationPrompt(details);
+  if (details.matches(".generation-sources")) void loadGenerationSources(details);
 }, true);
 
 document.addEventListener("error", (event) => {
@@ -1020,6 +1210,13 @@ document.addEventListener("error", (event) => {
     const preview = image.closest(".generation-preview");
     preview?.classList.add("failed");
     image.alt = "成功图片预览不可用";
+    return;
+  }
+  if (image.matches(".generation-source-image")) {
+    const tile = image.closest(".generation-source-tile");
+    tile?.classList.remove("loading");
+    tile?.classList.add("failed");
+    image.alt = "输入原图预览不可用";
   }
 }, true);
 

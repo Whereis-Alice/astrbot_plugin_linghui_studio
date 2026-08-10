@@ -50,6 +50,9 @@ class LinghuiDashboardApi:
             ("generation_preview", self.generation_preview, ["GET"], "Preview one Linghui Studio successful image"),
             ("generation_prompt", self.generation_prompt, ["GET"], "Get one Linghui Studio successful generation prompt"),
             ("generation_download", self.generation_download, ["GET"], "Download one Linghui Studio successful image"),
+            ("generation_sources", self.generation_sources, ["GET"], "Get Linghui Studio image-to-image source metadata"),
+            ("generation_source_preview", self.generation_source_preview, ["GET"], "Preview one Linghui Studio image-to-image source"),
+            ("generation_source_download", self.generation_source_download, ["GET"], "Download one Linghui Studio image-to-image source"),
             ("generation_record", self.generation_record, ["POST"], "Manage Linghui Studio successful generation history"),
         )
         for endpoint, handler, methods, description in routes:
@@ -732,16 +735,173 @@ class LinghuiDashboardApi:
             return jsonify({"success": False, "message": "参考图路径无效。"}), 404
         return await send_file(path, mimetype=mimetypes.guess_type(path.name)[0] or "application/octet-stream")
 
+    @staticmethod
+    def _generation_source_status(manager: Any, record: Dict[str, Any]) -> tuple[str, int, int]:
+        """Return an availability state without reading image bytes into memory."""
+        raw_sources = record.get("source_images", []) if isinstance(record, dict) else []
+        sources = [item for item in raw_sources if isinstance(item, dict)] if isinstance(raw_sources, list) else []
+        available_count = sum(
+            1 for source_index in range(1, len(sources) + 1)
+            if manager.get_generation_source_path(record, source_index) is not None
+        )
+        if sources:
+            if available_count == len(sources):
+                return "cached", len(sources), available_count
+            if available_count:
+                return "partial", len(sources), available_count
+            return "missing", len(sources), 0
+        status = str(record.get("source_status", "") or "").strip().lower()
+        if status not in {"not_applicable", "legacy_unavailable", "missing"}:
+            status = "not_applicable"
+        return status, 0, 0
+
+    async def _legacy_generation_source_candidates(self, record: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Offer current preset/persona images as explicitly non-historical hints.
+
+        Pre-v3.4.0 histories did not store user uploads, quoted images, or
+        avatars.  We must not imply that those source images can be restored.
+        For a preset/persona path we can, however, show the administrator the
+        *current* configured references as a troubleshooting aid.
+        """
+        task_type = str(record.get("task_type", "") or "")
+        preset = str(record.get("preset", "") or "").strip()
+        candidates: List[tuple[str, str]] = []
+        if "人设" in task_type:
+            candidates.append(("_persona_", "当前人设参考图（非本次历史原图）"))
+        if preset and preset not in {"自定义", "编辑", "人设"}:
+            candidates.append((preset, "当前预设参考图（非本次历史原图）"))
+
+        result: List[Dict[str, Any]] = []
+        seen_presets: set[str] = set()
+        for preset_name, label in candidates:
+            if preset_name in seen_presets:
+                continue
+            seen_presets.add(preset_name)
+            paths = self.plugin.data_mgr.get_preset_ref_image_paths(preset_name)
+            for source_index, raw_path in enumerate(paths[:16], start=1):
+                path = self._safe_reference_path(raw_path)
+                if path is None:
+                    continue
+                preview = await asyncio.to_thread(self._image_preview_data_url, path)
+                result.append({
+                    "source_index": source_index,
+                    "label": label,
+                    "notice": "该图来自当前配置，只能作为候选参考，不能证明它是当次生成使用的原图。",
+                    "preview": preview,
+                })
+        return result
+
+    async def generation_sources(self):
+        """Return one record's image-to-image inputs without eager image payloads."""
+        record_id = str(request.args.get("id", "") or "").strip()
+        if not record_id or len(record_id) > 80:
+            return jsonify({"success": False, "message": "请提供有效的成功记录 ID。"}), 400
+
+        manager = self.plugin.data_mgr
+        record = await manager.get_generation_record(record_id)
+        if record is None:
+            return jsonify({"success": False, "message": "未找到成功记录。"}), 404
+
+        status, source_count, available_count = self._generation_source_status(manager, record)
+        raw_sources = record.get("source_images", [])
+        sources = raw_sources if isinstance(raw_sources, list) else []
+        public_sources: List[Dict[str, Any]] = []
+        for source_index, source in enumerate(sources, start=1):
+            if not isinstance(source, dict):
+                continue
+            public_sources.append({
+                "source_index": source_index,
+                "image_format": str(source.get("image_format", "") or ""),
+                "width": self._as_int(source.get("width"), 0, 100_000),
+                "height": self._as_int(source.get("height"), 0, 100_000),
+                "size_bytes": self._as_int(source.get("size_bytes"), 0, 2_147_483_647),
+                "available": manager.get_generation_source_path(record, source_index) is not None,
+            })
+
+        legacy_candidates: List[Dict[str, Any]] = []
+        if status == "legacy_unavailable":
+            legacy_candidates = await self._legacy_generation_source_candidates(record)
+        return jsonify({
+            "success": True,
+            "id": record_id,
+            "generation_kind": str(record.get("generation_kind", "text_to_image") or "text_to_image"),
+            "source_status": status,
+            "source_count": source_count,
+            "available_count": available_count,
+            "sources": public_sources,
+            "legacy_candidates": legacy_candidates,
+            "message": (
+                "旧版记录没有缓存当次输入原图，无法从日志、引用消息或 QQ 头像中可靠恢复。"
+                if status == "legacy_unavailable" else ""
+            ),
+        })
+
+    async def generation_source_preview(self):
+        """Return one actual cached input image preview on demand."""
+        record_id = str(request.args.get("id", "") or "").strip()
+        source_index = self._as_int(request.args.get("index"), 0, 999)
+        if not record_id or len(record_id) > 80 or source_index < 1:
+            return jsonify({"success": False, "message": "请提供有效的记录 ID 和输入图序号。"}), 400
+        manager = self.plugin.data_mgr
+        record = await manager.get_generation_record(record_id)
+        if record is None:
+            return jsonify({"success": False, "message": "未找到成功记录。"}), 404
+        preview_path = await manager.get_or_create_generation_source_preview(record, source_index)
+        if preview_path is None:
+            return jsonify({"success": False, "message": "该输入原图缓存不可用。"}), 404
+        try:
+            preview_bytes = await asyncio.to_thread(preview_path.read_bytes)
+        except OSError as exc:
+            logger.warning("Linghui dashboard could not read cached input preview: %s", exc)
+            return jsonify({"success": False, "message": "该输入原图预览不可用。"}), 404
+        if not preview_bytes:
+            return jsonify({"success": False, "message": "该输入原图预览不可用。"}), 404
+        return jsonify({
+            "success": True,
+            "id": record_id,
+            "index": source_index,
+            "preview": f"data:image/jpeg;base64,{base64.b64encode(preview_bytes).decode('ascii')}",
+        })
+
+    async def generation_source_download(self):
+        """Send one cached request input as an authenticated attachment."""
+        record_id = str(request.args.get("id", "") or "").strip()
+        source_index = self._as_int(request.args.get("index"), 0, 999)
+        if not record_id or len(record_id) > 80 or source_index < 1:
+            return jsonify({"success": False, "message": "请提供有效的记录 ID 和输入图序号。"}), 400
+        manager = self.plugin.data_mgr
+        record = await manager.get_generation_record(record_id)
+        if record is None:
+            return jsonify({"success": False, "message": "未找到成功记录。"}), 404
+        source_path = manager.get_generation_source_path(record, source_index)
+        if source_path is None:
+            return jsonify({"success": False, "message": "该输入原图缓存不可用。"}), 404
+        suffix = source_path.suffix.lower()
+        if not re.fullmatch(r"\.[a-z0-9]{1,8}", suffix):
+            suffix = ".img"
+        safe_id = re.sub(r"[^A-Za-z0-9_-]", "", record_id)[:20] or "image"
+        return await send_file(
+            source_path,
+            mimetype=mimetypes.guess_type(source_path.name)[0] or "application/octet-stream",
+            as_attachment=True,
+            attachment_filename=f"linghui_{safe_id}_source_{source_index}{suffix}",
+            cache_timeout=0,
+        )
+
     async def generation_history(self):
         """Return one paged, authenticated view of successful output cache records."""
         limit = self._as_int(request.args.get("limit", 24), 1, 100)
         offset = self._as_int(request.args.get("offset", 0), 0, 1_000_000)
         favorite_only = self._as_bool(request.args.get("favorite_only", False))
+        generation_kind = str(request.args.get("mode", "all") or "all").strip().lower()
+        if generation_kind not in {"all", "text_to_image", "image_to_image"}:
+            generation_kind = "all"
         manager = self.plugin.data_mgr
         records, total, summary = await manager.get_generation_history_page(
             limit=limit,
             offset=offset,
             favorite_only=favorite_only,
+            generation_kind=generation_kind,
         )
         identity_labels = self._identity_label_map(manager)
 
@@ -749,6 +909,7 @@ class LinghuiDashboardApi:
         for record in records:
             image_path = manager.get_generation_image_path(record)
             record_id = str(record.get("id", "") or "")
+            source_status, source_count, source_available_count = self._generation_source_status(manager, record)
             public_records.append({
                 "id": record_id,
                 "created_at": str(record.get("created_at", "") or ""),
@@ -768,6 +929,11 @@ class LinghuiDashboardApi:
                 "width": self._as_int(record.get("width"), 0, 100_000),
                 "height": self._as_int(record.get("height"), 0, 100_000),
                 "size_bytes": self._as_int(record.get("size_bytes"), 0, 2_147_483_647),
+                "generation_kind": str(record.get("generation_kind", "text_to_image") or "text_to_image"),
+                "source_status": source_status,
+                "source_count": source_count,
+                "source_available_count": source_available_count,
+                "source_size_bytes": self._as_int(record.get("source_size_bytes"), 0, 2_147_483_647),
                 "favorite": self._as_bool(record.get("favorite", False)),
                 "locked": self._as_bool(record.get("locked", False)),
                 "image_available": image_path is not None,
@@ -784,6 +950,7 @@ class LinghuiDashboardApi:
             },
             "summary": summary,
             "favorite_only": favorite_only,
+            "mode": generation_kind,
             "retention_days": self._as_int(
                 self.plugin.conf.get("generation_cache_retention_days", 7), 1, 365
             ),
@@ -912,17 +1079,22 @@ class LinghuiDashboardApi:
                 removed_records = self._as_int(result.get("removed_records"), 0, 1_000_000)
                 removed_images = self._as_int(result.get("removed_images"), 0, 1_000_000)
                 removed_previews = self._as_int(result.get("removed_previews"), 0, 1_000_000)
+                removed_source_images = self._as_int(result.get("removed_source_images"), 0, 1_000_000)
+                removed_source_previews = self._as_int(result.get("removed_source_previews"), 0, 1_000_000)
                 removed_orphans = self._as_int(result.get("removed_orphans"), 0, 1_000_000)
                 return jsonify({
                     "success": True,
                     "message": (
-                        f"已清理 {removed_records} 条过期记录、{removed_images} 张缓存图片"
-                        f"、{removed_previews} 张缩略图和 {removed_orphans} 个遗留文件。"
+                        f"已清理 {removed_records} 条过期记录、{removed_images} 张结果图、"
+                        f"{removed_source_images} 张输入原图、{removed_previews + removed_source_previews} 张缩略图"
+                        f"和 {removed_orphans} 个遗留文件。"
                     ),
                     "result": {
                         "removed_records": removed_records,
                         "removed_images": removed_images,
                         "removed_previews": removed_previews,
+                        "removed_source_images": removed_source_images,
+                        "removed_source_previews": removed_source_previews,
                         "removed_orphans": removed_orphans,
                     },
                 })

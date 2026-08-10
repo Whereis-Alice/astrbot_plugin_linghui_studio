@@ -16,6 +16,12 @@ from .utils import norm_id
 
 _GENERATION_PREVIEW_MAX_BYTES = 120 * 1024
 _GENERATION_PREVIEW_MAX_EDGE = 440
+_GENERATION_KIND_TEXT_TO_IMAGE = "text_to_image"
+_GENERATION_KIND_IMAGE_TO_IMAGE = "image_to_image"
+_GENERATION_KINDS = {
+    _GENERATION_KIND_TEXT_TO_IMAGE,
+    _GENERATION_KIND_IMAGE_TO_IMAGE,
+}
 
 
 class DataManager:
@@ -36,6 +42,11 @@ class DataManager:
         self.preset_ref_images_dir = self.data_dir / "preset_ref_images"  # 预设参考图目录
         self.generation_cache_dir = self.data_dir / "generation_cache"
         self.generation_preview_cache_dir = self.data_dir / "generation_preview_cache"
+        # Input/reference images are kept separately from the generated
+        # output.  This makes it possible to show the actual image-to-image
+        # source in Dashboard without exposing an arbitrary local path.
+        self.generation_source_cache_dir = self.data_dir / "generation_source_cache"
+        self.generation_source_preview_cache_dir = self.data_dir / "generation_source_preview_cache"
         self.fonts_dir = self.data_dir / "fonts"
 
         # [Fix] 确保数据目录存在
@@ -53,6 +64,12 @@ class DataManager:
 
         if not self.generation_preview_cache_dir.exists():
             self.generation_preview_cache_dir.mkdir(parents=True, exist_ok=True)
+
+        if not self.generation_source_cache_dir.exists():
+            self.generation_source_cache_dir.mkdir(parents=True, exist_ok=True)
+
+        if not self.generation_source_preview_cache_dir.exists():
+            self.generation_source_preview_cache_dir.mkdir(parents=True, exist_ok=True)
 
         if not self.fonts_dir.exists():
             self.fonts_dir.mkdir(parents=True, exist_ok=True)
@@ -421,6 +438,41 @@ class DataManager:
         }
         return suffixes.get(image_format, "img"), image_format, int(width), int(height)
 
+    @staticmethod
+    def _infer_generation_kind(task_type: Any, has_sources: bool = False) -> str:
+        """Classify a record without relying on its display-facing task label."""
+        if has_sources:
+            return _GENERATION_KIND_IMAGE_TO_IMAGE
+        label = str(task_type or "").strip().lower()
+        # Old histories did not store the request inputs.  These labels are
+        # the only safe clue we have for separating them in the new UI.
+        image_tokens = ("图生图", "人设", "编辑", "手办", "image-to-image", "image_to_image")
+        if any(token in label for token in image_tokens):
+            return _GENERATION_KIND_IMAGE_TO_IMAGE
+        return _GENERATION_KIND_TEXT_TO_IMAGE
+
+    def _normalize_generation_sources(self, raw_sources: Any) -> List[Dict[str, Any]]:
+        """Normalize cached input-image metadata; filenames must stay local."""
+        if not isinstance(raw_sources, list):
+            return []
+
+        normalized: List[Dict[str, Any]] = []
+        for raw_source in raw_sources:
+            if not isinstance(raw_source, dict):
+                continue
+            filename_raw = str(raw_source.get("filename", "") or "").strip()
+            filename = Path(filename_raw).name
+            if not filename or filename != filename_raw or len(filename) > 180:
+                continue
+            normalized.append({
+                "filename": filename,
+                "image_format": str(raw_source.get("image_format", "") or "").strip()[:20],
+                "width": self._history_int(raw_source.get("width")),
+                "height": self._history_int(raw_source.get("height")),
+                "size_bytes": self._history_int(raw_source.get("size_bytes")),
+            })
+        return normalized
+
     def _normalize_generation_history(self, raw_history: Any) -> List[Dict[str, Any]]:
         """Keep only safe, forward-compatible history entries loaded from disk."""
         if not isinstance(raw_history, list):
@@ -442,6 +494,22 @@ class DataManager:
                 or filename != filename_raw
             ):
                 continue
+            task_type = str(raw.get("task_type", "") or "").strip()[:80]
+            source_images = self._normalize_generation_sources(raw.get("source_images", []))
+            raw_kind = str(raw.get("generation_kind", "") or "").strip().lower()
+            generation_kind = (
+                raw_kind if raw_kind in _GENERATION_KINDS
+                else self._infer_generation_kind(task_type, bool(source_images))
+            )
+            source_status = str(raw.get("source_status", "") or "").strip().lower()
+            if source_images:
+                source_status = "cached"
+            elif source_status not in {"not_applicable", "legacy_unavailable", "missing"}:
+                source_status = (
+                    "legacy_unavailable"
+                    if generation_kind == _GENERATION_KIND_IMAGE_TO_IMAGE
+                    else "not_applicable"
+                )
             seen_ids.add(record_id)
             normalized.append({
                 "id": record_id,
@@ -454,11 +522,16 @@ class DataManager:
                 "prompt": str(raw.get("prompt", "") or "").strip()[:12_000],
                 "model": str(raw.get("model", "") or "").strip()[:200],
                 "preset": str(raw.get("preset", "") or "").strip()[:160],
-                "task_type": str(raw.get("task_type", "") or "").strip()[:80],
+                "task_type": task_type,
                 "image_format": str(raw.get("image_format", "") or "").strip()[:20],
                 "width": self._history_int(raw.get("width")),
                 "height": self._history_int(raw.get("height")),
                 "size_bytes": self._history_int(raw.get("size_bytes")),
+                "generation_kind": generation_kind,
+                "source_images": source_images,
+                "source_count": len(source_images),
+                "source_size_bytes": sum(self._history_int(item.get("size_bytes")) for item in source_images),
+                "source_status": source_status,
                 "favorite": self._history_bool(raw.get("favorite", False)),
                 "locked": self._history_bool(raw.get("locked", False)),
             })
@@ -489,6 +562,41 @@ class DataManager:
             return None
         return candidate if candidate.parent == root else None
 
+    def _generation_source_cache_path(self, filename: Any) -> Optional[Path]:
+        """Resolve a cached input image only when it stays in its own root."""
+        try:
+            root = self.generation_source_cache_dir.resolve()
+            raw_name = str(filename or "")
+            if not raw_name or Path(raw_name).name != raw_name:
+                return None
+            candidate = (root / raw_name).resolve()
+        except (OSError, TypeError, ValueError):
+            return None
+        return candidate if candidate.parent == root else None
+
+    def _generation_source_preview_cache_path(self, record_id: Any, source_index: Any) -> Optional[Path]:
+        """Resolve one input image's dedicated bounded thumbnail path."""
+        normalized_id = str(record_id or "").strip()
+        try:
+            index = int(source_index)
+        except (TypeError, ValueError):
+            return None
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", normalized_id) or index < 1 or index > 999:
+            return None
+        try:
+            root = self.generation_source_preview_cache_dir.resolve()
+            candidate = (root / f"{normalized_id}_{index:03d}.jpg").resolve()
+        except (OSError, TypeError, ValueError):
+            return None
+        return candidate if candidate.parent == root else None
+
+    @staticmethod
+    def _generation_source_entries(record: Any) -> List[Dict[str, Any]]:
+        if not isinstance(record, dict):
+            return []
+        sources = record.get("source_images", [])
+        return [item for item in sources if isinstance(item, dict)] if isinstance(sources, list) else []
+
     def get_generation_image_path(self, record: Dict[str, Any]) -> Optional[Path]:
         if not isinstance(record, dict):
             return None
@@ -499,6 +607,31 @@ class DataManager:
         if not isinstance(record, dict):
             return None
         path = self._generation_preview_cache_path(record.get("id"))
+        return path if path is not None and path.is_file() else None
+
+    def get_generation_source_path(self, record: Dict[str, Any], source_index: int) -> Optional[Path]:
+        """Return one cached request input by its 1-based Dashboard position."""
+        try:
+            source_index = int(source_index)
+        except (TypeError, ValueError):
+            return None
+        sources = self._generation_source_entries(record)
+        if source_index < 1 or source_index > len(sources):
+            return None
+        record_id = str(record.get("id", "") or "").strip()
+        filename = str(sources[source_index - 1].get("filename", "") or "")
+        # Input cache filenames are record-scoped.  Do not let a damaged JSON
+        # history entry expose an input file owned by a different record.
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", record_id) or not filename.startswith(
+                f"{record_id}_source_{source_index:03d}."):
+            return None
+        path = self._generation_source_cache_path(filename)
+        return path if path is not None and path.is_file() else None
+
+    def get_generation_source_preview_path(self, record: Dict[str, Any], source_index: int) -> Optional[Path]:
+        if not isinstance(record, dict):
+            return None
+        path = self._generation_source_preview_cache_path(record.get("id"), source_index)
         return path if path is not None and path.is_file() else None
 
     @staticmethod
@@ -571,6 +704,54 @@ class DataManager:
                 return None
         return target_path if target_path.is_file() else None
 
+    async def get_or_create_generation_source_preview(
+            self, record: Dict[str, Any], source_index: int
+    ) -> Optional[Path]:
+        """Return a small source-image preview only when the UI asks for it."""
+        source_path = self.get_generation_source_path(record, source_index)
+        target_path = self._generation_source_preview_cache_path(
+            record.get("id") if isinstance(record, dict) else "", source_index
+        )
+        if source_path is None or target_path is None:
+            return None
+        if target_path.is_file():
+            return target_path
+
+        async with self._generation_preview_lock:
+            if target_path.is_file():
+                return target_path
+            try:
+                await asyncio.to_thread(self._write_generation_preview, source_path, target_path)
+            except Exception as exc:
+                logger.warning("Linghui could not create cached input-image preview: %s", exc)
+                return None
+        return target_path if target_path.is_file() else None
+
+    async def _remove_generation_source_artifacts(self, record: Dict[str, Any]) -> Tuple[int, int]:
+        """Delete cached request inputs and their previews for one record."""
+        removed_sources = 0
+        removed_previews = 0
+        for source_index in range(1, len(self._generation_source_entries(record)) + 1):
+            source_path = self.get_generation_source_path(record, source_index)
+            if source_path is not None:
+                try:
+                    await asyncio.to_thread(source_path.unlink)
+                    removed_sources += 1
+                except FileNotFoundError:
+                    pass
+                except Exception as exc:
+                    logger.warning("Linghui could not delete cached input image %s: %s", source_path.name, exc)
+            preview_path = self.get_generation_source_preview_path(record, source_index)
+            if preview_path is not None:
+                try:
+                    await asyncio.to_thread(preview_path.unlink)
+                    removed_previews += 1
+                except FileNotFoundError:
+                    pass
+                except Exception as exc:
+                    logger.warning("Linghui could not delete cached input preview %s: %s", preview_path.name, exc)
+        return removed_sources, removed_previews
+
     def _invalidate_generation_history_summary_locked(self) -> None:
         self._generation_history_summary_cache = None
         self._generation_history_favorites_cache = None
@@ -598,6 +779,12 @@ class DataManager:
             "locked": 0,
             "protected": 0,
             "size_bytes": 0,
+            "output_size_bytes": 0,
+            "source_size_bytes": 0,
+            "source_images": 0,
+            "text_to_image": 0,
+            "image_to_image": 0,
+            "legacy_source_unavailable": 0,
             "today": 0,
             "users": 0,
             "groups": 0,
@@ -619,7 +806,19 @@ class DataManager:
                 summary["locked"] += 1
             if self._history_bool(item.get("favorite", False)) or self._history_bool(item.get("locked", False)):
                 summary["protected"] += 1
-            summary["size_bytes"] += self._history_int(item.get("size_bytes"))
+            output_size = self._history_int(item.get("size_bytes"))
+            source_size = self._history_int(item.get("source_size_bytes"))
+            summary["output_size_bytes"] += output_size
+            summary["source_size_bytes"] += source_size
+            summary["size_bytes"] += output_size + source_size
+            summary["source_images"] += self._history_int(item.get("source_count"))
+            kind = str(item.get("generation_kind", "") or "")
+            if kind == _GENERATION_KIND_IMAGE_TO_IMAGE:
+                summary["image_to_image"] += 1
+                if str(item.get("source_status", "") or "") == "legacy_unavailable":
+                    summary["legacy_source_unavailable"] += 1
+            else:
+                summary["text_to_image"] += 1
             created_at = self._history_created_at(item, None)
             if created_at is not None and created_at.date().isoformat() == today_key:
                 summary["today"] += 1
@@ -641,8 +840,10 @@ class DataManager:
             model: str = "",
             preset: str = "",
             task_type: str = "",
+            reference_images: Optional[List[bytes]] = None,
+            generation_kind: str = "",
     ) -> Optional[Dict[str, Any]]:
-        """Persist a successful output image and its Dashboard-visible metadata."""
+        """Persist a successful output and the exact image inputs used for it."""
         if not isinstance(image_bytes, bytes) or not image_bytes:
             return None
         try:
@@ -656,6 +857,38 @@ class DataManager:
         record_id = uuid.uuid4().hex
         timestamp = datetime.now()
         filename = f"{timestamp.strftime('%Y%m%d_%H%M%S_%f')}_{record_id}.{suffix}"
+        source_payloads: List[Tuple[Dict[str, Any], bytes]] = []
+        for source_image in reference_images or []:
+            if not isinstance(source_image, bytes) or not source_image:
+                continue
+            try:
+                source_suffix, source_format, source_width, source_height = await asyncio.to_thread(
+                    self._inspect_generation_image, source_image
+                )
+            except ValueError:
+                # A request can technically contain a malformed image accepted
+                # by an upstream provider.  Do not make output history fail for
+                # that case, but never write unvalidated data to the cache.
+                logger.warning("Linghui skipped an unrecognizable input image in generation history")
+                continue
+            source_index = len(source_payloads) + 1
+            source_filename = f"{record_id}_source_{source_index:03d}.{source_suffix}"
+            if self._generation_source_cache_path(source_filename) is None:
+                continue
+            source_payloads.append(({
+                "filename": source_filename,
+                "image_format": source_format,
+                "width": source_width,
+                "height": source_height,
+                "size_bytes": len(source_image),
+            }, source_image))
+
+        requested_kind = str(generation_kind or "").strip().lower()
+        record_kind = (
+            requested_kind if requested_kind in _GENERATION_KINDS
+            else self._infer_generation_kind(task_type, bool(source_payloads))
+        )
+        source_images = [item[0] for item in source_payloads]
         record = {
             "id": record_id,
             "filename": filename,
@@ -672,6 +905,13 @@ class DataManager:
             "width": width,
             "height": height,
             "size_bytes": len(image_bytes),
+            "generation_kind": record_kind,
+            "source_images": source_images,
+            "source_count": len(source_images),
+            "source_size_bytes": sum(item["size_bytes"] for item in source_images),
+            "source_status": "cached" if source_images else (
+                "missing" if record_kind == _GENERATION_KIND_IMAGE_TO_IMAGE else "not_applicable"
+            ),
             "favorite": False,
             "locked": False,
         }
@@ -695,10 +935,23 @@ class DataManager:
                 self._normalize_display_name(group_name)
                 or self.get_group_display_name(record["group_id"])
             )
+            written_paths: List[Path] = []
             try:
                 await asyncio.to_thread(path.write_bytes, image_bytes)
+                written_paths.append(path)
+                for source_info, source_image in source_payloads:
+                    source_path = self._generation_source_cache_path(source_info["filename"])
+                    if source_path is None:
+                        raise OSError("Invalid generation input cache path")
+                    await asyncio.to_thread(source_path.write_bytes, source_image)
+                    written_paths.append(source_path)
             except Exception as exc:
-                logger.error("Linghui could not cache a generated image: %s", exc)
+                for written_path in written_paths:
+                    try:
+                        await asyncio.to_thread(written_path.unlink)
+                    except OSError:
+                        pass
+                logger.error("Linghui could not cache a generated image or its input: %s", exc)
                 return None
             self.generation_history.insert(0, record)
             self._invalidate_generation_history_summary_locked()
@@ -724,6 +977,7 @@ class DataManager:
             offset: int = 0,
             *,
             favorite_only: bool = False,
+            generation_kind: str = "all",
     ) -> Tuple[List[Dict[str, Any]], int, Dict[str, int]]:
         """Return a bounded history page plus aggregate cache statistics."""
         try:
@@ -736,8 +990,16 @@ class DataManager:
             offset = 0
         limit = min(max(1, limit), 100)
         offset = max(0, offset)
+        generation_kind = str(generation_kind or "all").strip().lower()
+        if generation_kind not in {"all", *_GENERATION_KINDS}:
+            generation_kind = "all"
         async with self._state_lock:
             source_records = self._favorite_generation_history_locked() if favorite_only else self.generation_history
+            if generation_kind != "all":
+                source_records = [
+                    item for item in source_records
+                    if item.get("generation_kind") == generation_kind
+                ]
             total = len(source_records)
             page = [dict(item) for item in source_records[offset:offset + limit]]
             summary = self._generation_history_summary_locked()
@@ -792,6 +1054,7 @@ class DataManager:
                         pass
                     except Exception as exc:
                         logger.warning("Linghui could not delete cached generation preview %s: %s", preview_path.name, exc)
+                await self._remove_generation_source_artifacts(record)
                 self.generation_history.pop(index)
                 self._invalidate_generation_history_summary_locked()
                 await self._save_json(self.generation_history_file, self.generation_history)
@@ -826,6 +1089,8 @@ class DataManager:
         removed_records = 0
         removed_images = 0
         removed_previews = 0
+        removed_source_images = 0
+        removed_source_previews = 0
         removed_orphans = 0
 
         async with self._state_lock:
@@ -862,6 +1127,9 @@ class DataManager:
                         pass
                     except Exception as exc:
                         logger.warning("Linghui could not clean cached generation preview %s: %s", preview_path.name, exc)
+                source_removed, source_preview_removed = await self._remove_generation_source_artifacts(record)
+                removed_source_images += source_removed
+                removed_source_previews += source_preview_removed
                 removed_records += 1
 
             history_changed = len(retained) != len(self.generation_history)
@@ -872,6 +1140,19 @@ class DataManager:
                 for record in retained
                 if (record_id := str(record.get("id", "") or "").strip())
                 and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", record_id)
+            }
+            known_source_files = {
+                str(source.get("filename", ""))
+                for record in retained
+                for source in self._generation_source_entries(record)
+                if str(source.get("filename", ""))
+            }
+            known_source_preview_files = {
+                f"{record_id}_{source_index:03d}.jpg"
+                for record in retained
+                if (record_id := str(record.get("id", "") or "").strip())
+                and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", record_id)
+                for source_index in range(1, len(self._generation_source_entries(record)) + 1)
             }
 
             try:
@@ -906,6 +1187,38 @@ class DataManager:
                 except OSError as exc:
                     logger.warning("Linghui could not clean orphaned generation preview %s: %s", path.name, exc)
 
+            try:
+                source_files = list(self.generation_source_cache_dir.iterdir())
+            except OSError:
+                source_files = []
+            for path in source_files:
+                if not path.is_file() or path.name in known_source_files:
+                    continue
+                try:
+                    if datetime.fromtimestamp(path.stat().st_mtime) < cutoff:
+                        await asyncio.to_thread(path.unlink)
+                        removed_orphans += 1
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    logger.warning("Linghui could not clean orphaned input cache %s: %s", path.name, exc)
+
+            try:
+                source_preview_files = list(self.generation_source_preview_cache_dir.iterdir())
+            except OSError:
+                source_preview_files = []
+            for path in source_preview_files:
+                if not path.is_file() or path.name in known_source_preview_files:
+                    continue
+                try:
+                    if datetime.fromtimestamp(path.stat().st_mtime) < cutoff:
+                        await asyncio.to_thread(path.unlink)
+                        removed_source_previews += 1
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    logger.warning("Linghui could not clean orphaned input preview %s: %s", path.name, exc)
+
             if history_changed:
                 self._invalidate_generation_history_summary_locked()
                 await self._save_json(self.generation_history_file, self.generation_history)
@@ -914,6 +1227,8 @@ class DataManager:
             "removed_records": removed_records,
             "removed_images": removed_images,
             "removed_previews": removed_previews,
+            "removed_source_images": removed_source_images,
+            "removed_source_previews": removed_source_previews,
             "removed_orphans": removed_orphans,
         }
 

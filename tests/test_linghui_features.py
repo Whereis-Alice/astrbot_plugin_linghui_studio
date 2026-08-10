@@ -321,6 +321,9 @@ class DashboardRegistrationTest(unittest.TestCase):
                 "/astrbot_plugin_linghui_studio/generation_preview",
                 "/astrbot_plugin_linghui_studio/generation_prompt",
                 "/astrbot_plugin_linghui_studio/generation_download",
+                "/astrbot_plugin_linghui_studio/generation_sources",
+                "/astrbot_plugin_linghui_studio/generation_source_preview",
+                "/astrbot_plugin_linghui_studio/generation_source_download",
                 "/astrbot_plugin_linghui_studio/generation_record",
             ],
         )
@@ -627,6 +630,65 @@ class GenerationHistoryStorageTest(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(preview_path.exists())
 
 
+    async def test_image_to_image_sources_are_cached_filtered_and_protected_with_the_output(self):
+        first_source = self._png_bytes()
+        second_stream = io.BytesIO()
+        Image.new("RGB", (360, 480), (220, 80, 120)).save(second_stream, "PNG")
+
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.DataManager(pathlib.Path(directory), {})
+            record = await manager.save_generation_record(
+                self._png_bytes(),
+                prompt="turn the source into a neon poster",
+                user_id="10001",
+                group_id="20002",
+                task_type="image_to_image",
+                reference_images=[first_source, second_stream.getvalue()],
+            )
+            self.assertIsNotNone(record)
+            self.assertEqual(record["generation_kind"], "image_to_image")
+            self.assertEqual(record["source_status"], "cached")
+            self.assertEqual(record["source_count"], 2)
+
+            stored = manager.generation_history[0]
+            first_source_path = manager.get_generation_source_path(stored, 1)
+            second_source_path = manager.get_generation_source_path(stored, 2)
+            self.assertIsNotNone(first_source_path)
+            self.assertIsNotNone(second_source_path)
+            self.assertTrue(first_source_path.is_file())
+            self.assertTrue(second_source_path.is_file())
+            source_preview = await manager.get_or_create_generation_source_preview(stored, 1)
+            self.assertIsNotNone(source_preview)
+            self.assertTrue(source_preview.is_file())
+
+            image_records, image_total, _ = await manager.get_generation_history_page(
+                generation_kind="image_to_image"
+            )
+            text_records, text_total, _ = await manager.get_generation_history_page(
+                generation_kind="text_to_image"
+            )
+            self.assertEqual(image_total, 1)
+            self.assertEqual(len(image_records), 1)
+            self.assertEqual(text_total, 0)
+            self.assertEqual(text_records, [])
+
+            stored["created_at"] = (datetime.now() - timedelta(days=10)).isoformat(timespec="seconds")
+            await manager.update_generation_record_flags(record["id"], favorite=True)
+            protected_cleanup = await manager.cleanup_generation_cache(7)
+            self.assertEqual(protected_cleanup["removed_records"], 0)
+            self.assertTrue(first_source_path.is_file())
+            self.assertTrue(second_source_path.is_file())
+
+            await manager.update_generation_record_flags(record["id"], favorite=False)
+            expired_cleanup = await manager.cleanup_generation_cache(7)
+            self.assertEqual(expired_cleanup["removed_records"], 1)
+            self.assertEqual(expired_cleanup["removed_source_images"], 2)
+            self.assertGreaterEqual(expired_cleanup["removed_source_previews"], 1)
+            self.assertFalse(first_source_path.exists())
+            self.assertFalse(second_source_path.exists())
+            self.assertFalse(source_preview.exists())
+
+
 class IdentityLabelStorageTest(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls):
@@ -770,6 +832,72 @@ class DashboardGenerationHistoryTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(favorites["favorite_only"])
             self.assertEqual(favorites["pagination"]["total"], 1)
             self.assertTrue(favorites["records"][0]["favorite"])
+
+
+    async def test_image_to_image_sources_are_lazy_and_legacy_records_are_honest(self):
+        output = io.BytesIO()
+        Image.new("RGB", (800, 500), (100, 60, 220)).save(output, "PNG")
+        reference = io.BytesIO()
+        Image.new("RGB", (500, 800), (30, 180, 120)).save(reference, "PNG")
+
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.DataManager(pathlib.Path(directory), {})
+            record = await manager.save_generation_record(
+                output.getvalue(),
+                prompt="use the reference image",
+                user_id="user-1",
+                group_id="group-1",
+                task_type="image_to_image",
+                reference_images=[reference.getvalue()],
+            )
+            plugin = types.SimpleNamespace(
+                conf={"generation_cache_retention_days": 7},
+                data_mgr=manager,
+            )
+            api = self.DashboardApi(plugin)
+            original_args = self.dashboard_module.request.args
+            try:
+                self.dashboard_module.request.args = {"limit": "24", "offset": "0", "mode": "image_to_image"}
+                history = await api.generation_history()
+                self.assertEqual(history["mode"], "image_to_image")
+                self.assertEqual(history["pagination"]["total"], 1)
+                self.assertEqual(history["records"][0]["source_status"], "cached")
+                self.assertEqual(history["records"][0]["source_count"], 1)
+                self.assertNotIn("source_images", history["records"][0])
+
+                self.dashboard_module.request.args = {"id": record["id"]}
+                sources = await api.generation_sources()
+                self.assertTrue(sources["success"])
+                self.assertEqual(sources["source_status"], "cached")
+                self.assertEqual(len(sources["sources"]), 1)
+                self.assertNotIn("preview", sources["sources"][0])
+
+                self.dashboard_module.request.args = {"id": record["id"], "index": "1"}
+                source_preview = await api.generation_source_preview()
+                self.assertTrue(source_preview["preview"].startswith("data:image/jpeg;base64,"))
+                source_download = await api.generation_source_download()
+                _, download_args = source_download
+                self.assertTrue(download_args["as_attachment"])
+                self.assertIn("_source_1", download_args["attachment_filename"])
+
+                await manager.save_preset_ref_image("legacy-preset", reference.getvalue())
+                legacy = await manager.save_generation_record(
+                    output.getvalue(),
+                    prompt="old request",
+                    user_id="user-2",
+                    task_type="image_to_image",
+                    preset="legacy-preset",
+                )
+                legacy_stored = manager.generation_history[0]
+                legacy_stored["source_status"] = "legacy_unavailable"
+                self.dashboard_module.request.args = {"id": legacy["id"]}
+                legacy_sources = await api.generation_sources()
+                self.assertEqual(legacy_sources["source_status"], "legacy_unavailable")
+                self.assertIn("无法", legacy_sources["message"])
+                self.assertEqual(len(legacy_sources["legacy_candidates"]), 1)
+                self.assertIn("非本次历史原图", legacy_sources["legacy_candidates"][0]["label"])
+            finally:
+                self.dashboard_module.request.args = original_args
 
 
 class ReferenceImageStorageTest(unittest.IsolatedAsyncioTestCase):
