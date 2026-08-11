@@ -763,6 +763,8 @@ class DashboardGenerationHistoryTest(unittest.IsolatedAsyncioTestCase):
                 user_name="Alice",
                 group_name="Example Group",
                 model="test-model",
+                channel_id="miku",
+                channel_name="Miku 主渠道",
                 task_type="文生图",
             )
             plugin = types.SimpleNamespace(
@@ -783,6 +785,8 @@ class DashboardGenerationHistoryTest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("prompt", payload["records"][0])
             self.assertEqual(payload["records"][0]["user_name"], "Alice")
             self.assertEqual(payload["records"][0]["group_name"], "Example Group")
+            self.assertEqual(payload["records"][0]["channel_id"], "miku")
+            self.assertEqual(payload["records"][0]["channel_name"], "Miku 主渠道")
             self.assertNotIn("preview", payload["records"][0])
 
             self.dashboard_module.request.args = {"id": record["id"]}

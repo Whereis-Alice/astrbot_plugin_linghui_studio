@@ -923,6 +923,8 @@ class LinghuiDashboardApi:
                 # only when an administrator expands a record in the Dashboard.
                 "has_prompt": bool(str(record.get("prompt", "") or "").strip()),
                 "model": str(record.get("model", "") or ""),
+                "channel_id": str(record.get("channel_id", "") or "").strip()[:80],
+                "channel_name": str(record.get("channel_name", "") or "").strip()[:160],
                 "preset": str(record.get("preset", "") or ""),
                 "task_type": str(record.get("task_type", "") or ""),
                 "image_format": str(record.get("image_format", "") or ""),

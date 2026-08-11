@@ -458,6 +458,7 @@ body[data-active-tab="favorites"] .page-header p:not(.page-kicker) { margin-top:
 .generation-record-title { min-width: 0; display: grid; gap: 3px; }
 .generation-record-title strong { color: var(--ink); font-size: 14px; font-weight: 700; }
 .generation-record-title span { color: var(--muted); font-size: 12px; line-height: 1.4; }
+.generation-record-badges { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
 .generation-record-actions { display: flex; flex: 0 0 auto; gap: 6px; }
 .history-icon-button { width: 29px; height: 29px; padding: 0; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--muted); background: var(--input); font-size: 16px; line-height: 1; transition: border-color .16s ease, color .16s ease, background .16s ease, box-shadow .16s ease; }
 .history-icon-button:hover { border-color: var(--cyan); color: var(--cyan-bright); background: var(--surface-hover); }
@@ -479,9 +480,13 @@ body[data-active-tab="favorites"] .page-header p:not(.page-kicker) { margin-top:
 .history-mode-switch .quiet-action { min-height: 29px; padding: 4px 8px; font-size: 12px; }
 .history-mode-switch .quiet-action.active { border-color: var(--cyan); color: var(--cyan-bright); background: var(--surface-hover); box-shadow: 0 0 12px var(--cyan-wash); }
 .generation-record.image-to-image { border-left-color: var(--magenta); }
-.generation-kind-badge { width: fit-content; margin-top: 3px; padding: 2px 6px; border: 1px solid var(--line-strong); border-radius: 3px; font-size: 11px; line-height: 1.35; }
+.generation-kind-badge { width: fit-content; margin-top: 0; padding: 2px 6px; border: 1px solid var(--line-strong); border-radius: 3px; font-size: 11px; line-height: 1.35; }
 .generation-kind-badge.text { color: var(--cyan); border-color: rgba(65, 230, 221, .36); background: rgba(65, 230, 221, .08); }
 .generation-kind-badge.image { color: var(--magenta); border-color: rgba(255, 94, 185, .42); background: rgba(255, 94, 185, .08); }
+.generation-record-title .generation-route-badge { display: block; max-width: min(100%, 360px); overflow: hidden; padding: 2px 6px; border: 1px solid rgba(139, 176, 255, .42); border-radius: 3px; color: var(--subtle); background: rgba(139, 176, 255, .08); font-size: 11px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.generation-record-title .generation-route-badge::before { content: "渠道 · "; color: var(--cyan); }
+.generation-record-title .generation-route-badge.unknown { border-color: var(--line-strong); color: var(--muted); background: transparent; }
+.generation-record-title .generation-route-badge.unknown::before { content: ""; }
 .generation-sources { min-width: 0; padding-top: 8px; border-top: 1px solid var(--line); }
 .generation-sources summary { color: var(--magenta); cursor: pointer; font-size: 12px; user-select: none; }
 .generation-source-list { margin-top: 9px; }

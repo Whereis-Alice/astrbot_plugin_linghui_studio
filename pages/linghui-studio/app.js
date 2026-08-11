@@ -382,6 +382,36 @@ function formatHistoryTime(rawValue) {
   return date.toLocaleString("zh-CN", { hour12: false });
 }
 
+function formatGenerationChannel(record) {
+  const channelId = String(record?.channel_id || "").trim();
+  const channelName = String(record?.channel_name || "").trim();
+  if (!channelId && !channelName) {
+    return {
+      label: "渠道未记录",
+      title: "这是一条升级前的成功记录，当时没有保存实际使用的渠道。",
+      known: false,
+    };
+  }
+
+  if (channelId.toLowerCase() === "legacy") {
+    const legacyName = channelName || "兼容单接口";
+    return {
+      label: `${legacyName} · legacy`,
+      title: `本次成功使用：${legacyName}（兼容单接口）`,
+      known: true,
+    };
+  }
+
+  const label = channelName && channelName !== channelId
+    ? `${channelId} · ${channelName}`
+    : (channelId || channelName);
+  return {
+    label,
+    title: `本次成功使用的绘图渠道：${label}`,
+    known: true,
+  };
+}
+
 function historyCacheKey(offset) {
   return `${state.historyFavoriteOnly ? "favorites" : "history"}:${state.historyMode}:${Math.max(0, Number(offset) || 0)}`;
 }
@@ -669,6 +699,8 @@ function renderGenerationHistory() {
       const sourceBadge = isImageToImage
         ? '<span class="generation-kind-badge image">图生图</span>'
         : "<span class=\"generation-kind-badge text\">文生图</span>";
+      const channel = formatGenerationChannel(record);
+      const channelBadge = `<span class="generation-route-badge${channel.known ? "" : " unknown"}" title="${escapeHtml(channel.title)}">${escapeHtml(channel.label)}</span>`;
       const previewId = record.image_available && id ? id : "";
       const image = previewId
         ? `<img data-generation-preview-id="${escapeHtml(previewId)}" alt="成功图片预览" loading="lazy" decoding="async" />`
@@ -684,7 +716,7 @@ function renderGenerationHistory() {
           <div class="generation-preview${previewId ? " loading" : ""}">${image}</div>
           <div class="generation-record-main">
             <div class="generation-record-topline">
-              <div class="generation-record-title"><strong>${escapeHtml(taskType)}</strong><span>${escapeHtml(formatHistoryTime(record.created_at))}</span>${sourceBadge}</div>
+              <div class="generation-record-title"><strong>${escapeHtml(taskType)}</strong><span>${escapeHtml(formatHistoryTime(record.created_at))}</span><div class="generation-record-badges">${sourceBadge}${channelBadge}</div></div>
               <div class="generation-record-actions">
                 <button type="button" class="history-icon-button download" data-history-download="${escapeHtml(id)}" title="下载原图" aria-label="下载原图" ${record.image_available ? "" : "disabled"}>↓</button>
                 <button type="button" class="history-icon-button${isFavorite ? " active" : ""}" data-history-favorite="${escapeHtml(id)}" data-history-value="${String(!isFavorite)}" title="${isFavorite ? "取消收藏" : "收藏并永久保留"}" aria-label="${isFavorite ? "取消收藏" : "收藏并永久保留"}" aria-pressed="${String(isFavorite)}">★</button>

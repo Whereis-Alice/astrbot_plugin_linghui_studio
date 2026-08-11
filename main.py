@@ -144,7 +144,7 @@ def _direct_command_only(handler):
     PLUGIN_NAME,
     "Whereis-Alice",
     "灵绘工坊：带参考图专用渠道回退、受控群白名单、自定义绘图反向提示词与可视化管理的文生图/图生图插件",
-    "3.4.2",
+    "3.4.3",
     "https://github.com/Whereis-Alice/astrbot_plugin_linghui_studio",
 )
 class LinghuiStudioPlugin(Star):
@@ -1002,7 +1002,7 @@ class LinghuiStudioPlugin(Star):
 
         auto_detect_status = "已启用" if self._llm_auto_detect else "未启用"
         logger.info(
-            f"LinghuiStudio 已加载 v3.4.2 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
+            f"LinghuiStudio 已加载 v3.4.3 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
 
     def _generation_cache_retention_days(self) -> int:
         """Return a bounded retention period for output and input image cache files."""
@@ -1644,6 +1644,14 @@ class LinghuiStudioPlugin(Star):
         async with self._pending_generation_lock:
             return max(0, self._pending_generation_tasks.get(session_id, 0))
 
+    def _snapshot_generation_route_metrics(self) -> Dict[str, Any]:
+        """Capture the route chosen by the just-finished request before another task can replace it."""
+        try:
+            metrics = self.api_mgr.get_last_metrics() if hasattr(self.api_mgr, "get_last_metrics") else {}
+        except Exception:
+            return {}
+        return dict(metrics) if isinstance(metrics, dict) else {}
+
     async def _record_generation_result(
             self,
             session_id: str,
@@ -1656,15 +1664,22 @@ class LinghuiStudioPlugin(Star):
             preset_name: str = "",
             task_type: str = "",
             reference_images: Optional[List[bytes]] = None,
+            route_metrics: Optional[Dict[str, Any]] = None,
             event: Optional[AstrMessageEvent] = None,
     ) -> None:
         """Persist one successful output without letting cache failures affect delivery.
 
         The cache stores the exact output bytes sent to the platform plus the
-        actual image inputs used by an image-to-image request. Usage accounting
-        and in-session PDF context keep their existing behaviour even if the
-        optional Dashboard history file cannot be written.
+        actual image inputs and the route selected by an image request. Usage
+        accounting and in-session PDF context keep their existing behaviour
+        even if the optional Dashboard history file cannot be written.
         """
+        metrics = route_metrics if isinstance(route_metrics, dict) else {}
+        channel_id = re.sub(r"\s+", " ", str(metrics.get("channel_id", "") or "")).strip()[:80]
+        channel_name = re.sub(r"\s+", " ", str(metrics.get("channel_name", "") or "")).strip()[:160]
+        if channel_id.lower() == "legacy" and not channel_name:
+            channel_name = "兼容单接口"
+        actual_model = str(metrics.get("model", "") or model or "").strip()[:200]
         user_name, group_name = self._event_identity_labels(event)
         await self.data_mgr.record_usage(
             user_id,
@@ -1680,7 +1695,9 @@ class LinghuiStudioPlugin(Star):
                 group_id=group_id,
                 user_name=user_name,
                 group_name=group_name,
-                model=model,
+                model=actual_model,
+                channel_id=channel_id,
+                channel_name=channel_name,
                 preset=preset_name,
                 task_type=task_type,
                 reference_images=reference_images,
@@ -2699,9 +2716,9 @@ class LinghuiStudioPlugin(Star):
 
             # 4. 处理结果
             if isinstance(res, bytes):
+                route_metrics = self._snapshot_generation_route_metrics()
                 res = await self._prepare_send_image_bytes(res)
                 elapsed = (datetime.now() - start_time).total_seconds()
-                route_metrics = self.api_mgr.get_last_metrics()
                 actual_model = str(route_metrics.get("model", "") or model)
                 task_type = "文生图" if use_text_to_image_api else (
                     "人设拍照" if preset_name.startswith("人设-") else "图生图"
@@ -2716,6 +2733,7 @@ class LinghuiStudioPlugin(Star):
                     preset_name=preset_name,
                     task_type=task_type,
                     reference_images=images,
+                    route_metrics=route_metrics,
                     event=event,
                 )
 
@@ -2829,6 +2847,7 @@ class LinghuiStudioPlugin(Star):
                             )
 
                             if isinstance(res, bytes):
+                                route_metrics = self._snapshot_generation_route_metrics()
                                 res = await self._prepare_send_image_bytes(res)
                                 elapsed = (datetime.now() - start_time).total_seconds()
                                 await self._record_generation_result(
@@ -2841,6 +2860,7 @@ class LinghuiStudioPlugin(Star):
                                     preset_name=preset_name,
                                     task_type="批量文生图",
                                     reference_images=images,
+                                    route_metrics=route_metrics,
                                     event=event,
                                 )
 
@@ -2978,6 +2998,7 @@ class LinghuiStudioPlugin(Star):
                             res = await self.api_mgr.call_api(images, prompt, model, False, self.img_mgr.proxy)
 
                             if isinstance(res, bytes):
+                                route_metrics = self._snapshot_generation_route_metrics()
                                 res = await self._prepare_send_image_bytes(res)
                                 elapsed = (datetime.now() - start_time).total_seconds()
                                 await self._record_generation_result(
@@ -2990,6 +3011,7 @@ class LinghuiStudioPlugin(Star):
                                     preset_name=preset_name,
                                     task_type="批量图生图版本",
                                     reference_images=images,
+                                    route_metrics=route_metrics,
                                     event=event,
                                 )
 
@@ -3723,6 +3745,7 @@ class LinghuiStudioPlugin(Star):
         )
 
         if isinstance(res, bytes):
+            route_metrics = self._snapshot_generation_route_metrics()
             res = await self._prepare_send_image_bytes(res)
             elapsed = (datetime.now() - start).total_seconds()
             await self._record_generation_result(
@@ -3735,6 +3758,7 @@ class LinghuiStudioPlugin(Star):
                 preset_name=preset_name,
                 task_type="自定义文生图" if is_text_to_image else "自定义图生图",
                 reference_images=images,
+                route_metrics=route_metrics,
                 event=event,
             )
             if not is_custom_command: await self.data_mgr.save_preset_image(base_cmd, res)
@@ -3792,6 +3816,7 @@ class LinghuiStudioPlugin(Star):
         )
 
         if isinstance(res, bytes):
+            route_metrics = self._snapshot_generation_route_metrics()
             res = await self._prepare_send_image_bytes(res)
             elapsed = (datetime.now() - start).total_seconds()
             group_id = norm_id(event.get_group_id())
@@ -3805,6 +3830,7 @@ class LinghuiStudioPlugin(Star):
                 preset_name=preset_name,
                 task_type="文生图",
                 reference_images=images,
+                route_metrics=route_metrics,
                 event=event,
             )
             quota_str = self._get_quota_str(deduction, uid, group_id)
@@ -3857,6 +3883,7 @@ class LinghuiStudioPlugin(Star):
             yield event.chain_result([Plain(f"头像图生图失败：{self._resolve_debug_error_message(result, '请稍后再试。')}")])
             return
 
+        route_metrics = self._snapshot_generation_route_metrics()
         result = await self._prepare_send_image_bytes(result)
         await self._record_generation_result(
             event.unified_msg_origin,
@@ -3868,6 +3895,7 @@ class LinghuiStudioPlugin(Star):
             preset_name=preset_name,
             task_type="头像图生图",
             reference_images=[avatar],
+            route_metrics=route_metrics,
             event=event,
         )
         elapsed = (datetime.now() - start).total_seconds()
@@ -5272,6 +5300,7 @@ class LinghuiStudioPlugin(Star):
 
             # 处理结果
             if isinstance(res, bytes):
+                route_metrics = self._snapshot_generation_route_metrics()
                 res = await self._prepare_send_image_bytes(res)
                 elapsed = (datetime.now() - start_time).total_seconds()
                 await self._record_generation_result(
@@ -5284,6 +5313,7 @@ class LinghuiStudioPlugin(Star):
                     preset_name=preset_name,
                     task_type="批量图生图",
                     reference_images=images,
+                    route_metrics=route_metrics,
                     event=event,
                 )
 
@@ -5620,6 +5650,7 @@ class LinghuiStudioPlugin(Star):
                                 res = await self.api_mgr.call_api(images, final_prompt, model, False,
                                                                   self.img_mgr.proxy)
                                 if isinstance(res, bytes):
+                                    route_metrics = self._snapshot_generation_route_metrics()
                                     res = await self._prepare_send_image_bytes(res)
                                     pdf_result_images.append(res)
                                     await self._record_generation_result(
@@ -5632,6 +5663,7 @@ class LinghuiStudioPlugin(Star):
                                         preset_name=preset_name,
                                         task_type="批量图生图（PDF）",
                                         reference_images=images,
+                                        route_metrics=route_metrics,
                                         event=event,
                                     )
                                     success = True
@@ -5920,6 +5952,7 @@ class LinghuiStudioPlugin(Star):
                                 res = await self.api_mgr.call_api(images, final_prompt, model, False,
                                                                   self.img_mgr.proxy)
                                 if isinstance(res, bytes):
+                                    route_metrics = self._snapshot_generation_route_metrics()
                                     res = await self._prepare_send_image_bytes(res)
                                     async with results_lock:
                                         pdf_result_images_dict[index] = res
@@ -5933,6 +5966,7 @@ class LinghuiStudioPlugin(Star):
                                         preset_name=preset_name,
                                         task_type="批量图生图（PDF）",
                                         reference_images=images,
+                                        route_metrics=route_metrics,
                                         event=event,
                                     )
                                     success = True
@@ -6429,6 +6463,7 @@ class LinghuiStudioPlugin(Star):
         res = await self.api_mgr.call_api(final_images, full_prompt, model, False, self.img_mgr.proxy)
 
         if isinstance(res, bytes):
+            route_metrics = self._snapshot_generation_route_metrics()
             res = await self._prepare_send_image_bytes(res)
             elapsed = (datetime.now() - start).total_seconds()
             await self._record_generation_result(
@@ -6441,6 +6476,7 @@ class LinghuiStudioPlugin(Star):
                 preset_name=scene_name or "人设",
                 task_type="人设拍照",
                 reference_images=final_images,
+                route_metrics=route_metrics,
                 event=event,
             )
 
