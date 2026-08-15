@@ -28,6 +28,8 @@ const state = {
   generationPromptCache: new Map(),
   generationSourceCache: new Map(),
   generationSourcePreviewCache: new Map(),
+  overviewRecent: [],
+  overviewRecentLoadedAt: 0,
 };
 
 const THEME_STORAGE_KEY = "linghui-studio-theme";
@@ -46,6 +48,7 @@ const GENERATION_PREVIEW_CACHE_LIMIT = 48;
 const GENERATION_PROMPT_CACHE_LIMIT = 60;
 const GENERATION_SOURCE_CACHE_LIMIT = 60;
 const GENERATION_SOURCE_PREVIEW_CACHE_LIMIT = 100;
+const OVERVIEW_RECENT_CACHE_TTL_MS = 30_000;
 
 let generationPreviewObserver = null;
 let generationPreviewRenderToken = 0;
@@ -342,9 +345,77 @@ function renderOverview() {
   byId("metric-presets").textContent = String((config.presets || []).length);
   byId("metric-references").textContent = String(config.references?.stats?.total_images || 0);
   const active = config.active_drawing_channel || "自动";
-  byId("overview-channels").innerHTML = channels.map((channel, index) => `
-    <div class="summary-row"><span><i class="status-dot ${channel.enabled ? "ok" : "off"}"></i> ${escapeHtml(channel.id)}</span><small>${escapeHtml(channel.name || channel.interface_mode)} · ${escapeHtml(channel.model || "未填模型")}</small><span>${channel.id === active ? "主渠道" : (channel.fallback_enabled ? "备用" : "不回退")}</span></div>`).join("") || '<p class="empty">未配置绘图渠道，当前会使用兼容单接口模式。</p>';
+  byId("overview-channels").innerHTML = channels.map((channel) => {
+    const role = channel.id === active ? "主渠道" : (channel.fallback_enabled ? "备用" : "不回退");
+    const stateClass = channel.enabled ? (channel.id === active ? "active" : "ok") : "off";
+    return `<div class="overview-route-chip ${stateClass}">
+      <i class="status-dot ${channel.enabled ? "ok" : "off"}" aria-hidden="true"></i>
+      <strong>${escapeHtml(channel.id)}</strong>
+      <small>${escapeHtml(channel.model || channel.name || channel.interface_mode || "未填模型")}</small>
+      <span>${role}</span>
+    </div>`;
+  }).join("") || '<span class="overview-dispatch-empty">未配置绘图渠道，当前使用兼容单接口模式。</span>';
   renderDailyUsage("overview-usage", dailyStats);
+  renderOverviewRecent();
+}
+
+function renderOverviewRecent() {
+  const target = byId("overview-recent");
+  if (!target) return;
+  const records = Array.isArray(state.overviewRecent) ? state.overviewRecent : [];
+  if (!records.length) {
+    target.innerHTML = '<p class="overview-recent-empty">暂无成功记录。成功返回的图片会在这里显示。</p>';
+    return;
+  }
+  target.innerHTML = records.slice(0, 4).map((record) => {
+    const id = String(record.id || "").trim();
+    const kind = String(record.generation_kind || "text_to_image") === "image_to_image" ? "图生图" : "文生图";
+    const title = String(record.preset || "").trim() || kind;
+    const route = formatGenerationChannel(record);
+    const context = record.group_id
+      ? `群聊 · ${formatIdentity(record.group_name, record.group_id, "群")}`
+      : `私聊 · ${formatIdentity(record.user_name, record.user_id, "用户")}`;
+    const preview = record.image_available && id
+      ? `<img data-generation-preview-id="${escapeHtml(id)}" alt="${escapeHtml(title)}" loading="lazy" decoding="async" />`
+      : '<span class="overview-recent-fallback">缓存图片不可用</span>';
+    return `<article class="overview-recent-item">
+      <div class="overview-recent-preview${record.image_available && id ? " loading" : " failed"}">${preview}</div>
+      <div class="overview-recent-copy">
+        <div class="overview-recent-meta"><span class="overview-recent-kind ${kind === "图生图" ? "image" : "text"}">${kind}</span><time>${escapeHtml(formatHistoryTime(record.created_at))}</time></div>
+        <strong title="${escapeHtml(title)}">${escapeHtml(title)}</strong>
+        <small title="${escapeHtml(route.title)}">${escapeHtml(route.label)}</small>
+        <small title="${escapeHtml(context)}">${escapeHtml(context)}</small>
+      </div>
+    </article>`;
+  }).join("");
+  queueGenerationPreviews();
+}
+
+async function loadOverviewRecent(force = false) {
+  const now = Date.now();
+  if (!force && state.overviewRecentLoadedAt && now - state.overviewRecentLoadedAt < OVERVIEW_RECENT_CACHE_TTL_MS) {
+    renderOverviewRecent();
+    return;
+  }
+  const target = byId("overview-recent");
+  if (target && !state.overviewRecent.length) {
+    target.innerHTML = '<p class="overview-recent-empty loading">正在读取最近成功记录…</p>';
+  }
+  try {
+    const response = await bridge.apiGet("generation_history", {
+      limit: 4,
+      offset: 0,
+      favorite_only: "0",
+      mode: "all",
+    });
+    if (!response?.success) throw new Error(response?.message || "最近成功记录暂时不可用");
+    state.overviewRecent = Array.isArray(response.records) ? response.records : [];
+    state.overviewRecentLoadedAt = Date.now();
+    renderOverviewRecent();
+  } catch (error) {
+    console.warn("Linghui overview recent records unavailable", error);
+    if (target) target.innerHTML = '<p class="overview-recent-empty">最近成功记录暂时不可用，请稍后刷新概览。</p>';
+  }
 }
 
 function renderDailyUsage(targetId, dailyStats) {
@@ -465,7 +536,7 @@ async function loadGenerationPreview(image, renderToken) {
   if (!recordId || image.dataset.previewLoading === "true") return;
   delete image.dataset.previewQueued;
   image.dataset.previewLoading = "true";
-  const container = image.closest(".generation-preview");
+  const container = image.closest(".generation-preview, .overview-recent-preview");
   container?.classList.add("loading");
 
   try {
@@ -515,7 +586,7 @@ function queueGenerationPreview(image, renderToken) {
 }
 
 function queueGenerationPreviews() {
-  const images = [...document.querySelectorAll(".generation-preview img[data-generation-preview-id]")];
+  const images = [...document.querySelectorAll(".generation-preview img[data-generation-preview-id], .overview-recent-preview img[data-generation-preview-id]")];
   if (!images.length) return;
   const renderToken = generationPreviewRenderToken;
   const beginLoad = (image) => queueGenerationPreview(image, renderToken);
@@ -974,6 +1045,7 @@ async function loadUsage() {
   state.usage = response;
   renderOverview();
   renderCreditTable();
+  void loadOverviewRecent(true);
 }
 
 async function loadGenerationHistory(offset = 0, force = false) {

@@ -87,14 +87,18 @@
             </div>
             <button id="refresh-usage" class="quiet-action">刷新概览</button>
           </div>
+          <div class="overview-dispatch-bar" aria-label="当前调度">
+            <div class="overview-dispatch-label"><strong>当前调度</strong><small>主渠道与回退顺序</small></div>
+            <div id="overview-channels" class="overview-channel-strip"></div>
+          </div>
           <div class="overview-content-grid">
-            <section class="overview-panel">
-              <div class="overview-panel-heading"><div><h2>当前调度</h2><p>主渠道与回退顺序</p></div></div>
-              <div id="overview-channels" class="channel-summary"></div>
-            </section>
-            <section class="overview-panel">
+            <section class="overview-panel overview-usage-panel">
               <div class="overview-panel-heading"><div><h2>今日用量</h2><p>按用户与群聊分别统计</p></div></div>
               <div id="overview-usage" class="usage-table"></div>
+            </section>
+            <section class="overview-panel overview-recent-panel">
+              <div class="overview-panel-heading"><div><h2>最近成功</h2><p>最新缓存图片与实际使用渠道</p></div><span class="overview-panel-tag">最多显示 4 条</span></div>
+              <div id="overview-recent" class="overview-recent-grid"></div>
             </section>
           </div>
         </section>
