@@ -479,13 +479,13 @@ class DashboardThemeSaveTest(unittest.IsolatedAsyncioTestCase):
         api = self.DashboardApi(plugin)
 
         async def request_body():
-            return {"theme": "alice"}
+            return {"theme": "terminal"}
 
         api._json_body = request_body
         response = await api.save_dashboard_theme()
 
         self.assertTrue(response["success"])
-        self.assertEqual(plugin.conf["dashboard_theme"], "alice")
+        self.assertEqual(plugin.conf["dashboard_theme"], "terminal")
         self.assertEqual(plugin.conf["model"], "leave-this-alone")
         self.assertEqual(saved_keys, [["dashboard_theme"]])
 
@@ -661,10 +661,10 @@ class GenerationHistoryStorageTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(source_preview)
             self.assertTrue(source_preview.is_file())
 
-            image_records, image_total, _ = await manager.get_generation_history_page(
+            image_records, image_total, _, _ = await manager.get_generation_history_page(
                 generation_kind="image_to_image"
             )
-            text_records, text_total, _ = await manager.get_generation_history_page(
+            text_records, text_total, _, _ = await manager.get_generation_history_page(
                 generation_kind="text_to_image"
             )
             self.assertEqual(image_total, 1)
@@ -687,6 +687,55 @@ class GenerationHistoryStorageTest(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(first_source_path.exists())
             self.assertFalse(second_source_path.exists())
             self.assertFalse(source_preview.exists())
+
+    async def test_history_filters_can_combine_group_private_and_user_ids(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.DataManager(pathlib.Path(directory), {})
+            for user_id, group_id, user_name, group_name in (
+                ("user-1", "group-1", "Alice", "Group One"),
+                ("user-2", "group-1", "Bob", "Group One"),
+                ("user-1", "group-2", "Alice", "Group Two"),
+                ("user-3", "", "Carol", ""),
+            ):
+                await manager.save_generation_record(
+                    self._png_bytes(),
+                    prompt=f"portrait for {user_id}",
+                    user_id=user_id,
+                    group_id=group_id,
+                    user_name=user_name,
+                    group_name=group_name,
+                    task_type="文生图",
+                )
+
+            group_records, group_total, _, group_view = await manager.get_generation_history_page(
+                group_filter="group-1"
+            )
+            self.assertEqual(group_total, 2)
+            self.assertEqual({item["user_id"] for item in group_records}, {"user-1", "user-2"})
+            self.assertEqual(group_view["summary"]["total"], 2)
+            self.assertEqual(group_view["filter_options"]["users"], {"user-1": 1, "user-2": 1})
+
+            user_records, user_total, _, user_view = await manager.get_generation_history_page(
+                user_filter="user-1"
+            )
+            self.assertEqual(user_total, 2)
+            self.assertEqual({item["group_id"] for item in user_records}, {"group-1", "group-2"})
+            self.assertEqual(user_view["filter_options"]["groups"], {"group-1": 1, "group-2": 1})
+
+            private_records, private_total, _, private_view = await manager.get_generation_history_page(
+                group_filter="__private__"
+            )
+            self.assertEqual(private_total, 1)
+            self.assertEqual(private_records[0]["user_id"], "user-3")
+            self.assertEqual(private_view["filter_options"]["users"], {"user-3": 1})
+
+            combined, combined_total, _, combined_view = await manager.get_generation_history_page(
+                group_filter="group-1",
+                user_filter="user-2",
+            )
+            self.assertEqual(combined_total, 1)
+            self.assertEqual(combined[0]["user_id"], "user-2")
+            self.assertEqual(combined_view["summary"]["total"], 1)
 
 
 class IdentityLabelStorageTest(unittest.IsolatedAsyncioTestCase):
@@ -788,6 +837,23 @@ class DashboardGenerationHistoryTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(payload["records"][0]["channel_id"], "miku")
             self.assertEqual(payload["records"][0]["channel_name"], "Miku 主渠道")
             self.assertNotIn("preview", payload["records"][0])
+            self.assertEqual(payload["filters"]["options"]["groups"][0]["name"], "Example Group")
+            self.assertEqual(payload["filters"]["options"]["users"][0]["name"], "Alice")
+
+            self.dashboard_module.request.args = {
+                "limit": "24",
+                "offset": "0",
+                "group_id": "group-1",
+                "user_id": "user-1",
+            }
+            try:
+                filtered = await api.generation_history()
+            finally:
+                self.dashboard_module.request.args = original_args
+            self.assertEqual(filtered["filters"]["group_id"], "group-1")
+            self.assertEqual(filtered["filters"]["user_id"], "user-1")
+            self.assertEqual(filtered["pagination"]["total"], 1)
+            self.assertEqual(filtered["view_summary"]["total"], 1)
 
             self.dashboard_module.request.args = {"id": record["id"]}
             try:

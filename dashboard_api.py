@@ -26,7 +26,7 @@ _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _PREVIEW_MAX_BYTES = 300 * 1024
 _INTERFACE_MODES = {"openai_image", "openai_chat", "gemini_official", "custom_endpoint"}
-_DASHBOARD_THEMES = {"dark", "light", "alice"}
+_DASHBOARD_THEMES = {"dark", "light", "alice", "terminal"}
 
 
 class LinghuiDashboardApi:
@@ -896,14 +896,50 @@ class LinghuiDashboardApi:
         generation_kind = str(request.args.get("mode", "all") or "all").strip().lower()
         if generation_kind not in {"all", "text_to_image", "image_to_image"}:
             generation_kind = "all"
+        raw_group_filter = str(request.args.get("group_id", "") or "").strip()[:160]
+        group_filter = "__private__" if raw_group_filter == "__private__" else norm_id(raw_group_filter)
+        user_filter = norm_id(request.args.get("user_id"))
         manager = self.plugin.data_mgr
-        records, total, summary = await manager.get_generation_history_page(
+        records, total, summary, view = await manager.get_generation_history_page(
             limit=limit,
             offset=offset,
             favorite_only=favorite_only,
             generation_kind=generation_kind,
+            group_filter=group_filter,
+            user_filter=user_filter,
         )
         identity_labels = self._identity_label_map(manager)
+
+        raw_filter_options = view.get("filter_options", {}) if isinstance(view, dict) else {}
+        user_counts = raw_filter_options.get("users", {}) if isinstance(raw_filter_options, dict) else {}
+        group_counts = raw_filter_options.get("groups", {}) if isinstance(raw_filter_options, dict) else {}
+        filter_options = {
+            "users": [
+                {
+                    "id": user_id,
+                    "name": identity_labels["users"].get(user_id, ""),
+                    "count": self._as_int(count, 0, 2_147_483_647),
+                }
+                for user_id, count in sorted(
+                    user_counts.items(),
+                    key=lambda item: (-self._as_int(item[1], 0, 2_147_483_647), item[0]),
+                )
+                if user_id
+            ],
+            "groups": [
+                {
+                    "id": group_id,
+                    "name": identity_labels["groups"].get(group_id, ""),
+                    "count": self._as_int(count, 0, 2_147_483_647),
+                }
+                for group_id, count in sorted(
+                    group_counts.items(),
+                    key=lambda item: (-self._as_int(item[1], 0, 2_147_483_647), item[0]),
+                )
+                if group_id
+            ],
+            "private_count": self._as_int(raw_filter_options.get("private_count", 0), 0, 2_147_483_647),
+        }
 
         public_records: List[Dict[str, Any]] = []
         for record in records:
@@ -951,8 +987,14 @@ class LinghuiDashboardApi:
                 "has_more": offset + len(public_records) < total,
             },
             "summary": summary,
+            "view_summary": view.get("summary", {}) if isinstance(view, dict) else {},
             "favorite_only": favorite_only,
             "mode": generation_kind,
+            "filters": {
+                "group_id": group_filter,
+                "user_id": user_filter,
+                "options": filter_options,
+            },
             "retention_days": self._as_int(
                 self.plugin.conf.get("generation_cache_retention_days", 7), 1, 365
             ),

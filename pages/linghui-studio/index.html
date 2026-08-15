@@ -13,35 +13,57 @@
           <span class="brand-mark-wrap"><img class="brand-mark" src="./assets/alice-sprite.png" alt="" /><i class="brand-signal" aria-hidden="true"></i></span>
           <span class="brand-copy"><strong>灵绘工坊</strong><small>LINGHUI / STUDIO</small></span>
         </div>
-        <div class="sidebar-rule" aria-hidden="true"></div>
         <nav class="nav-list">
-          <button class="nav-item active" data-tab="overview">概览</button>
-          <button class="nav-item" data-tab="history">文生图</button>
-          <button class="nav-item" data-tab="image-to-image">图生图</button>
-          <button class="nav-item" data-tab="favorites">收藏</button>
-          <button class="nav-item" data-tab="channels">绘图渠道</button>
-          <button class="nav-item" data-tab="access">权限与额度</button>
-          <button class="nav-item" data-tab="prompts">提示词与预设</button>
-          <button class="nav-item" data-tab="persona">人设与参考图</button>
-          <button class="nav-item" data-tab="settings">运行设置</button>
+          <div class="nav-group">
+            <span class="nav-group-label">记录</span>
+            <div class="nav-group-items">
+              <button class="nav-item active" data-tab="overview"><span class="nav-icon" aria-hidden="true">⌂</span><span>概览</span></button>
+              <button class="nav-item" data-tab="history"><span class="nav-icon" aria-hidden="true">T</span><span>文生图</span></button>
+              <button class="nav-item" data-tab="image-to-image"><span class="nav-icon" aria-hidden="true">I</span><span>图生图</span></button>
+              <button class="nav-item" data-tab="favorites"><span class="nav-icon" aria-hidden="true">★</span><span>收藏</span></button>
+            </div>
+          </div>
+          <div class="nav-group">
+            <span class="nav-group-label">创作</span>
+            <div class="nav-group-items">
+              <button class="nav-item" data-tab="channels"><span class="nav-icon" aria-hidden="true">⇄</span><span>绘图渠道</span></button>
+              <button class="nav-item" data-tab="prompts"><span class="nav-icon" aria-hidden="true">✦</span><span>提示词与预设</span></button>
+              <button class="nav-item" data-tab="persona"><span class="nav-icon" aria-hidden="true">◎</span><span>人设与参考图</span></button>
+            </div>
+          </div>
+          <div class="nav-group">
+            <span class="nav-group-label">系统</span>
+            <div class="nav-group-items">
+              <button class="nav-item" data-tab="access"><span class="nav-icon" aria-hidden="true">◈</span><span>权限与额度</span></button>
+              <button class="nav-item" data-tab="settings"><span class="nav-icon" aria-hidden="true">⚙</span><span>运行设置</span></button>
+            </div>
+          </div>
         </nav>
-        <footer class="sidebar-actions" aria-label="工作台控制">
-          <div class="dock-heading"><span>INTERFACE PROFILE</span><i><b></b>已连接</i></div>
-          <div class="theme-switcher" role="group" aria-label="选择界面皮肤">
-            <button class="theme-option" type="button" data-theme-option="dark" aria-pressed="true"><span class="theme-swatch dark" aria-hidden="true"></span><span>深色</span></button>
-            <button class="theme-option" type="button" data-theme-option="light" aria-pressed="false"><span class="theme-swatch light" aria-hidden="true"></span><span>浅色</span></button>
-            <button class="theme-option" type="button" data-theme-option="alice" aria-pressed="false"><span class="theme-swatch alice" aria-hidden="true"></span><span>爱丽丝</span></button>
+        <footer class="sidebar-console" aria-label="工作台控制">
+          <div class="console-status-row"><span class="connection-state"><i aria-hidden="true"></i>已连接</span><span>LH / 04</span></div>
+          <div class="theme-control">
+            <button id="theme-menu-toggle" class="theme-menu-toggle" type="button" aria-expanded="false" aria-controls="theme-menu">
+              <span id="current-theme-swatch" class="theme-swatch dark" aria-hidden="true"></span>
+              <span class="theme-menu-copy"><small>界面主题</small><strong id="current-theme-label">深色</strong></span>
+              <span class="theme-menu-chevron" aria-hidden="true">⌃</span>
+            </button>
+            <div id="theme-menu" class="theme-menu" role="group" aria-label="选择界面皮肤" hidden>
+              <button class="theme-option" type="button" data-theme-option="dark" aria-pressed="true"><span class="theme-swatch dark" aria-hidden="true"></span><span>深色</span></button>
+              <button class="theme-option" type="button" data-theme-option="light" aria-pressed="false"><span class="theme-swatch light" aria-hidden="true"></span><span>浅色</span></button>
+              <button class="theme-option" type="button" data-theme-option="alice" aria-pressed="false"><span class="theme-swatch alice" aria-hidden="true"></span><span>爱丽丝</span></button>
+              <button class="theme-option" type="button" data-theme-option="terminal" aria-pressed="false"><span class="theme-swatch terminal" aria-hidden="true"></span><span>黑客终端</span></button>
+            </div>
           </div>
           <select id="theme-select" class="theme-select" title="选择界面皮肤" aria-label="选择界面皮肤" tabindex="-1">
             <option value="dark">深色</option>
             <option value="light">浅色</option>
             <option value="alice">爱丽丝</option>
+            <option value="terminal">黑客终端</option>
           </select>
-          <div class="dock-actions">
+          <div class="sidebar-command-row">
             <button id="reload-button" class="reload-action" title="重新加载配置" aria-label="重新加载配置">↻</button>
-            <button id="save-button" class="primary-action"><span>保存更改</span><small>APPLY CHANGES</small></button>
+            <button id="save-button" class="save-action"><span aria-hidden="true">✓</span><strong>保存更改</strong></button>
           </div>
-          <p class="dock-caption">皮肤选择即时保存，其余表单请单独确认。</p>
         </footer>
       </aside>
 
@@ -86,6 +108,10 @@
               <span class="history-quick-stat"><small>占用</small><strong id="history-size">-</strong></span>
             </div>
             <div class="history-actions">
+              <div class="history-identity-filters" aria-label="按群聊或个人筛选">
+                <label><span>群聊</span><select id="history-group-filter"><option value="">全部会话</option></select></label>
+                <label><span>个人</span><select id="history-user-filter"><option value="">全部用户</option></select></label>
+              </div>
               <div class="history-mode-switch" role="group" aria-label="记录类型筛选">
                 <button class="quiet-action" type="button" data-history-mode="text_to_image">文生图</button>
                 <button class="quiet-action" type="button" data-history-mode="image_to_image">图生图</button>

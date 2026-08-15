@@ -671,11 +671,12 @@
   "dashboard_theme": {
     "type": "string",
     "description": "【Dashboard 与缓存】Dashboard 外观主题",
-    "hint": "深色为默认的玻璃霓虹界面；可选浅色或爱丽丝主题。Dashboard 侧栏切换后会立即保存到插件配置，重新打开页面或更换浏览器仍会保持此选择。",
+    "hint": "深色为默认的玻璃霓虹界面；另有浅色、爱丽丝和采用独立终端布局的黑客终端主题。Dashboard 侧栏切换后会立即保存到插件配置，重新打开页面或更换浏览器仍会保持此选择。",
     "options": [
       "dark",
       "light",
-      "alice"
+      "alice",
+      "terminal"
     ],
     "default": "dark"
   }

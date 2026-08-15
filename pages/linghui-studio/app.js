@@ -18,9 +18,11 @@ const bridge = window.AstrBotPluginPage || {
 const state = {
   config: null,
   usage: { users: [], groups: [], daily_stats: {} },
-  history: { records: [], pagination: { offset: 0, limit: 24, total: 0 }, summary: {}, favorite_only: false, mode: "text_to_image" },
+  history: { records: [], pagination: { offset: 0, limit: 24, total: 0 }, summary: {}, view_summary: {}, favorite_only: false, mode: "text_to_image", filters: { group_id: "", user_id: "", options: {} } },
   historyFavoriteOnly: false,
   historyMode: "text_to_image",
+  historyGroupId: "",
+  historyUserId: "",
   historyCache: new Map(),
   generationPreviewCache: new Map(),
   generationPromptCache: new Map(),
@@ -29,7 +31,13 @@ const state = {
 };
 
 const THEME_STORAGE_KEY = "linghui-studio-theme";
-const THEME_VALUES = new Set(["dark", "light", "alice"]);
+const THEME_VALUES = new Set(["dark", "light", "alice", "terminal"]);
+const THEME_LABELS = new Map([
+  ["dark", "深色"],
+  ["light", "浅色"],
+  ["alice", "爱丽丝"],
+  ["terminal", "黑客终端"],
+]);
 const HISTORY_PAGE_SIZE = 24;
 const HISTORY_CACHE_TTL_MS = 30_000;
 const PLUGIN_API_BASE = "/api/plug/astrbot_plugin_linghui_studio";
@@ -89,18 +97,35 @@ function setTheme(theme, persist = true) {
     button.classList.toggle("active", selected);
     button.setAttribute("aria-pressed", String(selected));
   });
+  const currentLabel = byId("current-theme-label");
+  if (currentLabel) currentLabel.textContent = THEME_LABELS.get(nextTheme) || "深色";
+  const currentSwatch = byId("current-theme-swatch");
+  if (currentSwatch) currentSwatch.className = `theme-swatch ${nextTheme}`;
   if (persist) {
     try { window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme); } catch { /* Storage may be disabled. */ }
   }
 }
 
+function setThemeMenuOpen(open) {
+  const menu = byId("theme-menu");
+  const toggle = byId("theme-menu-toggle");
+  if (!menu || !toggle) return;
+  const nextOpen = Boolean(open);
+  menu.hidden = !nextOpen;
+  toggle.setAttribute("aria-expanded", String(nextOpen));
+}
+
 async function changeTheme(theme) {
   const nextTheme = THEME_VALUES.has(theme) ? theme : "dark";
   const previousTheme = currentTheme();
-  if (nextTheme === previousTheme) return;
+  if (nextTheme === previousTheme) {
+    setThemeMenuOpen(false);
+    return;
+  }
 
   const selector = byId("theme-select");
   setTheme(nextTheme);
+  setThemeMenuOpen(false);
   if (selector) selector.disabled = true;
   document.querySelectorAll("[data-theme-option]").forEach((button) => { button.disabled = true; });
   setSaveState("正在保存外观...");
@@ -413,7 +438,9 @@ function formatGenerationChannel(record) {
 }
 
 function historyCacheKey(offset) {
-  return `${state.historyFavoriteOnly ? "favorites" : "history"}:${state.historyMode}:${Math.max(0, Number(offset) || 0)}`;
+  const groupId = encodeURIComponent(state.historyGroupId || "");
+  const userId = encodeURIComponent(state.historyUserId || "");
+  return `${state.historyFavoriteOnly ? "favorites" : "history"}:${state.historyMode}:${groupId}:${userId}:${Math.max(0, Number(offset) || 0)}`;
 }
 
 function invalidateGenerationHistoryCache() {
@@ -644,10 +671,52 @@ async function loadGenerationSources(details) {
   }
 }
 
+function renderHistoryIdentityFilters(filters = {}) {
+  const options = filters.options && typeof filters.options === "object" ? filters.options : {};
+  const groups = Array.isArray(options.groups) ? [...options.groups] : [];
+  const users = Array.isArray(options.users) ? [...options.users] : [];
+  const groupId = String(filters.group_id ?? state.historyGroupId ?? "");
+  const userId = String(filters.user_id ?? state.historyUserId ?? "");
+  state.historyGroupId = groupId;
+  state.historyUserId = userId;
+
+  if (groupId && groupId !== "__private__" && !groups.some((item) => String(item.id || "") === groupId)) {
+    groups.unshift({ id: groupId, name: "", count: 0 });
+  }
+  if (userId && !users.some((item) => String(item.id || "") === userId)) {
+    users.unshift({ id: userId, name: "", count: 0 });
+  }
+
+  const groupSelect = byId("history-group-filter");
+  const privateCount = Math.max(0, Number(options.private_count) || 0);
+  if (groupSelect) {
+    const privateOption = privateCount > 0 || groupId === "__private__"
+      ? `<option value="__private__">仅私聊 · ${privateCount}</option>`
+      : "";
+    groupSelect.innerHTML = `<option value="">全部会话</option>${privateOption}${groups.map((item) => {
+      const id = String(item.id || "");
+      const label = formatIdentity(item.name, id, "群");
+      return `<option value="${escapeHtml(id)}">${escapeHtml(label)} · ${Math.max(0, Number(item.count) || 0)}</option>`;
+    }).join("")}`;
+    groupSelect.value = groupId;
+  }
+
+  const userSelect = byId("history-user-filter");
+  if (userSelect) {
+    userSelect.innerHTML = `<option value="">全部用户</option>${users.map((item) => {
+      const id = String(item.id || "");
+      const label = formatIdentity(item.name, id, "用户");
+      return `<option value="${escapeHtml(id)}">${escapeHtml(label)} · ${Math.max(0, Number(item.count) || 0)}</option>`;
+    }).join("")}`;
+    userSelect.value = userId;
+  }
+}
+
 function renderGenerationHistory() {
   clearGenerationPreviewLoading();
   const history = state.history || {};
   const summary = history.summary || {};
+  const viewSummary = history.view_summary || summary;
   const pagination = history.pagination || {};
   const records = history.records || [];
   const retentionDays = Math.max(1, Number(history.retention_days) || 7);
@@ -656,13 +725,12 @@ function renderGenerationHistory() {
   const mode = ["all", "text_to_image", "image_to_image"].includes(responseMode) ? responseMode : "all";
   state.historyFavoriteOnly = favoriteOnly;
   state.historyMode = mode;
+  renderHistoryIdentityFilters(history.filters || {});
 
-  byId("history-total").textContent = String(
-    mode === "all" ? (summary.total ?? pagination.total ?? 0) : (summary[mode] ?? pagination.total ?? 0)
-  );
-  byId("history-today").textContent = String(summary.today ?? 0);
-  byId("history-protected").textContent = String(summary.protected ?? 0);
-  byId("history-size").textContent = formatBytes(summary.size_bytes);
+  byId("history-total").textContent = String(pagination.total ?? viewSummary.total ?? 0);
+  byId("history-today").textContent = String(viewSummary.today ?? 0);
+  byId("history-protected").textContent = String(viewSummary.protected ?? 0);
+  byId("history-size").textContent = formatBytes(viewSummary.size_bytes);
   const cleanupButton = byId("history-cleanup");
   if (cleanupButton) {
     const cleanupHint = `自动清理超过 ${retentionDays} 天且未收藏、未锁定的缓存`;
@@ -677,7 +745,8 @@ function renderGenerationHistory() {
 
   const target = byId("generation-history-list");
   if (!records.length) {
-    target.innerHTML = '<p class="empty">暂无成功记录。后续每张成功返回的图片会自动缓存并显示在这里。</p>';
+    const filtered = Boolean(state.historyGroupId || state.historyUserId);
+    target.innerHTML = `<p class="empty">${filtered ? "当前群聊或个人筛选下暂无成功记录。" : "暂无成功记录。后续每张成功返回的图片会自动缓存并显示在这里。"}</p>`;
   } else {
     target.innerHTML = records.map((record) => {
       const id = String(record.id || "");
@@ -918,6 +987,8 @@ async function loadGenerationHistory(offset = 0, force = false) {
       offset: safeOffset,
       favorite_only: state.historyFavoriteOnly ? "1" : "0",
       mode: state.historyMode,
+      group_id: state.historyGroupId,
+      user_id: state.historyUserId,
     });
     if (response?.success) {
       state.historyCache.set(cacheKey, { response, loadedAt: Date.now() });
@@ -1132,6 +1203,12 @@ function switchTab(tab) {
 
 document.addEventListener("click", async (event) => {
   try {
+    const themeToggle = event.target.closest("#theme-menu-toggle");
+    if (themeToggle) {
+      setThemeMenuOpen(themeToggle.getAttribute("aria-expanded") !== "true");
+      return;
+    }
+    if (!event.target.closest(".theme-control")) setThemeMenuOpen(false);
     const tab = event.target.closest("[data-tab]");
     if (tab) {
       const tabName = tab.dataset.tab;
@@ -1233,6 +1310,10 @@ document.addEventListener("toggle", (event) => {
   if (details.matches(".generation-sources")) void loadGenerationSources(details);
 }, true);
 
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") setThemeMenuOpen(false);
+});
+
 document.addEventListener("error", (event) => {
   const image = event.target;
   if (!(image instanceof HTMLImageElement)) return;
@@ -1258,6 +1339,24 @@ document.addEventListener("error", (event) => {
 
 byId("reference-preset").addEventListener("change", renderReferenceImages);
 byId("theme-select").addEventListener("change", (event) => { void changeTheme(event.target.value); });
+byId("history-group-filter").addEventListener("change", async (event) => {
+  try {
+    state.historyGroupId = event.target.value;
+    await loadGenerationHistory(0);
+  } catch (error) {
+    console.error(error);
+    showToast(error.message || "群聊筛选失败", true);
+  }
+});
+byId("history-user-filter").addEventListener("change", async (event) => {
+  try {
+    state.historyUserId = event.target.value;
+    await loadGenerationHistory(0);
+  } catch (error) {
+    console.error(error);
+    showToast(error.message || "个人筛选失败", true);
+  }
+});
 byId("persona-upload").addEventListener("change", async (event) => {
   try { await uploadReferences(event.target.files, "_persona_"); event.target.value = ""; } catch (error) { showToast(error.message || "上传失败", true); }
 });

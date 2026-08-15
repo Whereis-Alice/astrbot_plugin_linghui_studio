@@ -984,8 +984,10 @@ class DataManager:
             *,
             favorite_only: bool = False,
             generation_kind: str = "all",
-    ) -> Tuple[List[Dict[str, Any]], int, Dict[str, int]]:
-        """Return a bounded history page plus aggregate cache statistics."""
+            group_filter: str = "",
+            user_filter: str = "",
+    ) -> Tuple[List[Dict[str, Any]], int, Dict[str, int], Dict[str, Any]]:
+        """Return one metadata-only history page plus filter facets and statistics."""
         try:
             limit = int(limit)
         except (TypeError, ValueError):
@@ -999,6 +1001,11 @@ class DataManager:
         generation_kind = str(generation_kind or "all").strip().lower()
         if generation_kind not in {"all", *_GENERATION_KINDS}:
             generation_kind = "all"
+        raw_group_filter = str(group_filter or "").strip()
+        private_only = raw_group_filter == "__private__"
+        normalized_group_filter = "" if private_only else norm_id(raw_group_filter)
+        normalized_user_filter = norm_id(user_filter)
+
         async with self._state_lock:
             source_records = self._favorite_generation_history_locked() if favorite_only else self.generation_history
             if generation_kind != "all":
@@ -1006,10 +1013,71 @@ class DataManager:
                     item for item in source_records
                     if item.get("generation_kind") == generation_kind
                 ]
-            total = len(source_records)
-            page = [dict(item) for item in source_records[offset:offset + limit]]
+
+            def matches_group(item: Dict[str, Any]) -> bool:
+                record_group_id = norm_id(item.get("group_id"))
+                if private_only:
+                    return not record_group_id
+                if normalized_group_filter:
+                    return record_group_id == normalized_group_filter
+                return True
+
+            def matches_user(item: Dict[str, Any]) -> bool:
+                return not normalized_user_filter or norm_id(item.get("user_id")) == normalized_user_filter
+
+            user_counts: Dict[str, int] = {}
+            for item in source_records:
+                if not matches_group(item):
+                    continue
+                user_id = norm_id(item.get("user_id"))
+                if user_id:
+                    user_counts[user_id] = user_counts.get(user_id, 0) + 1
+
+            group_counts: Dict[str, int] = {}
+            private_count = 0
+            for item in source_records:
+                if not matches_user(item):
+                    continue
+                group_id = norm_id(item.get("group_id"))
+                if group_id:
+                    group_counts[group_id] = group_counts.get(group_id, 0) + 1
+                else:
+                    private_count += 1
+
+            filtered_records = [
+                item for item in source_records
+                if matches_group(item) and matches_user(item)
+            ]
+            total = len(filtered_records)
+            page = [dict(item) for item in filtered_records[offset:offset + limit]]
             summary = self._generation_history_summary_locked()
-        return page, total, summary
+            today_key = datetime.now().date().isoformat()
+            view_summary = {
+                "total": total,
+                "today": 0,
+                "protected": 0,
+                "size_bytes": 0,
+            }
+            for item in filtered_records:
+                if self._history_bool(item.get("favorite", False)) or self._history_bool(item.get("locked", False)):
+                    view_summary["protected"] += 1
+                view_summary["size_bytes"] += (
+                    self._history_int(item.get("size_bytes"))
+                    + self._history_int(item.get("source_size_bytes"))
+                )
+                created_at = self._history_created_at(item, None)
+                if created_at is not None and created_at.date().isoformat() == today_key:
+                    view_summary["today"] += 1
+
+            view = {
+                "summary": view_summary,
+                "filter_options": {
+                    "users": user_counts,
+                    "groups": group_counts,
+                    "private_count": private_count,
+                },
+            }
+        return page, total, summary, view
 
     async def update_generation_record_flags(
             self,
