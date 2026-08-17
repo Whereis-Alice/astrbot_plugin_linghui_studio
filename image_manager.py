@@ -585,11 +585,21 @@ class ImageManager:
                                         include_at_avatar: bool = True) -> List[bytes]:
         """从消息事件中提取所有图片 - 并发加速"""
         tasks = []
-        at_users = set()  # 使用集合去重
+        # Keep mention order stable: multi-person reference prompts rely on the
+        # image order matching the order in which users were mentioned.
+        at_users: List[str] = []
+        seen_at_users = set()
 
         # 1. 规范化 ignore_id，确保是字符串且去除空白
         if ignore_id:
             ignore_id = str(ignore_id).strip()
+
+        def add_at_user(raw_user_id) -> None:
+            qq = str(raw_user_id or "").strip()
+            if not qq or (ignore_id and qq == ignore_id) or qq in seen_at_users:
+                return
+            seen_at_users.add(qq)
+            at_users.append(qq)
 
         logger.debug(f"extract_images_from_event: ignore_id={ignore_id}")
 
@@ -631,23 +641,17 @@ class ImageManager:
                     tasks.append(self.load_bytes(seg.file))
             # @用户
             elif isinstance(seg, At):
-                qq = str(seg.qq).strip()
-                # 过滤机器人自身的 ID
-                if ignore_id and qq == ignore_id:
-                    continue
-                at_users.add(qq)
+                # AstrBot 4.x uses ``qq``.  ``user_id`` keeps this compatible
+                # with adapters/components that expose the generic field name.
+                add_at_user(getattr(seg, "qq", None) or getattr(seg, "user_id", None))
 
         # 3. 文本中正则匹配的@
         # 有些平台 At 可能表现为纯文本
         text_ats = re.findall(r'@(\d+)', event.message_str)
         for qq in text_ats:
-            qq = str(qq).strip()
-            # 过滤机器人自身的 ID
-            if ignore_id and qq == ignore_id:
-                continue
-            at_users.add(qq)
+            add_at_user(qq)
 
-        # 4. 头像任务 (去重后)
+        # 4. 头像任务（按艾特顺序有序去重）
         if include_at_avatar and at_users:
             logger.debug(f"At users to fetch avatars: {at_users}")
             for uid in at_users:

@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import io
 import ipaddress
 import json
 import re
@@ -10,11 +11,14 @@ from urllib.parse import urlparse
 import aiohttp
 from typing import List, Dict
 from astrbot import logger
+from PIL import Image as PILImage, ImageChops, ImageOps, ImageStat
 from .generation_params import detect_aspect_ratio_from_image, resolve_image_generation_params
 from .utils import normalize_api_root
 
 
 class ApiManager:
+    REFERENCE_ECHO_ERROR = "渠道返回的结果与输入参考图相同，已拒绝该无效结果"
+
     def __init__(self, config: dict):
         self.config = config
         self.key_lock = asyncio.Lock()
@@ -77,6 +81,70 @@ class ApiManager:
             count = 3
         return max(1, count)
 
+    @staticmethod
+    def _normalized_image_sample(image_bytes: bytes):
+        """Decode an image into a small orientation-corrected RGB comparison sample."""
+        with PILImage.open(io.BytesIO(image_bytes)) as source:
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            original_size = image.size
+            sample = image.resize((96, 96), PILImage.Resampling.LANCZOS)
+            sample.load()
+        return original_size, sample
+
+    @classmethod
+    def _find_reference_echo(cls, result: bytes, images: List[bytes]) -> int | None:
+        """Return the zero-based reference index when a result is an input-image echo."""
+        if not isinstance(result, bytes) or not result or not images:
+            return None
+
+        for index, reference in enumerate(images):
+            if not isinstance(reference, bytes) or not reference:
+                continue
+            if result == reference:
+                return index
+
+        try:
+            result_size, result_sample = cls._normalized_image_sample(result)
+        except Exception:
+            return None
+
+        for index, reference in enumerate(images):
+            if not isinstance(reference, bytes) or not reference:
+                continue
+            try:
+                reference_size, reference_sample = cls._normalized_image_sample(reference)
+            except Exception:
+                continue
+
+            # A generated image may resemble its reference by design. Only
+            # reject a pixel-identical decode or an extremely close re-encode.
+            difference = ImageChops.difference(result_sample, reference_sample)
+            if difference.getbbox() is None:
+                return index
+
+            result_ratio = result_size[0] / max(1, result_size[1])
+            reference_ratio = reference_size[0] / max(1, reference_size[1])
+            if abs(result_ratio - reference_ratio) > 0.002:
+                continue
+            statistics = ImageStat.Stat(difference)
+            mean_error = sum(statistics.mean) / max(1, len(statistics.mean))
+            rms_error = max(statistics.rms or [255.0])
+            if mean_error <= 1.0 and rms_error <= 3.0:
+                return index
+        return None
+
+    async def _validate_reference_result(self, result: bytes | str, images: List[bytes]) -> bytes | str:
+        if not (images and isinstance(result, bytes) and result):
+            return result
+        match_index = await asyncio.to_thread(self._find_reference_echo, result, images)
+        if match_index is None:
+            return result
+        logger.warning(
+            "Drawing channel returned reference image %s unchanged; treating this response as a failure.",
+            match_index + 1,
+        )
+        return f"{self.REFERENCE_ECHO_ERROR}（第 {match_index + 1} 张参考图）"
+
     async def _call_api_with_luxury_mode(self, images: List[bytes], prompt: str,
                                          model: str, proxy: str = None,
                                          use_text_to_image_api: bool = False,
@@ -85,10 +153,11 @@ class ApiManager:
         """奢侈模式：同一请求并发多次，只取首个成功结果，其余丢弃。"""
         luxury_count = self._get_luxury_request_count()
         if luxury_count <= 1:
-            return await self._call_api_once(
+            result = await self._call_api_once(
                 images, prompt, model, proxy, use_text_to_image_api,
                 aspect_ratio=aspect_ratio, resolution=resolution
             )
+            return await self._validate_reference_result(result, images)
 
         logger.info(f"奢侈模式已启用：同一请求并发 {luxury_count} 次，仅取其中一张成功图片")
 
@@ -109,6 +178,8 @@ class ApiManager:
                     result = await completed
                 except Exception as e:
                     result = f"系统错误: {e}"
+
+                result = await self._validate_reference_result(result, images)
 
                 if isinstance(result, bytes) and result:
                     success_result = result
@@ -1056,10 +1127,11 @@ class ApiManager:
                 aspect_ratio=aspect_ratio, resolution=resolution
             )
 
-        return await self._call_api_once(
+        result = await self._call_api_once(
             images, prompt, model, proxy, use_text_to_image_api,
             aspect_ratio=aspect_ratio, resolution=resolution
         )
+        return await self._validate_reference_result(result, images)
 
     async def _call_api_once(self, images: List[bytes], prompt: str,
                              model: str, proxy: str = None,

@@ -1,8 +1,11 @@
 import importlib
+import io
 import pathlib
 import sys
 import types
 import unittest
+
+from PIL import Image
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -27,6 +30,11 @@ def load_api_manager():
         sys.modules["astrbot"] = astrbot
 
     return importlib.import_module(f"{PACKAGE}.api_manager").ApiManager
+
+
+def load_channel_router():
+    load_api_manager()
+    return importlib.import_module(f"{PACKAGE}.channel_router").DrawingChannelRouter
 
 
 class ApiEndpointBuildTest(unittest.TestCase):
@@ -162,6 +170,121 @@ class ImageEditTransportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["args"][4], "https://api.example.com/v1/images")
         self.assertFalse(captured["kwargs"]["exact_endpoint"])
 
+
+class ReferenceImageEchoGuardTest(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.ApiManager = load_api_manager()
+
+    @staticmethod
+    def _image_bytes(color, image_format="PNG"):
+        output = io.BytesIO()
+        Image.new("RGB", (96, 96), color).save(output, image_format)
+        return output.getvalue()
+
+    async def test_exact_reference_echo_is_rejected(self):
+        reference = self._image_bytes((20, 80, 180))
+        manager = self.ApiManager({})
+
+        async def echo_reference(*args, **kwargs):
+            return reference
+
+        manager._call_api_once = echo_reference
+        result = await manager.call_api([reference], "restyle this avatar", "model")
+
+        self.assertIsInstance(result, str)
+        self.assertIn("输入参考图相同", result)
+
+    async def test_same_pixels_with_different_encoding_are_rejected(self):
+        reference = self._image_bytes((40, 160, 90), "PNG")
+        reencoded = self._image_bytes((40, 160, 90), "BMP")
+        self.assertNotEqual(reference, reencoded)
+        manager = self.ApiManager({})
+
+        async def echo_reencoded(*args, **kwargs):
+            return reencoded
+
+        manager._call_api_once = echo_reencoded
+        result = await manager.call_api([reference], "restyle this avatar", "model")
+
+        self.assertIsInstance(result, str)
+        self.assertIn("输入参考图相同", result)
+
+    async def test_changed_image_is_accepted(self):
+        reference = self._image_bytes((20, 80, 180))
+        generated = self._image_bytes((220, 90, 40))
+        manager = self.ApiManager({})
+
+        async def return_generated(*args, **kwargs):
+            return generated
+
+        manager._call_api_once = return_generated
+        result = await manager.call_api([reference], "restyle this avatar", "model")
+
+        self.assertEqual(result, generated)
+
+
+class ReferenceEchoFallbackIntegrationTest(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.ApiManager = load_api_manager()
+        cls.DrawingChannelRouter = load_channel_router()
+
+    @staticmethod
+    def _image_bytes(color):
+        output = io.BytesIO()
+        Image.new("RGB", (96, 96), color).save(output, "PNG")
+        return output.getvalue()
+
+    async def test_echo_from_primary_channel_falls_back_to_next_channel(self):
+        reference = self._image_bytes((20, 80, 180))
+        generated = self._image_bytes((220, 90, 40))
+        primary = self.ApiManager({})
+        backup = self.ApiManager({})
+
+        async def echo_reference(*args, **kwargs):
+            return reference
+
+        async def return_generated(*args, **kwargs):
+            return generated
+
+        primary._call_api_once = echo_reference
+        backup._call_api_once = return_generated
+        router = self.DrawingChannelRouter({
+            "drawing_channels": [
+                {"id": "primary", "base_url": "primary", "api_keys": "one"},
+                {"id": "backup", "base_url": "backup", "api_keys": "two"},
+            ]
+        })
+        clients = {"primary": primary, "backup": backup}
+
+        async def client_for(channel):
+            return clients[channel["id"]]
+
+        router._client_for = client_for
+        result = await router.call_api([reference], "restyle this avatar", "model")
+
+        self.assertEqual(result, generated)
+        self.assertEqual(router.get_last_metrics()["channel_id"], "backup")
+        self.assertEqual(router.get_last_metrics()["fallback_count"], 1)
+
+    async def test_luxury_mode_skips_echo_and_keeps_waiting_for_a_real_result(self):
+        reference = self._image_bytes((20, 80, 180))
+        generated = self._image_bytes((220, 90, 40))
+        manager = self.ApiManager({"enable_luxury_mode": True, "luxury_request_count": 2})
+        call_count = 0
+
+        async def return_in_order(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return reference
+            return generated
+
+        manager._call_api_once = return_in_order
+        result = await manager.call_api([reference], "restyle this avatar", "model")
+
+        self.assertEqual(result, generated)
 
 if __name__ == "__main__":
     unittest.main()

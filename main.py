@@ -144,7 +144,7 @@ def _direct_command_only(handler):
     PLUGIN_NAME,
     "Whereis-Alice",
     "灵绘工坊：带参考图专用渠道回退、受控群白名单、自定义绘图反向提示词与可视化管理的文生图/图生图插件",
-    "3.5.1",
+    "3.5.2",
     "https://github.com/Whereis-Alice/astrbot_plugin_linghui_studio",
 )
 class LinghuiStudioPlugin(Star):
@@ -1002,7 +1002,7 @@ class LinghuiStudioPlugin(Star):
 
         auto_detect_status = "已启用" if self._llm_auto_detect else "未启用"
         logger.info(
-            f"LinghuiStudio 已加载 v3.5.1 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
+            f"LinghuiStudio 已加载 v3.5.2 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
 
     def _generation_cache_retention_days(self) -> int:
         """Return a bounded retention period for output and input image cache files."""
@@ -3674,7 +3674,14 @@ class LinghuiStudioPlugin(Star):
 
         bot_id = self._get_bot_id(event)
         # 传递 bot_id 给 image manager 以过滤，并传入 context 支持 message_id
-        images = await self.img_mgr.extract_images_from_event(event, ignore_id=bot_id, context=self.context)
+        # #bnn/#画 accept every mentioned user's QQ avatar as an input image.
+        # The image manager preserves mention order and ignores duplicate/bot mentions.
+        images = await self.img_mgr.extract_images_from_event(
+            event,
+            ignore_id=bot_id,
+            context=self.context,
+            include_at_avatar=True,
+        )
         if images:
             await self._remember_session_image_context(
                 event.unified_msg_origin,
