@@ -5,19 +5,24 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import copy
 import io
+import json
 import mimetypes
 import re
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
+import aiohttp
 from astrbot import logger
 from quart import jsonify, request, send_file
 from PIL import Image as PILImage
 from PIL import ImageOps
 
-from .utils import norm_id
+from .error_classify import safe_error_summary
+from .utils import is_ambiguous_message_delivery_timeout, norm_id, normalize_api_root
 
 
 PLUGIN_NAME = "astrbot_plugin_linghui_studio"
@@ -35,6 +40,26 @@ class LinghuiDashboardApi:
     def __init__(self, plugin: Any):
         self.plugin = plugin
         self._lock = asyncio.Lock()
+        self._background_jobs: set[asyncio.Task] = set()
+
+    def _spawn_background_job(self, coroutine) -> asyncio.Task:
+        """Keep Dashboard-started generation work alive and log failures."""
+        task = asyncio.create_task(coroutine)
+        self._background_jobs.add(task)
+
+        def done(completed: asyncio.Task) -> None:
+            self._background_jobs.discard(completed)
+            if completed.cancelled():
+                return
+            try:
+                error = completed.exception()
+            except Exception:
+                error = None
+            if error is not None:
+                logger.error("Linghui Dashboard background job failed: %s", error)
+
+        task.add_done_callback(done)
+        return task
 
     def register(self) -> None:
         routes = (
@@ -54,6 +79,16 @@ class LinghuiDashboardApi:
             ("generation_source_preview", self.generation_source_preview, ["GET"], "Preview one Linghui Studio image-to-image source"),
             ("generation_source_download", self.generation_source_download, ["GET"], "Download one Linghui Studio image-to-image source"),
             ("generation_record", self.generation_record, ["POST"], "Manage Linghui Studio successful generation history"),
+            ("route_health", self.route_health, ["GET"], "Get Linghui Studio route health metrics"),
+            ("generation_tasks", self.generation_tasks, ["GET"], "Get Linghui Studio generation tasks"),
+            ("generation_task", self.generation_task, ["POST"], "Manage one Linghui Studio generation task"),
+            ("persona_state", self.persona_state, ["GET", "POST"], "Manage Linghui Studio daily persona state"),
+            ("studio", self.studio, ["GET", "POST"], "Manage Linghui Studio server-side image workbench"),
+            ("studio_asset", self.studio_asset, ["GET"], "Preview one Linghui Studio workbench asset"),
+            ("studio_generate", self.studio_generate, ["POST"], "Run a real Linghui Studio Dashboard drawing request"),
+            ("channel_models", self.channel_models, ["GET"], "Refresh model list for one Linghui Studio channel"),
+            ("config_export", self.config_export, ["GET"], "Export redacted Linghui Studio configuration"),
+            ("config_import", self.config_import, ["POST"], "Preview or import Linghui Studio configuration"),
         )
         for endpoint, handler, methods, description in routes:
             self.plugin.context.register_web_api(
@@ -75,6 +110,14 @@ class LinghuiDashboardApi:
     def _as_int(value: Any, minimum: int = 0, maximum: int = 10_000) -> int:
         try:
             parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = minimum
+        return min(max(parsed, minimum), maximum)
+
+    @staticmethod
+    def _as_float(value: Any, minimum: float = 0.0, maximum: float = 10_000.0) -> float:
+        try:
+            parsed = float(value)
         except (TypeError, ValueError):
             parsed = minimum
         return min(max(parsed, minimum), maximum)
@@ -276,12 +319,32 @@ class LinghuiDashboardApi:
         if not isinstance(persona_keywords, list):
             persona_keywords = []
         persona_paths = self.plugin.data_mgr.get_preset_ref_image_paths("_persona_")
-        persona_previews, reference_summary = await asyncio.gather(
+        persona_profile = getattr(self.plugin, "persona_profile", None)
+        persona_state_job = (
+            persona_profile.get_state()
+            if persona_profile is not None and callable(getattr(persona_profile, "get_state", None))
+            else asyncio.sleep(0, result={})
+        )
+        persona_previews, reference_summary, persona_state = await asyncio.gather(
             self._reference_previews(persona_paths),
             self._reference_summary(),
+            persona_state_job,
+        )
+        api_manager = getattr(self.plugin, "api_mgr", None)
+        route_health = (
+            api_manager.get_health_snapshot()
+            if api_manager is not None and callable(getattr(api_manager, "get_health_snapshot", None))
+            else {"channels": []}
+        )
+        studio_manager = getattr(self.plugin, "studio_mgr", None)
+        studio_summary = (
+            studio_manager.public_summary()
+            if studio_manager is not None and callable(getattr(studio_manager, "public_summary", None))
+            else {"slots": [], "order": []}
         )
         return jsonify({
             "success": True,
+            "config_version": 1,
             "dashboard_theme": self._dashboard_theme(self.plugin.conf.get("dashboard_theme", "dark")),
             "settings": {
                 "model": str(self.plugin.conf.get("model", "") or ""),
@@ -292,6 +355,24 @@ class LinghuiDashboardApi:
                 "generation_cache_retention_days": self._as_int(
                     self.plugin.conf.get("generation_cache_retention_days", 7), 1, 365
                 ),
+                "generation_cache_max_mb": self._as_int(
+                    self.plugin.conf.get("generation_cache_max_mb", 2048), 0, 102_400
+                ),
+                "generation_cache_trim_ratio": self._as_float(
+                    self.plugin.conf.get("generation_cache_trim_ratio", 0.15), 0.01, 0.90
+                ),
+                "result_image_download_timeout": self._as_int(
+                    self.plugin.conf.get("result_image_download_timeout", 45), 5, 300
+                ),
+                "result_image_download_retries": self._as_int(
+                    self.plugin.conf.get("result_image_download_retries", 2), 0, 10
+                ),
+                "download_retries": self._as_int(self.plugin.conf.get("download_retries", 3), 0, 10),
+                "preset_table_quality": str(self.plugin.conf.get("preset_table_quality", "高清") or "高清"),
+                "preset_table_columns": self._as_int(self.plugin.conf.get("preset_table_columns", 5), 2, 10),
+                "generating_msg_template": str(
+                    self.plugin.conf.get("generating_msg_template", "🎨 收到请求，正在生成 [{preset}]...") or ""
+                ),
                 "show_model_info": self._as_bool(self.plugin.conf.get("show_model_info", False)),
                 "enable_preset_ref_images": self._as_bool(self.plugin.conf.get("enable_preset_ref_images", True)),
                 "enable_persona_mode": self._as_bool(self.plugin.conf.get("enable_persona_mode", False)),
@@ -301,6 +382,20 @@ class LinghuiDashboardApi:
             "reference_image_drawing_channel": str(
                 self.plugin.conf.get("reference_image_drawing_channel", "") or ""
             ),
+            "route_policy": {
+                "failure_threshold": self._as_int(
+                    self.plugin.conf.get("channel_failure_threshold", 3), 1, 20
+                ),
+                "cooldown_seconds": self._as_int(
+                    self.plugin.conf.get("channel_cooldown_seconds", 90), 5, 3600
+                ),
+                "key_retry_count": self._as_int(
+                    self.plugin.conf.get("channel_key_retry_count", 1), 0, 20
+                ),
+                "fallback_on_safety_error": self._as_bool(
+                    self.plugin.conf.get("fallback_on_safety_error", False)
+                ),
+            },
             "commands": {
                 "namespace": str(self.plugin.conf.get("command_namespace", "") or ""),
                 "enable_direct_commands": self._as_bool(self.plugin.conf.get("enable_direct_commands", True)),
@@ -345,7 +440,27 @@ class LinghuiDashboardApi:
                 "default_prompt": str(self.plugin.conf.get("persona_default_prompt", "") or ""),
                 "scene_prompts": persona_scenes,
                 "reference_images": persona_previews,
+                "character_type": str(self.plugin.conf.get("persona_character_type", "auto") or "auto"),
+                "enable_daily_state": self._as_bool(
+                    self.plugin.conf.get("enable_persona_daily_state", True)
+                ),
+                "daily_outfits": list(self.plugin.conf.get("persona_daily_outfits", []) or []),
+                "daily_moods": list(self.plugin.conf.get("persona_daily_moods", []) or []),
+                "time_period_prompts": list(self.plugin.conf.get("persona_time_period_prompts", []) or []),
+                "state_timezone": str(
+                    self.plugin.conf.get("persona_state_timezone", "Asia/Shanghai") or "Asia/Shanghai"
+                ),
+                "daily_state": persona_state,
             },
+            "tasks": {
+                "dedup_seconds": self._as_int(self.plugin.conf.get("task_dedup_seconds", 180), 0, 86_400),
+                "history_limit": self._as_int(self.plugin.conf.get("task_history_limit", 500), 50, 5_000),
+                "request_retention_days": self._as_int(
+                    self.plugin.conf.get("task_request_retention_days", 7), 1, 90
+                ),
+            },
+            "route_health": route_health,
+            "studio": studio_summary,
             "presets": self._preset_rows(),
             "references": reference_summary,
         })
@@ -479,11 +594,27 @@ class LinghuiDashboardApi:
                     for key, minimum, maximum in (
                         ("timeout", 5, 900),
                         ("generation_cache_retention_days", 1, 365),
+                        ("generation_cache_max_mb", 0, 102_400),
+                        ("result_image_download_timeout", 5, 300),
+                        ("result_image_download_retries", 0, 10),
+                        ("download_retries", 0, 10),
+                        ("preset_table_columns", 2, 10),
                     ):
                         if key in settings:
                             self.plugin.conf[key] = self._as_int(settings[key], minimum, maximum)
-                            if key == "generation_cache_retention_days":
+                            if key in {"generation_cache_retention_days", "generation_cache_max_mb"}:
                                 changed_dynamic_keys.add(key)
+                    if "generation_cache_trim_ratio" in settings:
+                        self.plugin.conf["generation_cache_trim_ratio"] = self._as_float(
+                            settings["generation_cache_trim_ratio"], 0.01, 0.90
+                        )
+                        changed_dynamic_keys.add("generation_cache_trim_ratio")
+                    if "preset_table_quality" in settings:
+                        quality = str(settings["preset_table_quality"] or "高清")
+                        self.plugin.conf["preset_table_quality"] = quality if quality in {"标准", "高清", "超清"} else "高清"
+                    if "generating_msg_template" in settings:
+                        template = str(settings["generating_msg_template"] or "").strip()[:500]
+                        self.plugin.conf["generating_msg_template"] = template or "🎨 收到请求，正在生成 [{preset}]..."
                     for key in ("show_model_info", "enable_preset_ref_images", "enable_persona_mode"):
                         if key in settings:
                             self.plugin.conf[key] = self._as_bool(settings[key])
@@ -513,6 +644,23 @@ class LinghuiDashboardApi:
                         raise ValueError("带参考图优先渠道必须是已配置的渠道 ID。")
                     self.plugin.conf["reference_image_drawing_channel"] = reference_channel
                     changed_dynamic_keys.add("reference_image_drawing_channel")
+
+                route_policy = payload.get("route_policy", {})
+                if isinstance(route_policy, dict):
+                    route_fields = (
+                        ("failure_threshold", "channel_failure_threshold", 1, 20),
+                        ("cooldown_seconds", "channel_cooldown_seconds", 5, 3600),
+                        ("key_retry_count", "channel_key_retry_count", 0, 20),
+                    )
+                    for source, target, minimum, maximum in route_fields:
+                        if source in route_policy:
+                            self.plugin.conf[target] = self._as_int(route_policy[source], minimum, maximum)
+                            changed_dynamic_keys.add(target)
+                    if "fallback_on_safety_error" in route_policy:
+                        self.plugin.conf["fallback_on_safety_error"] = self._as_bool(
+                            route_policy["fallback_on_safety_error"]
+                        )
+                        changed_dynamic_keys.add("fallback_on_safety_error")
 
                 commands = payload.get("commands", {})
                 if isinstance(commands, dict):
@@ -593,6 +741,42 @@ class LinghuiDashboardApi:
                         self.plugin.conf["persona_default_prompt"] = str(persona["default_prompt"] or "").strip()[:12_000]
                     if "scene_prompts" in persona:
                         self.plugin.conf["persona_scene_prompts"] = self._normalize_persona_scenes(persona["scene_prompts"])
+                    if "character_type" in persona:
+                        character_type = str(persona["character_type"] or "auto").strip().lower()
+                        if character_type not in {"auto", "real", "anime"}:
+                            raise ValueError("人设形象类型必须是 auto、real 或 anime。")
+                        self.plugin.conf["persona_character_type"] = character_type
+                        changed_dynamic_keys.add("persona_character_type")
+                    if "enable_daily_state" in persona:
+                        self.plugin.conf["enable_persona_daily_state"] = self._as_bool(persona["enable_daily_state"])
+                        changed_dynamic_keys.add("enable_persona_daily_state")
+                    for source, target in (
+                        ("daily_outfits", "persona_daily_outfits"),
+                        ("daily_moods", "persona_daily_moods"),
+                        ("time_period_prompts", "persona_time_period_prompts"),
+                    ):
+                        if source in persona:
+                            raw_items = persona[source] if isinstance(persona[source], list) else []
+                            self.plugin.conf[target] = [
+                                str(item).strip()[:800] for item in raw_items if str(item).strip()
+                            ][:128]
+                            changed_dynamic_keys.add(target)
+                    if "state_timezone" in persona:
+                        self.plugin.conf["persona_state_timezone"] = str(
+                            persona["state_timezone"] or "Asia/Shanghai"
+                        ).strip()[:120]
+                        changed_dynamic_keys.add("persona_state_timezone")
+
+                tasks = payload.get("tasks", {})
+                if isinstance(tasks, dict):
+                    for source, target, minimum, maximum in (
+                        ("dedup_seconds", "task_dedup_seconds", 0, 86_400),
+                        ("history_limit", "task_history_limit", 50, 5_000),
+                        ("request_retention_days", "task_request_retention_days", 1, 90),
+                    ):
+                        if source in tasks:
+                            self.plugin.conf[target] = self._as_int(tasks[source], minimum, maximum)
+                            changed_dynamic_keys.add(target)
 
                 if "presets" in payload:
                     previous_names = {row["name"] for row in self._preset_rows()}
@@ -610,8 +794,15 @@ class LinghuiDashboardApi:
                 self.plugin.data_mgr.reload_prompts()
                 self.plugin._load_persona_scenes()
                 self.plugin._persona_mode = self._as_bool(self.plugin.conf.get("enable_persona_mode", False))
+                image_manager = getattr(self.plugin, "img_mgr", None)
+                if image_manager is not None:
+                    image_manager.max_retries = self._as_int(self.plugin.conf.get("download_retries", 3), 0, 10)
+                    image_manager.table_quality = str(self.plugin.conf.get("preset_table_quality", "高清") or "高清")
+                    image_manager.table_columns = self._as_int(self.plugin.conf.get("preset_table_columns", 5), 2, 10)
                 self.plugin._save_config(sorted(changed_dynamic_keys))
-                await self.plugin.api_mgr.refresh()
+                api_manager = getattr(self.plugin, "api_mgr", None)
+                if api_manager is not None and callable(getattr(api_manager, "refresh", None)):
+                    await api_manager.refresh()
             except ValueError as exc:
                 return jsonify({"success": False, "message": str(exc)}), 400
             except Exception as exc:
@@ -1144,3 +1335,853 @@ class LinghuiDashboardApi:
                 })
 
         return jsonify({"success": False, "message": "未知成功记录操作。"}), 400
+
+    def _public_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        """Return task fields that are useful to an authenticated administrator."""
+        attempts = task.get("attempt_chain", [])
+        if not isinstance(attempts, list):
+            attempts = []
+        request_meta = task.get("request", {})
+        if not isinstance(request_meta, dict):
+            request_meta = {}
+        return {
+            "id": str(task.get("id", "") or ""),
+            "status": str(task.get("status", "failed") or "failed"),
+            "task_type": str(task.get("task_type", "") or ""),
+            "session_id": str(task.get("session_id", "") or ""),
+            "user_id": norm_id(task.get("user_id")),
+            "group_id": norm_id(task.get("group_id")),
+            "user_name": str(task.get("user_name", "") or "")[:160],
+            "group_name": str(task.get("group_name", "") or "")[:160],
+            "prompt": str(task.get("prompt", "") or "")[:12_000],
+            "preset": str(task.get("preset", "") or "")[:160],
+            "requested_model": str(task.get("requested_model", "") or "")[:200],
+            "actual_model": str(task.get("actual_model", "") or "")[:200],
+            "channel_id": str(task.get("channel_id", "") or "")[:80],
+            "channel_name": str(task.get("channel_name", "") or "")[:160],
+            "created_at": str(task.get("created_at", "") or ""),
+            "updated_at": str(task.get("updated_at", "") or ""),
+            "started_at": str(task.get("started_at", "") or ""),
+            "finished_at": str(task.get("finished_at", "") or ""),
+            "duration": float(task.get("duration", 0.0) or 0.0),
+            "error": safe_error_summary(task.get("error", ""), 600),
+            "error_category": str(task.get("error_category", "") or "")[:80],
+            "attempt_chain": attempts[:64],
+            "result_record_id": str(task.get("result_record_id", "") or "")[:80],
+            "delivery_status": str(task.get("delivery_status", "") or "")[:40],
+            "input_count": self._as_int(task.get("input_count"), 0, 10_000),
+            "rerun_of": str(task.get("rerun_of", "") or "")[:80],
+            "progress": task.get("progress", {}) if isinstance(task.get("progress"), dict) else {},
+            "request": {
+                "use_text_to_image_api": bool(request_meta.get("use_text_to_image_api", False)),
+                "aspect_ratio": str(request_meta.get("aspect_ratio", "") or "")[:40],
+                "resolution": str(request_meta.get("resolution", "") or "")[:40],
+                "preferred_channel_id": str(request_meta.get("preferred_channel_id", "") or "")[:80],
+                "allow_fallback": bool(request_meta.get("allow_fallback", True)),
+            },
+        }
+
+    async def route_health(self):
+        return jsonify({
+            "success": True,
+            "health": self.plugin.api_mgr.get_health_snapshot(),
+            "last_route": self.plugin.api_mgr.get_last_metrics(),
+        })
+
+    async def generation_tasks(self):
+        limit = self._as_int(request.args.get("limit", 40), 1, 100)
+        offset = self._as_int(request.args.get("offset", 0), 0, 1_000_000)
+        status = str(request.args.get("status", "all") or "all").strip().lower()
+        tasks, total, summary = await self.plugin.task_mgr.list_tasks(
+            limit=limit,
+            offset=offset,
+            status=status,
+        )
+        return jsonify({
+            "success": True,
+            "tasks": [self._public_task(item) for item in tasks],
+            "pagination": {
+                "offset": offset,
+                "limit": limit,
+                "total": total,
+                "has_more": offset + len(tasks) < total,
+            },
+            "summary": summary,
+            "status": status,
+        })
+
+    async def _run_dashboard_generation(
+        self,
+        *,
+        task_id: str,
+        session_id: str,
+        user_id: str,
+        group_id: str,
+        user_name: str,
+        group_name: str,
+        images: List[bytes],
+        prompt: str,
+        model: str,
+        preset: str,
+        task_type: str,
+        use_text_to_image_api: bool,
+        aspect_ratio: str,
+        resolution: str,
+        negative_prompt: str = "",
+        preferred_channel_id: str = "",
+        allow_fallback: bool = True,
+    ) -> None:
+        try:
+            result = await self.plugin._call_generation_api_task(
+                task_id,
+                images,
+                prompt,
+                model,
+                use_text_to_image_api=use_text_to_image_api,
+                aspect_ratio=aspect_ratio or None,
+                resolution=resolution or None,
+                negative_prompt=negative_prompt or None,
+                preferred_channel_id=preferred_channel_id or None,
+                allow_fallback=allow_fallback,
+            )
+        except asyncio.CancelledError:
+            # cancel_task() already persisted the final state.
+            return
+        except Exception as exc:
+            await self.plugin.task_mgr.finish_failure(
+                task_id,
+                exc,
+                metrics=self.plugin._snapshot_generation_route_metrics(),
+            )
+            return
+
+        metrics = self.plugin._snapshot_generation_route_metrics()
+        if not isinstance(result, bytes):
+            await self.plugin.task_mgr.finish_failure(task_id, result, metrics=metrics)
+            return
+
+        try:
+            result = await self.plugin._prepare_send_image_bytes(result)
+            record = await self.plugin._record_generation_result(
+                session_id,
+                result,
+                user_id=user_id,
+                group_id=group_id,
+                user_name=user_name,
+                group_name=group_name,
+                prompt=prompt,
+                model=model,
+                preset_name=preset,
+                task_type=task_type,
+                reference_images=images,
+                route_metrics=metrics,
+                task_id=task_id,
+                delivery_status="dashboard_only",
+            )
+            record_id = str(record.get("id", "") or "") if isinstance(record, dict) else ""
+            await self.plugin.task_mgr.mark_generated(
+                task_id,
+                metrics=metrics,
+                result_record_id=record_id,
+            )
+            if record_id:
+                await self.plugin.data_mgr.update_generation_record_delivery(
+                    record_id,
+                    "dashboard_only",
+                )
+            await self.plugin.task_mgr.finish_success(
+                task_id,
+                metrics=metrics,
+                result_record_id=record_id,
+                delivery_status="dashboard_only",
+            )
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            await self.plugin.task_mgr.finish_failure(
+                task_id,
+                exc,
+                metrics=metrics,
+            )
+
+    def _channel_ids(self) -> set[str]:
+        return {
+            str(item.get("id", "") or "").strip()
+            for item in self.plugin.conf.get("drawing_channels", []) or []
+            if isinstance(item, dict) and str(item.get("id", "") or "").strip()
+        }
+
+    async def generation_task(self):
+        payload = await self._json_body()
+        action = str(payload.get("action", "") or "").strip().lower()
+        task_id = str(payload.get("id", "") or "").strip()
+
+        if action == "cleanup":
+            result = await self.plugin.task_mgr.cleanup()
+            return jsonify({"success": True, "message": "任务缓存已整理。", "result": result})
+
+        if not task_id or len(task_id) > 80:
+            return jsonify({"success": False, "message": "请提供有效的任务 ID。"}), 400
+
+        if action == "cancel":
+            success, message = await self.plugin.task_mgr.cancel_task(task_id)
+            return jsonify({"success": success, "message": message}), (200 if success else 409)
+
+        task = await self.plugin.task_mgr.get_task(task_id)
+        if task is None:
+            return jsonify({"success": False, "message": "未找到任务。"}), 404
+
+        if action == "rerun":
+            images = await self.plugin.task_mgr.get_request_images(task_id)
+            if int(task.get("input_count", 0) or 0) > 0 and not images:
+                return jsonify({
+                    "success": False,
+                    "message": "该任务的输入原图缓存已过期，无法强制重跑。",
+                }), 409
+            preferred_channel_id = str(payload.get("channel_id", "") or "").strip()
+            if preferred_channel_id and preferred_channel_id not in self._channel_ids():
+                return jsonify({"success": False, "message": "指定绘图渠道不存在。"}), 400
+            model = str(payload.get("model", "") or task.get("requested_model", "") or "").strip()[:200]
+            request_meta = task.get("request", {}) if isinstance(task.get("request"), dict) else {}
+            allow_fallback = self._as_bool(payload.get("allow_fallback", True))
+            new_task, _ = await self.plugin.task_mgr.begin_task(
+                request_id=f"dashboard-rerun:{uuid.uuid4().hex}",
+                session_id=str(task.get("session_id", "") or "dashboard:rerun"),
+                user_id=norm_id(task.get("user_id")),
+                group_id=norm_id(task.get("group_id")),
+                user_name=str(task.get("user_name", "") or ""),
+                group_name=str(task.get("group_name", "") or ""),
+                task_type=str(task.get("task_type", "") or "Dashboard 强制重跑"),
+                prompt=str(task.get("prompt", "") or ""),
+                preset=str(task.get("preset", "") or ""),
+                requested_model=model,
+                images=images,
+                force=True,
+                nonce=uuid.uuid4().hex,
+                rerun_of=task_id,
+                request={
+                    "use_text_to_image_api": bool(request_meta.get("use_text_to_image_api", not images)),
+                    "aspect_ratio": str(request_meta.get("aspect_ratio", "") or ""),
+                    "resolution": str(request_meta.get("resolution", "") or ""),
+                    "preferred_channel_id": preferred_channel_id,
+                    "allow_fallback": allow_fallback,
+                },
+            )
+            self._spawn_background_job(self._run_dashboard_generation(
+                task_id=str(new_task.get("id", "")),
+                session_id=str(new_task.get("session_id", "") or "dashboard:rerun"),
+                user_id=norm_id(new_task.get("user_id")),
+                group_id=norm_id(new_task.get("group_id")),
+                user_name=str(new_task.get("user_name", "") or ""),
+                group_name=str(new_task.get("group_name", "") or ""),
+                images=images,
+                prompt=str(new_task.get("prompt", "") or ""),
+                model=model,
+                preset=str(new_task.get("preset", "") or ""),
+                task_type=str(new_task.get("task_type", "") or "Dashboard 强制重跑"),
+                use_text_to_image_api=bool(request_meta.get("use_text_to_image_api", not images)),
+                aspect_ratio=str(request_meta.get("aspect_ratio", "") or ""),
+                resolution=str(request_meta.get("resolution", "") or ""),
+                preferred_channel_id=preferred_channel_id,
+                allow_fallback=allow_fallback,
+            ))
+            return jsonify({
+                "success": True,
+                "message": "已创建强制重跑任务，可在任务中心查看进度。",
+                "task": self._public_task(new_task),
+            }), 202
+
+        if action == "resend":
+            # Keep AstrBot message classes lazy so the Dashboard storage/API
+            # module remains independently testable without booting the core.
+            from astrbot.api.event import MessageChain
+            from astrbot.core.message.components import Image as MessageImage, Plain
+
+            record_id = str(task.get("result_record_id", "") or "").strip()
+            session_id = str(task.get("session_id", "") or "").strip()
+            if not record_id or not session_id or session_id.startswith("dashboard:"):
+                return jsonify({"success": False, "message": "该任务没有可重发的会话或成功图片。"}), 409
+            record = await self.plugin.data_mgr.get_generation_record(record_id)
+            image_path = self.plugin.data_mgr.get_generation_image_path(record or {}) if record else None
+            if image_path is None:
+                return jsonify({"success": False, "message": "成功图片缓存已不可用。"}), 404
+            image_bytes = await asyncio.to_thread(image_path.read_bytes)
+            delivery_status = "sent"
+            try:
+                await self.plugin.context.send_message(
+                    session_id,
+                    MessageChain([
+                        MessageImage.fromBytes(image_bytes),
+                        Plain("\nDashboard 已重发这张成功图片。"),
+                    ]),
+                )
+            except Exception as exc:
+                if not is_ambiguous_message_delivery_timeout(exc):
+                    return jsonify({
+                        "success": False,
+                        "message": f"重发失败：{safe_error_summary(exc, 240)}",
+                    }), 502
+                delivery_status = "possibly_sent"
+            await self.plugin.data_mgr.update_generation_record_delivery(record_id, delivery_status)
+            updated = await self.plugin.task_mgr.update_task(
+                task_id,
+                status="possibly_sent" if delivery_status == "possibly_sent" else "succeeded",
+                delivery_status=delivery_status,
+                error="",
+                error_category="",
+            )
+            return jsonify({
+                "success": True,
+                "message": "平台回执较慢，图片可能已经送达；不会自动重复发送。"
+                if delivery_status == "possibly_sent" else "图片已重发。",
+                "task": self._public_task(updated or task),
+            })
+
+        return jsonify({"success": False, "message": "未知任务操作。"}), 400
+
+    async def persona_state(self):
+        if request.method == "GET":
+            return jsonify({"success": True, "state": await self.plugin.persona_profile.get_state()})
+
+        payload = await self._json_body()
+        action = str(payload.get("action", "update") or "update").strip().lower()
+        if action == "refresh":
+            state = await self.plugin.persona_profile.refresh_state()
+        elif action == "update":
+            outfit = str(payload.get("outfit", "") or "").strip()[:500]
+            mood = str(payload.get("mood", "") or "").strip()[:500]
+            if not outfit and not mood:
+                return jsonify({"success": False, "message": "请填写今日穿搭或心情。"}), 400
+            state = await self.plugin.persona_profile.update_state(outfit=outfit, mood=mood)
+        else:
+            return jsonify({"success": False, "message": "未知人设状态操作。"}), 400
+        return jsonify({"success": True, "message": "今日人设状态已更新。", "state": state})
+
+    async def studio(self):
+        manager = self.plugin.studio_mgr
+        if request.method == "GET":
+            return jsonify({"success": True, "studio": manager.public_summary()})
+
+        payload = await self._json_body()
+        action = str(payload.get("action", "upload") or "upload").strip().lower()
+        slot = str(payload.get("slot", "") or "").strip().lower()
+        try:
+            slot = manager.validate_slot(slot)
+            if action == "upload":
+                data = self._decode_data_url(payload.get("data_url"))
+                item = await manager.add_image(slot, data, label=str(payload.get("label", "") or ""))
+                return jsonify({"success": True, "message": "工作台参考图已上传。", "item": item})
+            if action == "import_record":
+                record_id = str(payload.get("record_id", "") or "").strip()
+                record = await self.plugin.data_mgr.get_generation_record(record_id)
+                path = self.plugin.data_mgr.get_generation_image_path(record or {}) if record else None
+                if path is None:
+                    return jsonify({"success": False, "message": "成功记录原图缓存不可用。"}), 404
+                data = await asyncio.to_thread(path.read_bytes)
+                item = await manager.add_image(
+                    slot,
+                    data,
+                    label=str(payload.get("label", "") or record.get("preset", "") or "成功记录"),
+                    source_record_id=record_id,
+                )
+                return jsonify({"success": True, "message": "成功图片已加入工作台。", "item": item})
+            if action == "delete":
+                deleted = await manager.remove_image(slot, payload.get("id", ""))
+                return jsonify({"success": deleted, "message": "工作台图片已删除。" if deleted else "未找到工作台图片。"}), (200 if deleted else 404)
+            if action == "clear":
+                count = await manager.clear_slot(slot)
+                return jsonify({"success": True, "message": f"已清空 {count} 张工作台图片。"})
+            if action == "reorder":
+                ordered_ids = payload.get("ordered_ids", [])
+                if not isinstance(ordered_ids, list):
+                    raise ValueError("排序参数必须是图片 ID 列表。")
+                items = await manager.reorder(slot, ordered_ids)
+                return jsonify({"success": True, "message": "工作台顺序已保存。", "items": items})
+        except ValueError as exc:
+            return jsonify({"success": False, "message": str(exc)}), 400
+        except Exception as exc:
+            logger.exception("Linghui Dashboard studio operation failed")
+            return jsonify({"success": False, "message": f"工作台操作失败：{safe_error_summary(exc, 240)}"}), 500
+        return jsonify({"success": False, "message": "未知工作台操作。"}), 400
+
+    async def studio_asset(self):
+        slot = str(request.args.get("slot", "") or "").strip()
+        asset_id = str(request.args.get("id", "") or "").strip()
+        path = self.plugin.studio_mgr.get_asset_path(slot, asset_id)
+        if path is None:
+            return jsonify({"success": False, "message": "工作台图片不存在。"}), 404
+        download = self._as_bool(request.args.get("download", False))
+        if not download:
+            try:
+                preview = await asyncio.to_thread(
+                    self._image_preview_data_url,
+                    path,
+                    max_bytes=180 * 1024,
+                    max_edge=420,
+                )
+            except Exception as exc:
+                return jsonify({
+                    "success": False,
+                    "message": f"工作台图片预览失败：{safe_error_summary(exc, 180)}",
+                }), 500
+            return jsonify({"success": True, "slot": slot, "id": asset_id, "preview": preview})
+        return await send_file(
+            path,
+            mimetype=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+            as_attachment=download,
+            attachment_filename=f"linghui_studio_{asset_id}{path.suffix}",
+            cache_timeout=0,
+        )
+
+    async def studio_generate(self):
+        payload = await self._json_body()
+        prompt = str(payload.get("prompt", "") or "").strip()[:12_000]
+        if not prompt:
+            return jsonify({"success": False, "message": "请填写试画提示词。"}), 400
+
+        selections = payload.get("selections", [])
+        if not isinstance(selections, list):
+            selections = []
+        images = await self.plugin.studio_mgr.load_selected_images(selections)
+        uploads = payload.get("uploads", [])
+        if isinstance(uploads, list):
+            try:
+                images.extend(self._decode_data_url(item) for item in uploads[:16])
+            except ValueError as exc:
+                return jsonify({"success": False, "message": str(exc)}), 400
+        images = [item for item in images if isinstance(item, bytes) and item][:32]
+
+        mode = str(payload.get("mode", "auto") or "auto").strip().lower()
+        if mode not in {"auto", "text_to_image", "image_to_image"}:
+            return jsonify({"success": False, "message": "试画模式无效。"}), 400
+        if mode == "image_to_image" and not images:
+            return jsonify({"success": False, "message": "图生图试画至少需要一张工作台参考图。"}), 400
+        use_text_to_image_api = mode == "text_to_image" or (mode == "auto" and not images)
+        if use_text_to_image_api:
+            images = []
+
+        preferred_channel_id = str(payload.get("channel_id", "") or "").strip()
+        if preferred_channel_id and preferred_channel_id not in self._channel_ids():
+            return jsonify({"success": False, "message": "指定绘图渠道不存在。"}), 400
+        model = str(payload.get("model", "") or "").strip()[:200]
+        if not model:
+            model = str(
+                self.plugin.conf.get("text_to_image_model" if use_text_to_image_api else "model", "") or ""
+            ).strip()
+        aspect_ratio = str(payload.get("aspect_ratio", self.plugin.conf.get("image_aspect_ratio", "")) or "").strip()[:40]
+        resolution = str(payload.get("resolution", self.plugin.conf.get("image_resolution", "")) or "").strip()[:40]
+        allow_fallback = self._as_bool(payload.get("allow_fallback", True))
+        negative_prompt = str(payload.get("negative_prompt", "") or "").strip()[:12_000]
+        task_type = "工作台文生图" if use_text_to_image_api else "工作台图生图"
+        task, _ = await self.plugin.task_mgr.begin_task(
+            request_id=f"dashboard-studio:{uuid.uuid4().hex}",
+            session_id="dashboard:studio",
+            user_id="dashboard",
+            user_name="Dashboard",
+            task_type=task_type,
+            prompt=prompt,
+            preset="工作台",
+            requested_model=model,
+            images=images,
+            force=True,
+            nonce=uuid.uuid4().hex,
+            request={
+                "use_text_to_image_api": use_text_to_image_api,
+                "aspect_ratio": aspect_ratio,
+                "resolution": resolution,
+                "preferred_channel_id": preferred_channel_id,
+                "allow_fallback": allow_fallback,
+            },
+        )
+        self._spawn_background_job(self._run_dashboard_generation(
+            task_id=str(task.get("id", "")),
+            session_id="dashboard:studio",
+            user_id="dashboard",
+            group_id="",
+            user_name="Dashboard",
+            group_name="",
+            images=images,
+            prompt=prompt,
+            model=model,
+            preset="工作台",
+            task_type=task_type,
+            use_text_to_image_api=use_text_to_image_api,
+            aspect_ratio=aspect_ratio,
+            resolution=resolution,
+            negative_prompt=negative_prompt,
+            preferred_channel_id=preferred_channel_id,
+            allow_fallback=allow_fallback,
+        ))
+        return jsonify({
+            "success": True,
+            "message": "真实试画任务已创建，可在任务中心查看进度和结果。",
+            "task": self._public_task(task),
+        }), 202
+
+    def _resolve_channel_config(self, channel_id: str) -> Dict[str, Any] | None:
+        channel_id = str(channel_id or "").strip()
+        channels = self.plugin.conf.get("drawing_channels", []) or []
+        if channel_id:
+            return next(
+                (copy.deepcopy(item) for item in channels if isinstance(item, dict) and str(item.get("id", "")) == channel_id),
+                None,
+            )
+        if channels:
+            first = next((copy.deepcopy(item) for item in channels if isinstance(item, dict)), None)
+            if first is not None:
+                return first
+        return {
+            "id": "legacy",
+            "name": "兼容单接口",
+            "interface_mode": self.plugin.conf.get("interface_mode", "openai_chat"),
+            "base_url": self.plugin.conf.get("base_url", ""),
+            "api_keys": self.plugin.conf.get("api_keys", ""),
+            "model": self.plugin.conf.get("model", ""),
+        }
+
+    async def channel_models(self):
+        channel_id = str(request.args.get("channel_id", "") or "").strip()
+        channel = self._resolve_channel_config(channel_id)
+        if channel is None:
+            return jsonify({"success": False, "message": "未找到绘图渠道。"}), 404
+
+        interface_mode = str(channel.get("interface_mode", "openai_chat") or "openai_chat").strip()
+        base_url = str(channel.get("base_url", "") or self.plugin.conf.get("base_url", "") or "").strip()
+        root = normalize_api_root(base_url)
+        if not root:
+            return jsonify({"success": False, "message": "该渠道未配置接口地址。"}), 400
+        normalize_keys = getattr(self.plugin.api_mgr, "_normalize_keys", None)
+        keys = normalize_keys(channel.get("api_keys", "")) if callable(normalize_keys) else []
+        if not keys and callable(normalize_keys):
+            keys = normalize_keys(self.plugin.conf.get("api_keys", ""))
+        key = keys[0] if keys else ""
+        if not key:
+            return jsonify({"success": False, "message": "该渠道未配置可用密钥。"}), 400
+
+        if interface_mode == "gemini_official":
+            candidates = [f"{root}/v1beta/models", f"{root}/v1/models"]
+        else:
+            candidates = [f"{root}/v1/models", f"{root}/models"]
+        timeout = aiohttp.ClientTimeout(total=min(max(int(channel.get("timeout", 30) or 30), 10), 60))
+        headers = {"Accept": "application/json"}
+        params = None
+        if interface_mode == "gemini_official":
+            params = {"key": key}
+        else:
+            headers["Authorization"] = f"Bearer {key}"
+        proxy = str(getattr(self.plugin.img_mgr, "proxy", "") or "").strip() or None
+
+        last_error = ""
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            for url in candidates:
+                try:
+                    async with session.get(url, headers=headers, params=params, proxy=proxy) as response:
+                        text_body = await response.text()
+                        if response.status >= 400:
+                            last_error = f"HTTP {response.status}: {safe_error_summary(text_body, 200)}"
+                            continue
+                        try:
+                            data = json.loads(text_body)
+                        except json.JSONDecodeError:
+                            last_error = "模型列表接口没有返回 JSON。"
+                            continue
+                        models: List[Dict[str, Any]] = []
+                        if isinstance(data, dict) and isinstance(data.get("data"), list):
+                            for item in data["data"]:
+                                if isinstance(item, dict) and item.get("id"):
+                                    models.append({
+                                        "id": str(item.get("id", "")),
+                                        "name": str(item.get("name", "") or item.get("id", "")),
+                                    })
+                        elif isinstance(data, dict) and isinstance(data.get("models"), list):
+                            for item in data["models"]:
+                                if not isinstance(item, dict):
+                                    continue
+                                model_id = str(item.get("name", "") or item.get("id", "")).removeprefix("models/")
+                                if model_id:
+                                    models.append({
+                                        "id": model_id,
+                                        "name": str(item.get("displayName", "") or model_id),
+                                        "methods": item.get("supportedGenerationMethods", []),
+                                    })
+                        unique: Dict[str, Dict[str, Any]] = {}
+                        for item in models:
+                            unique.setdefault(item["id"], item)
+                        ordered = [unique[key] for key in sorted(unique, key=str.casefold)]
+                        return jsonify({
+                            "success": True,
+                            "channel_id": str(channel.get("id", "") or "legacy"),
+                            "models": ordered,
+                            "count": len(ordered),
+                            "source_url": url,
+                        })
+                except Exception as exc:
+                    last_error = safe_error_summary(exc, 220)
+        return jsonify({
+            "success": False,
+            "message": f"刷新模型列表失败：{last_error or '接口不支持模型列表查询。'}",
+        }), 502
+
+    @staticmethod
+    def _is_secret_config_key(key: str) -> bool:
+        normalized = str(key or "").strip().lower()
+        return normalized in {
+            "api_key", "api_keys", "generic_api_keys", "gemini_api_keys",
+            "text_to_image_api_keys", "prompt_processor_api_key",
+        } or normalized.endswith("_api_key") or normalized.endswith("_api_keys")
+
+    @staticmethod
+    def _secret_placeholder(value: Any) -> str:
+        return "__KEEP_EXISTING_SECRET__" if str(value or "").strip() else ""
+
+    def _schema(self) -> Dict[str, Dict[str, Any]]:
+        path = Path(__file__).with_name("_conf_schema.json")
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            return raw if isinstance(raw, dict) else {}
+        except Exception as exc:
+            logger.warning("Linghui Dashboard could not read config schema: %s", exc)
+            return {}
+
+    def _export_config_document(self) -> Dict[str, Any]:
+        schema = self._schema()
+        exported: Dict[str, Any] = {}
+        redacted_fields: List[str] = []
+        for key in schema:
+            value = copy.deepcopy(self.plugin.conf.get(key, schema[key].get("default")))
+            if key == "drawing_channels" and isinstance(value, list):
+                for index, channel in enumerate(value):
+                    if not isinstance(channel, dict):
+                        continue
+                    if str(channel.get("api_keys", "") or "").strip():
+                        channel["api_keys"] = self._secret_placeholder(channel.get("api_keys"))
+                        redacted_fields.append(f"drawing_channels[{index}].api_keys")
+            elif self._is_secret_config_key(key):
+                if str(value or "").strip():
+                    value = self._secret_placeholder(value)
+                    redacted_fields.append(key)
+            exported[key] = value
+        return {
+            "format": "linghui-studio-config",
+            "format_version": 1,
+            "plugin": PLUGIN_NAME,
+            "plugin_version": str(getattr(self.plugin, "version", "3.6.0") or "3.6.0"),
+            "exported_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "secrets_redacted": True,
+            "redacted_fields": redacted_fields,
+            "config": exported,
+        }
+
+    async def config_export(self):
+        document = self._export_config_document()
+        if self._as_bool(request.args.get("download", False)):
+            payload = json.dumps(document, ensure_ascii=False, indent=2).encode("utf-8")
+            return await send_file(
+                io.BytesIO(payload),
+                mimetype="application/json; charset=utf-8",
+                as_attachment=True,
+                attachment_filename=f"linghui_studio_config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                cache_timeout=0,
+            )
+        return jsonify({"success": True, "document": document})
+
+    @staticmethod
+    def _preview_config_value(key: str, value: Any) -> Any:
+        if LinghuiDashboardApi._is_secret_config_key(key):
+            return "已配置" if str(value or "").strip() else "未配置"
+        if key == "drawing_channels" and isinstance(value, list):
+            return [
+                {
+                    "id": str(item.get("id", "") or ""),
+                    "name": str(item.get("name", "") or ""),
+                    "enabled": bool(item.get("enabled", True)),
+                    "interface_mode": str(item.get("interface_mode", "") or ""),
+                    "base_url": str(item.get("base_url", "") or ""),
+                    "model": str(item.get("model", "") or ""),
+                    "has_api_keys": bool(str(item.get("api_keys", "") or "").strip()),
+                }
+                for item in value if isinstance(item, dict)
+            ]
+        return value
+
+    def _normalize_import_config(self, raw_config: Dict[str, Any]) -> tuple[Dict[str, Any], List[str], List[Dict[str, Any]]]:
+        schema = self._schema()
+        normalized: Dict[str, Any] = {}
+        ignored = [str(key) for key in raw_config if key not in schema]
+        existing_channels = self._existing_channels()
+
+        for key, raw_value in raw_config.items():
+            definition = schema.get(key)
+            if not isinstance(definition, dict):
+                continue
+            if self._is_secret_config_key(key) and str(raw_value or "").strip() == "__KEEP_EXISTING_SECRET__":
+                continue
+            field_type = str(definition.get("type", "string") or "string")
+            if key == "drawing_channels":
+                incoming = copy.deepcopy(raw_value) if isinstance(raw_value, list) else []
+                for channel in incoming:
+                    if not isinstance(channel, dict):
+                        continue
+                    channel_id = str(channel.get("id", "") or "").strip()
+                    imported_key = str(channel.get("api_keys", "") or "").strip()
+                    if imported_key == "__KEEP_EXISTING_SECRET__":
+                        channel["api_keys"] = ""
+                        channel["original_id"] = channel_id
+                    elif not imported_key and channel_id in existing_channels:
+                        channel["original_id"] = channel_id
+                normalized[key] = self._normalize_channels(incoming)
+                continue
+            if field_type == "bool":
+                value = self._as_bool(raw_value)
+            elif field_type == "int":
+                value = self._as_int(
+                    raw_value,
+                    int(definition.get("min", -2_147_483_648)),
+                    int(definition.get("max", 2_147_483_647)),
+                )
+            elif field_type == "float":
+                value = self._as_float(
+                    raw_value,
+                    float(definition.get("min", -1_000_000.0)),
+                    float(definition.get("max", 1_000_000.0)),
+                )
+            elif field_type == "list":
+                if not isinstance(raw_value, list):
+                    raise ValueError(f"配置项 {key} 必须是列表。")
+                value = copy.deepcopy(raw_value[:2_000])
+            else:
+                value = str(raw_value or "")[:50_000]
+            options = definition.get("options")
+            if isinstance(options, list) and options and value not in options:
+                raise ValueError(f"配置项 {key} 的值不在允许范围内。")
+            normalized[key] = value
+
+        preflight: List[Dict[str, Any]] = []
+        channels = normalized.get("drawing_channels")
+        if not isinstance(channels, list):
+            channels = copy.deepcopy(self.plugin.conf.get("drawing_channels", []) or [])
+        for channel in channels:
+            if not isinstance(channel, dict):
+                continue
+            channel_id = str(channel.get("id", "") or "")
+            issues: List[str] = []
+            if not str(channel.get("base_url", "") or "").strip():
+                issues.append("未配置接口地址")
+            if not str(channel.get("model", "") or "").strip() and not str(channel.get("text_to_image_model", "") or "").strip():
+                issues.append("未配置模型")
+            effective_keys = str(channel.get("api_keys", "") or "").strip()
+            if not effective_keys and channel_id in existing_channels:
+                effective_keys = str(existing_channels[channel_id].get("api_keys", "") or "").strip()
+            if not effective_keys:
+                issues.append("未配置密钥")
+            preflight.append({
+                "id": channel_id,
+                "name": str(channel.get("name", "") or channel_id),
+                "ready": not issues,
+                "issues": issues,
+            })
+        return normalized, ignored, preflight
+
+    async def config_import(self):
+        payload = await self._json_body()
+        document = payload.get("document", payload.get("config", {}))
+        if isinstance(document, str):
+            try:
+                document = json.loads(document)
+            except json.JSONDecodeError as exc:
+                return jsonify({"success": False, "message": f"配置 JSON 无法解析：{exc}"}), 400
+        if isinstance(document, dict) and isinstance(document.get("config"), dict):
+            raw_config = document["config"]
+        elif isinstance(document, dict):
+            raw_config = document
+        else:
+            return jsonify({"success": False, "message": "导入内容必须是灵绘工坊配置 JSON。"}), 400
+
+        try:
+            normalized, ignored, preflight = self._normalize_import_config(raw_config)
+        except ValueError as exc:
+            return jsonify({"success": False, "message": str(exc)}), 400
+        changed = [
+            key for key, value in normalized.items()
+            if self.plugin.conf.get(key) != value
+        ]
+        diff = [
+            {
+                "key": key,
+                "before": self._preview_config_value(key, self.plugin.conf.get(key)),
+                "after": self._preview_config_value(key, normalized[key]),
+            }
+            for key in changed[:300]
+        ]
+        action = str(payload.get("action", "preview") or "preview").strip().lower()
+        if action == "preview":
+            return jsonify({
+                "success": True,
+                "message": f"导入预览完成，共 {len(changed)} 项变化。",
+                "changed_keys": changed,
+                "ignored_keys": ignored,
+                "diff": diff,
+                "channel_preflight": preflight,
+            })
+        if action != "apply":
+            return jsonify({"success": False, "message": "未知配置导入操作。"}), 400
+
+        snapshot = {key: copy.deepcopy(self.plugin.conf.get(key)) for key in normalized}
+        try:
+            async with self._lock:
+                for key, value in normalized.items():
+                    self.plugin.conf[key] = copy.deepcopy(value)
+                self.plugin.data_mgr.reload_prompts()
+                self.plugin._load_persona_scenes()
+                self.plugin._persona_mode = self._as_bool(self.plugin.conf.get("enable_persona_mode", False))
+                self.plugin.img_mgr.max_retries = self._as_int(self.plugin.conf.get("download_retries", 3), 0, 10)
+                self.plugin.img_mgr.table_quality = str(self.plugin.conf.get("preset_table_quality", "高清") or "高清")
+                self.plugin.img_mgr.table_columns = self._as_int(self.plugin.conf.get("preset_table_columns", 5), 2, 10)
+                self.plugin._save_config(changed)
+                await self.plugin.api_mgr.refresh()
+        except Exception as exc:
+            for key, value in snapshot.items():
+                self.plugin.conf[key] = value
+            try:
+                self.plugin.data_mgr.reload_prompts()
+                self.plugin._load_persona_scenes()
+                self.plugin._persona_mode = self._as_bool(
+                    self.plugin.conf.get("enable_persona_mode", False)
+                )
+                self.plugin.img_mgr.max_retries = self._as_int(
+                    self.plugin.conf.get("download_retries", 3), 0, 10
+                )
+                self.plugin.img_mgr.table_quality = str(
+                    self.plugin.conf.get("preset_table_quality", "高清") or "高清"
+                )
+                self.plugin.img_mgr.table_columns = self._as_int(
+                    self.plugin.conf.get("preset_table_columns", 5), 2, 10
+                )
+                # The import may have reached the native config write before a
+                # later refresh failed. Persist the restored snapshot as well,
+                # otherwise a plugin restart could resurrect the failed import.
+                self.plugin._save_config(changed)
+                await self.plugin.api_mgr.refresh()
+            except Exception:
+                logger.exception("Linghui Dashboard could not persist every rollback side effect")
+            logger.exception("Linghui Dashboard config import rolled back")
+            return jsonify({
+                "success": False,
+                "message": f"导入失败，已回滚：{safe_error_summary(exc, 240)}",
+            }), 500
+        return jsonify({
+            "success": True,
+            "message": f"配置已导入并保存，共更新 {len(changed)} 项。",
+            "changed_keys": changed,
+            "ignored_keys": ignored,
+            "channel_preflight": preflight,
+        })
+
+    async def close(self) -> None:
+        jobs = list(self._background_jobs)
+        self._background_jobs.clear()
+        for job in jobs:
+            if not job.done():
+                job.cancel()
+        if jobs:
+            await asyncio.gather(*jobs, return_exceptions=True)

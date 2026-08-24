@@ -30,6 +30,13 @@ const state = {
   generationSourcePreviewCache: new Map(),
   overviewRecent: [],
   overviewRecentLoadedAt: 0,
+  tasks: { tasks: [], summary: {}, pagination: {} },
+  taskStatus: "all",
+  routeHealth: { channels: [] },
+  studio: { slots: [], order: [] },
+  studioSelections: new Set(),
+  studioPreviewCache: new Map(),
+  personaState: {},
 };
 
 const THEME_STORAGE_KEY = "linghui-studio-theme";
@@ -51,6 +58,7 @@ const GENERATION_SOURCE_PREVIEW_CACHE_LIMIT = 100;
 const OVERVIEW_RECENT_CACHE_TTL_MS = 30_000;
 
 let generationPreviewObserver = null;
+let studioPreviewObserver = null;
 let generationPreviewRenderToken = 0;
 let generationPreviewQueue = [];
 let generationPreviewActive = 0;
@@ -60,7 +68,9 @@ const titles = {
   history: ["文生图记录", "查看纯文生图的结果图、请求提示词与缓存保护状态。"],
   "image-to-image": ["图生图工作台", "查看每次图生图使用的实际输入原图、结果图、提示词和下载入口。"],
   favorites: ["收藏", "快速查看已收藏且不会自动清理的成功图片。"],
+  tasks: ["任务中心", "查看进行中、失败、已取消和发送回执异常的持久化任务。"],
   channels: ["绘图渠道", "配置主渠道、模型和失败后的回退顺序。"],
+  studio: ["图像工作台", "按身份、服装、姿势、场景等槽位组合参考图并真实试画。"],
   access: ["权限与额度", "把访问权限与无限次数名单分开管理。"],
   prompts: ["提示词与预设", "维护快捷预设，并选择可选的翻译和优化模型。"],
   persona: ["人设与参考图", "维护人设图片和每个预设的参考图集合。"],
@@ -253,11 +263,12 @@ function channelTemplate(channel = {}, index = 0) {
     api_keys_masked: channel.api_keys_masked || "",
   };
   const masked = item.api_keys_masked ? `已配置：${item.api_keys_masked}` : "每行一个 API Key";
+  const modelListId = `channel-model-list-${index}`;
   return `
     <article class="channel-row" data-index="${index}" data-original-id="${escapeHtml(channel.id || "")}">
       <div class="row-top">
         <div class="row-title"><span class="status-dot ${item.enabled ? "ok" : "off"}"></span><span>渠道 ${index + 1}</span></div>
-        <button class="remove-button" type="button" data-remove-channel="${index}" title="删除渠道" aria-label="删除渠道">×</button>
+        <div class="row-actions"><button class="model-refresh-button" type="button" data-refresh-channel-models="${index}">刷新模型</button><button class="remove-button" type="button" data-remove-channel="${index}" title="删除渠道" aria-label="删除渠道">×</button></div>
       </div>
       <div class="form-grid">
         <label class="field"><span>渠道 ID</span><input data-channel="id" value="${escapeHtml(item.id)}" /><small class="field-hint">唯一标识，只能使用字母、数字、下划线和连字符；可用于管理员切换主渠道。</small></label>
@@ -272,13 +283,14 @@ function channelTemplate(channel = {}, index = 0) {
         <label class="field full"><span>接口地址</span><input data-channel="base_url" value="${escapeHtml(item.base_url)}" placeholder="https://api.example.com" /><small class="field-hint">OpenAI Images/New API 填站点基础地址，例如 https://example.com；程序会自动补齐 /v1/images/generations 或 /v1/images/edits。自定义接口才填写完整地址。</small></label>
         <label class="field full"><span>API Key</span><textarea data-channel="api_keys" rows="2" placeholder="${escapeHtml(masked)}"></textarea><small class="field-hint">每行一个 Key，可轮换使用。已有 Key 不会回显；留空保存会保留原值。</small></label>
         ${item.api_keys_masked ? '<label class="toggle-field full"><input data-channel="clear_api_keys" type="checkbox" /><span class="toggle-copy"><span>清除已保存的 API Key</span><small class="field-hint">保存后永久删除该渠道的所有 Key。</small></span></label>' : ""}
-        <label class="field"><span>默认模型</span><input data-channel="model" value="${escapeHtml(item.model)}" /><small class="field-hint">图生图和未指定模型的请求使用此模型。</small></label>
-        <label class="field"><span>带参考图模型（可选）</span><input data-channel="image_edit_model" value="${escapeHtml(item.image_edit_model)}" /><small class="field-hint">人设拍照、头像图生图和参考图请求优先使用；留空时用默认模型。应填写该渠道实际支持的图片编辑/多模态模型。</small></label>
-        <label class="field"><span>文生图模型（可选）</span><input data-channel="text_to_image_model" value="${escapeHtml(item.text_to_image_model)}" /><small class="field-hint">显式文生图优先使用此模型；留空时使用默认模型。</small></label>
+        <label class="field"><span>默认模型</span><input data-channel="model" list="${modelListId}" value="${escapeHtml(item.model)}" /><small class="field-hint">图生图和未指定模型的请求使用此模型。</small></label>
+        <label class="field"><span>带参考图模型（可选）</span><input data-channel="image_edit_model" list="${modelListId}" value="${escapeHtml(item.image_edit_model)}" /><small class="field-hint">人设拍照、头像图生图和参考图请求优先使用；留空时用默认模型。应填写该渠道实际支持的图片编辑/多模态模型。</small></label>
+        <label class="field"><span>文生图模型（可选）</span><input data-channel="text_to_image_model" list="${modelListId}" value="${escapeHtml(item.text_to_image_model)}" /><small class="field-hint">显式文生图优先使用此模型；留空时使用默认模型。</small></label>
         <label class="toggle-field"><input data-channel="enabled" type="checkbox" ${item.enabled ? "checked" : ""} /><span class="toggle-copy"><span>启用渠道</span><small class="field-hint">关闭后该渠道不会被主路由或回退流程调用。</small></span></label>
         <label class="toggle-field"><input data-channel="reference_image_enabled" type="checkbox" ${item.reference_image_enabled ? "checked" : ""} /><span class="toggle-copy"><span>允许带参考图请求</span><small class="field-hint">关闭后渠道仍可文生图，但人设拍照、头像图生图和带参考图请求会跳过它。</small></span></label>
         <label class="toggle-field"><input data-channel="fallback_enabled" type="checkbox" ${item.fallback_enabled ? "checked" : ""} /><span class="toggle-copy"><span>允许作为回退渠道</span><small class="field-hint">前方已尝试的渠道报错后，才会按列表顺序尝试此渠道。</small></span></label>
       </div>
+      <datalist id="${modelListId}"></datalist>
     </article>`;
 }
 
@@ -859,6 +871,7 @@ function renderGenerationHistory() {
               <div class="generation-record-title"><strong>${escapeHtml(taskType)}</strong><span>${escapeHtml(formatHistoryTime(record.created_at))}</span><div class="generation-record-badges">${sourceBadge}${channelBadge}</div></div>
               <div class="generation-record-actions">
                 <button type="button" class="history-icon-button download" data-history-download="${escapeHtml(id)}" title="下载原图" aria-label="下载原图" ${record.image_available ? "" : "disabled"}>↓</button>
+                <button type="button" class="history-icon-button studio" data-history-studio="${escapeHtml(id)}" title="加入图像工作台的身份槽" aria-label="加入图像工作台的身份槽" ${record.image_available ? "" : "disabled"}>◇</button>
                 <button type="button" class="history-icon-button${isFavorite ? " active" : ""}" data-history-favorite="${escapeHtml(id)}" data-history-value="${String(!isFavorite)}" title="${isFavorite ? "取消收藏" : "收藏并永久保留"}" aria-label="${isFavorite ? "取消收藏" : "收藏并永久保留"}" aria-pressed="${String(isFavorite)}">★</button>
                 <button type="button" class="history-icon-button${isLocked ? " active locked" : ""}" data-history-lock="${escapeHtml(id)}" data-history-value="${String(!isLocked)}" title="${isLocked ? "解除锁定" : "锁定并永久保留"}" aria-label="${isLocked ? "解除锁定" : "锁定并永久保留"}" aria-pressed="${String(isLocked)}">▣</button>
                 <button type="button" class="history-icon-button danger" data-history-delete="${escapeHtml(id)}" title="删除成功记录" aria-label="删除成功记录">×</button>
@@ -886,6 +899,349 @@ function renderGenerationHistory() {
   byId("history-prev").disabled = offset <= 0;
   byId("history-next").disabled = offset + limit >= total;
   queueGenerationPreviews();
+}
+
+function renderRouteHealth() {
+  const target = byId("route-health-list");
+  if (!target) return;
+  const health = state.routeHealth || {};
+  const channels = Array.isArray(health.channels) ? health.channels : [];
+  if (!channels.length) {
+    target.innerHTML = '<p class="empty">尚无渠道健康数据。保存渠道并完成至少一次请求后会显示统计。</p>';
+    return;
+  }
+  target.innerHTML = channels.map((channel) => {
+    const successes = Math.max(0, Number(channel.successes) || 0);
+    const failures = Math.max(0, Number(channel.failures) || 0);
+    const rate = successes + failures ? `${(Number(channel.success_rate || 0) * 100).toFixed(1)}%` : "暂无样本";
+    const stateLabel = channel.cooling_down ? `冷却 ${Number(channel.cooldown_remaining || 0).toFixed(0)}s` : (channel.enabled ? "可调度" : "未启用");
+    const stateClass = channel.cooling_down ? "cooling" : (channel.enabled ? "healthy" : "disabled");
+    return `<article class="route-health-card ${stateClass}">
+      <div class="route-health-title"><div><i class="status-dot ${channel.cooling_down ? "off" : "ok"}"></i><strong>${escapeHtml(channel.name || channel.id)}</strong><small>${escapeHtml(channel.id)}</small></div><span>${escapeHtml(stateLabel)}</span></div>
+      <div class="route-health-metrics"><span><small>成功率</small><strong>${escapeHtml(rate)}</strong></span><span><small>成功 / 失败</small><strong>${successes} / ${failures}</strong></span><span><small>P50 / P95</small><strong>${Number(channel.p50_duration || 0).toFixed(1)}s / ${Number(channel.p95_duration || 0).toFixed(1)}s</strong></span><span><small>回退成功</small><strong>${Math.max(0, Number(channel.fallback_successes) || 0)}</strong></span></div>
+      ${channel.last_error ? `<p title="${escapeHtml(channel.last_error)}">最近异常 · ${escapeHtml(channel.last_error_category || "未分类")} · ${escapeHtml(channel.last_error)}</p>` : ""}
+    </article>`;
+  }).join("");
+}
+
+async function loadRouteHealth() {
+  const response = await bridge.apiGet("route_health");
+  if (!response?.success) throw new Error(response?.message || "渠道健康状态读取失败");
+  state.routeHealth = response.health || { channels: [] };
+  renderRouteHealth();
+}
+
+async function refreshChannelModels(index) {
+  const row = document.querySelector(`.channel-row[data-index="${Number(index)}"]`);
+  if (!row) return;
+  const channelId = row.querySelector('[data-channel="id"]')?.value?.trim();
+  if (!channelId) throw new Error("请先填写并保存渠道 ID");
+  const button = row.querySelector("[data-refresh-channel-models]");
+  if (button) { button.disabled = true; button.textContent = "读取中…"; }
+  try {
+    const response = await bridge.apiGet("channel_models", { channel_id: channelId });
+    if (!response?.success) throw new Error(response?.message || "模型列表刷新失败");
+    const list = byId(`channel-model-list-${Number(index)}`);
+    if (list) list.innerHTML = (response.models || []).map((model) => `<option value="${escapeHtml(model.id)}">${escapeHtml(model.name || model.id)}</option>`).join("");
+    showToast(`已读取 ${Number(response.count) || 0} 个模型，可在模型输入框中选择`);
+  } finally {
+    if (button) { button.disabled = false; button.textContent = "刷新模型"; }
+  }
+}
+
+const TASK_STATUS_LABELS = {
+  queued: "排队中", running: "进行中", generated: "等待发送", sending: "发送中",
+  succeeded: "成功", failed: "失败", cancelled: "已取消", expired: "已过期",
+  send_failed: "发送失败", possibly_sent: "可能已送达",
+};
+
+function renderTasks() {
+  const response = state.tasks || {};
+  const summary = response.summary || {};
+  const tasks = Array.isArray(response.tasks) ? response.tasks : [];
+  byId("task-total").textContent = String(summary.total ?? response.pagination?.total ?? 0);
+  byId("task-active").textContent = String(summary.active ?? 0);
+  byId("task-success").textContent = String((Number(summary.succeeded) || 0) + (Number(summary.possibly_sent) || 0));
+  byId("task-failed").textContent = String((Number(summary.failed) || 0) + (Number(summary.send_failed) || 0) + (Number(summary.expired) || 0));
+  const target = byId("task-list");
+  if (!tasks.length) {
+    target.innerHTML = '<p class="empty">当前筛选下没有任务。</p>';
+    return;
+  }
+  const activeStates = new Set(["queued", "running", "generated", "sending"]);
+  target.innerHTML = tasks.map((task) => {
+    const status = String(task.status || "failed");
+    const active = activeStates.has(status);
+    const canRerun = !active && status !== "succeeded" && status !== "possibly_sent";
+    const canResend = status === "send_failed" && task.result_record_id && task.session_id && !String(task.session_id).startsWith("dashboard:");
+    const progress = task.progress || {};
+    const progressText = Number(progress.total) > 0 ? `${Number(progress.current) || 0} / ${Number(progress.total) || 0}` : "";
+    const identity = task.group_id
+      ? `${formatIdentity(task.user_name, task.user_id, "用户")} · ${formatIdentity(task.group_name, task.group_id, "群")}`
+      : (task.user_id === "dashboard" ? "Dashboard" : `私聊 · ${formatIdentity(task.user_name, task.user_id, "用户")}`);
+    const attempts = Array.isArray(task.attempt_chain) ? task.attempt_chain : [];
+    return `<article class="task-card status-${escapeHtml(status)}">
+      <div class="task-card-head"><div><span class="task-status">${escapeHtml(TASK_STATUS_LABELS[status] || status)}</span><strong>${escapeHtml(task.task_type || "绘图任务")}</strong><small>${escapeHtml(formatHistoryTime(task.created_at))}</small></div><div class="task-card-actions">${active ? `<button class="danger-action" type="button" data-task-action="cancel" data-task-id="${escapeHtml(task.id)}">取消</button>` : ""}${canRerun ? `<button class="quiet-action" type="button" data-task-action="rerun" data-task-id="${escapeHtml(task.id)}">强制重跑</button>` : ""}${canResend ? `<button class="primary-action" type="button" data-task-action="resend" data-task-id="${escapeHtml(task.id)}">重发图片</button>` : ""}${task.result_record_id ? `<button class="quiet-action" type="button" data-task-record="${escapeHtml(task.result_record_id)}">查看记录</button>` : ""}</div></div>
+      <div class="task-meta"><span>${escapeHtml(identity)}</span><span>${escapeHtml(task.channel_name || task.channel_id || "尚未选定渠道")}</span><span>${escapeHtml(task.actual_model || task.requested_model || "尚未记录模型")}</span>${progressText ? `<span>进度 ${escapeHtml(progressText)}</span>` : ""}<span>耗时 ${Number(task.duration || 0).toFixed(1)}s</span></div>
+      <details class="task-prompt"><summary>请求与尝试链</summary><pre>${escapeHtml(task.prompt || "未记录提示词")}</pre>${attempts.length ? `<div class="task-attempts">${attempts.map((attempt, attemptIndex) => `<span class="${attempt.success ? "success" : "failure"}"><b>#${attemptIndex + 1}</b>${escapeHtml(attempt.channel_name || attempt.channel_id || "渠道")} · ${escapeHtml(attempt.model || "模型未记录")} · ${Number(attempt.duration || 0).toFixed(1)}s${attempt.error_label ? ` · ${escapeHtml(attempt.error_label)}` : ""}</span>`).join("")}</div>` : ""}</details>
+      ${task.error ? `<p class="task-error">${escapeHtml(task.error)}</p>` : ""}
+    </article>`;
+  }).join("");
+}
+
+async function loadTasks() {
+  const response = await bridge.apiGet("generation_tasks", { limit: 100, offset: 0, status: state.taskStatus });
+  if (!response?.success) throw new Error(response?.message || "任务中心读取失败");
+  state.tasks = response;
+  renderTasks();
+  const currentStudioTaskId = byId("studio-run-state")?.dataset?.taskId;
+  if (currentStudioTaskId) {
+    const task = (response.tasks || []).find((item) => item.id === currentStudioTaskId);
+    if (task) {
+      byId("studio-run-state").textContent = `${TASK_STATUS_LABELS[task.status] || task.status}${task.channel_name || task.channel_id ? ` · ${task.channel_name || task.channel_id}` : ""}`;
+      if (!["queued", "running", "generated", "sending"].includes(task.status)) stopTaskPolling();
+    }
+  }
+}
+
+let taskPollTimer = null;
+function stopTaskPolling() {
+  if (taskPollTimer) window.clearInterval(taskPollTimer);
+  taskPollTimer = null;
+}
+function startTaskPolling() {
+  stopTaskPolling();
+  taskPollTimer = window.setInterval(() => {
+    if (["tasks", "studio"].includes(document.body.dataset.activeTab)) void loadTasks().catch((error) => console.warn(error));
+  }, 4_000);
+}
+
+async function runTaskAction(action, taskId) {
+  if (action === "cancel" && !await confirmAction({ title: "取消任务", message: "确认取消这个仍在运行的任务吗？", confirmLabel: "取消任务" })) return;
+  if (action === "rerun" && !await confirmAction({ title: "强制重跑", message: "将使用缓存的原始请求重新创建任务，不会再次扣除群友额度。", confirmLabel: "创建重跑任务", danger: false })) return;
+  const response = await bridge.apiPost("generation_task", { action, id: taskId, allow_fallback: true });
+  if (!response?.success) throw new Error(response?.message || "任务操作失败");
+  showToast(response.message || "任务已更新");
+  await loadTasks();
+  startTaskPolling();
+}
+
+function renderStudioChannelOptions() {
+  const current = byId("studio-channel")?.value || "";
+  const channels = state.config?.channels || [];
+  const target = byId("studio-channel");
+  if (!target) return;
+  target.innerHTML = '<option value="">自动回退</option>' + channels.filter((item) => item.enabled).map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name || item.id)}</option>`).join("");
+  if ([...target.options].some((option) => option.value === current)) target.value = current;
+}
+
+async function loadStudioPreview(image) {
+  const slot = String(image.dataset.studioPreviewSlot || "");
+  const id = String(image.dataset.studioPreviewId || "");
+  const key = `${slot}:${id}`;
+  if (!slot || !id || image.dataset.previewLoading === "true") return;
+  image.dataset.previewLoading = "true";
+  try {
+    let preview = state.studioPreviewCache.get(key);
+    if (!preview) {
+      const response = await bridge.apiGet("studio_asset", { slot, id });
+      if (!response?.success || !response.preview) throw new Error(response?.message || "工作台预览不可用");
+      preview = response.preview;
+      setBoundedCache(state.studioPreviewCache, key, preview, 80);
+    }
+    if (image.isConnected) image.src = preview;
+  } catch (error) {
+    image.closest(".studio-asset")?.classList.add("failed");
+    console.warn(error);
+  } finally {
+    delete image.dataset.previewLoading;
+    image.closest(".studio-asset")?.classList.remove("loading");
+  }
+}
+
+function queueStudioPreviews() {
+  studioPreviewObserver?.disconnect();
+  const images = [...document.querySelectorAll("img[data-studio-preview-id]")];
+  if (!("IntersectionObserver" in window)) {
+    images.forEach((image) => { void loadStudioPreview(image); });
+    return;
+  }
+  studioPreviewObserver = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      if (!entry.isIntersecting) return;
+      studioPreviewObserver.unobserve(entry.target);
+      void loadStudioPreview(entry.target);
+    });
+  }, { rootMargin: "180px" });
+  images.forEach((image) => studioPreviewObserver.observe(image));
+}
+
+function renderStudio() {
+  const target = byId("studio-slots");
+  if (!target) return;
+  const slots = Array.isArray(state.studio?.slots) ? state.studio.slots : [];
+  if (!slots.length) {
+    target.innerHTML = '<p class="empty">工作台槽位尚未初始化。</p>';
+    return;
+  }
+  target.innerHTML = slots.map((slot) => {
+    const items = Array.isArray(slot.items) ? slot.items : [];
+    return `<article class="studio-slot" data-studio-slot="${escapeHtml(slot.id)}">
+      <header><div><strong>${escapeHtml(slot.label || slot.id)}</strong><small>${items.length} / 32</small></div><div><label class="upload-action studio-upload-action">上传<input type="file" accept="image/*" multiple data-studio-upload="${escapeHtml(slot.id)}" /></label><button class="studio-clear-button" type="button" data-studio-clear="${escapeHtml(slot.id)}" ${items.length ? "" : "disabled"}>清空</button></div></header>
+      <div class="studio-asset-grid">${items.map((item) => {
+        const key = `${slot.id}:${item.id}`;
+        const selected = state.studioSelections.has(key);
+        return `<figure class="studio-asset loading${selected ? " selected" : ""}"><label><input type="checkbox" data-studio-select="${escapeHtml(key)}" ${selected ? "checked" : ""} /><img data-studio-preview-slot="${escapeHtml(slot.id)}" data-studio-preview-id="${escapeHtml(item.id)}" alt="${escapeHtml(item.label || slot.label)}" loading="lazy" decoding="async" /><span>${escapeHtml(item.label || slot.label)}</span></label><button type="button" data-studio-delete="${escapeHtml(item.id)}" data-studio-delete-slot="${escapeHtml(slot.id)}" aria-label="删除工作台图片">×</button></figure>`;
+      }).join("") || '<p class="empty">暂无素材</p>'}</div>
+    </article>`;
+  }).join("");
+  queueStudioPreviews();
+}
+
+async function loadStudio() {
+  const response = await bridge.apiGet("studio");
+  if (!response?.success) throw new Error(response?.message || "工作台素材读取失败");
+  state.studio = response.studio || { slots: [], order: [] };
+  const validKeys = new Set();
+  (state.studio.slots || []).forEach((slot) => (slot.items || []).forEach((item) => validKeys.add(`${slot.id}:${item.id}`)));
+  state.studioSelections = new Set([...state.studioSelections].filter((key) => validKeys.has(key)));
+  for (const key of state.studioPreviewCache.keys()) {
+    if (!validKeys.has(key)) state.studioPreviewCache.delete(key);
+  }
+  renderStudio();
+}
+
+async function uploadStudioAssets(files, slot) {
+  for (const file of [...files]) {
+    const dataUrl = await readFile(file);
+    const response = await bridge.apiPost("studio", { action: "upload", slot, label: file.name.replace(/\.[^.]+$/, ""), data_url: dataUrl });
+    if (!response?.success) throw new Error(response?.message || "工作台图片上传失败");
+  }
+  showToast("工作台素材已上传");
+  await loadStudio();
+}
+
+async function deleteStudioAsset(slot, id) {
+  if (!await confirmAction({ title: "删除工作台素材", message: "确认删除这张工作台参考图吗？", confirmLabel: "删除素材" })) return;
+  const response = await bridge.apiPost("studio", { action: "delete", slot, id });
+  if (!response?.success) throw new Error(response?.message || "工作台素材删除失败");
+  state.studioSelections.delete(`${slot}:${id}`);
+  showToast(response.message || "工作台素材已删除");
+  await loadStudio();
+}
+
+async function clearStudioSlot(slot) {
+  if (!await confirmAction({ title: "清空工作台槽位", message: "确认删除这个槽位中的全部参考图吗？", confirmLabel: "清空槽位" })) return;
+  const response = await bridge.apiPost("studio", { action: "clear", slot });
+  if (!response?.success) throw new Error(response?.message || "工作台槽位清空失败");
+  state.studioSelections = new Set([...state.studioSelections].filter((key) => !key.startsWith(`${slot}:`)));
+  showToast(response.message || "工作台槽位已清空");
+  await loadStudio();
+}
+
+async function addHistoryImageToStudio(recordId) {
+  const response = await bridge.apiPost("studio", { action: "import_record", slot: "identity", record_id: recordId, label: "成功记录" });
+  if (!response?.success) throw new Error(response?.message || "加入工作台失败");
+  showToast("已加入图像工作台的身份槽");
+  await loadStudio();
+}
+
+async function createStudioGeneration() {
+  const prompt = value("studio-prompt").trim();
+  if (!prompt) throw new Error("请先填写试画提示词");
+  const selections = [...state.studioSelections].map((key) => {
+    const [slot, id] = key.split(":", 2);
+    return { slot, id };
+  });
+  const button = byId("studio-generate");
+  button.disabled = true;
+  byId("studio-run-state").textContent = "正在创建任务…";
+  try {
+    const response = await bridge.apiPost("studio_generate", {
+      prompt,
+      selections,
+      mode: value("studio-mode", "auto"),
+      channel_id: value("studio-channel"),
+      model: value("studio-model").trim(),
+      aspect_ratio: value("studio-aspect", "1:1"),
+      resolution: value("studio-resolution", "1K"),
+      allow_fallback: checked("studio-fallback"),
+      negative_prompt: value("studio-negative").trim(),
+    });
+    if (!response?.success) throw new Error(response?.message || "真实试画任务创建失败");
+    const taskId = String(response.task?.id || "");
+    byId("studio-run-state").dataset.taskId = taskId;
+    byId("studio-run-state").textContent = taskId ? `任务 ${taskId.slice(0, 8)} 已创建` : "任务已创建";
+    showToast(response.message || "真实试画任务已创建");
+    state.taskStatus = "all";
+    byId("task-status-filter").value = "all";
+    await loadTasks();
+    startTaskPolling();
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function renderPersonaState() {
+  const personaState = state.personaState || {};
+  byId("persona-state-outfit").value = personaState.outfit || "";
+  byId("persona-state-mood").value = personaState.mood || "";
+  const periodLabels = { morning: "早晨", day: "白天", evening: "傍晚", night: "夜间" };
+  byId("persona-state-period").textContent = personaState.date
+    ? `${personaState.date} · ${periodLabels[personaState.period] || personaState.period || "当前时段"}`
+    : "尚未读取";
+  byId("persona-state-period-prompt").textContent = personaState.period_prompt || "";
+}
+
+async function updatePersonaState(action) {
+  const body = action === "refresh" ? { action } : {
+    action: "update",
+    outfit: value("persona-state-outfit").trim(),
+    mood: value("persona-state-mood").trim(),
+  };
+  const response = await bridge.apiPost("persona_state", body);
+  if (!response?.success) throw new Error(response?.message || "今日人设状态更新失败");
+  state.personaState = response.state || {};
+  renderPersonaState();
+  showToast(response.message || "今日人设状态已更新");
+}
+
+async function exportConfig() {
+  if (typeof bridge.download === "function") {
+    await bridge.download("config_export", { download: "1" }, "linghui_studio_config.json");
+    return;
+  }
+  const response = await fetch(`${PLUGIN_API_BASE}/config_export?download=1`, { credentials: "same-origin" });
+  if (!response.ok) throw new Error("配置导出失败");
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = "linghui_studio_config.json";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+}
+
+function renderConfigImportPreview(response) {
+  const target = byId("config-import-preview-result");
+  const preflight = Array.isArray(response.channel_preflight) ? response.channel_preflight : [];
+  const changed = Array.isArray(response.changed_keys) ? response.changed_keys : [];
+  target.innerHTML = `<div class="config-preview-summary"><strong>${escapeHtml(response.message || "导入预览")}</strong><span>${changed.length ? escapeHtml(changed.join("、")) : "没有配置变化"}</span></div>${preflight.length ? `<div class="config-preflight-list">${preflight.map((channel) => `<span class="${channel.ready ? "ready" : "warning"}"><b>${escapeHtml(channel.name || channel.id)}</b>${channel.ready ? "配置完整" : escapeHtml((channel.issues || []).join("、"))}</span>`).join("")}</div>` : ""}`;
+}
+
+async function importConfig(action) {
+  const text = value("config-import-json").trim();
+  if (!text) throw new Error("请粘贴要导入的配置 JSON");
+  let documentValue;
+  try { documentValue = JSON.parse(text); } catch { throw new Error("配置 JSON 格式不正确"); }
+  if (action === "apply" && !await confirmAction({ title: "导入配置", message: "确认应用预览中的配置变化吗？API Key 占位符会保留本机已有密钥，失败时自动回滚。", confirmLabel: "应用配置", danger: false })) return;
+  const response = await bridge.apiPost("config_import", { action, document: documentValue });
+  if (!response?.success) throw new Error(response?.message || "配置导入失败");
+  renderConfigImportPreview(response);
+  showToast(response.message || "配置导入完成");
+  if (action === "apply") await loadConfig();
 }
 
 function setListValue(id, items) { byId(id).value = (items || []).join("\n"); }
@@ -929,6 +1285,12 @@ function hydrateFields() {
   byId("persona-keywords").value = (persona.trigger_keywords || []).join(", ");
   byId("persona-default-prompt").value = persona.default_prompt || "";
   byId("persona-scene-prompts").value = (persona.scene_prompts || []).join("\n");
+  byId("persona-character-type").value = persona.character_type || "auto";
+  byId("persona-daily-enabled").checked = bool(persona.enable_daily_state);
+  byId("persona-daily-outfits").value = (persona.daily_outfits || []).join("\n");
+  byId("persona-daily-moods").value = (persona.daily_moods || []).join("\n");
+  byId("persona-time-periods").value = (persona.time_period_prompts || []).join("\n");
+  state.personaState = persona.daily_state || {};
   byId("default-model").value = settings.model || "";
   byId("default-t2i-model").value = settings.text_to_image_model || "";
   byId("resolution").value = settings.image_resolution || "1K";
@@ -942,6 +1304,12 @@ function hydrateFields() {
   renderReferenceSelector();
   renderPersonaImages();
   renderReferenceImages();
+  state.routeHealth = config.route_health || { channels: [] };
+  state.studio = config.studio || { slots: [], order: [] };
+  renderRouteHealth();
+  renderStudio();
+  renderPersonaState();
+  renderStudioChannelOptions();
 }
 
 function renderReferenceSelector() {
@@ -1034,6 +1402,11 @@ function buildPayload() {
       trigger_keywords: idsFromText(value("persona-keywords")),
       default_prompt: value("persona-default-prompt").trim(),
       scene_prompts: linesFromText(value("persona-scene-prompts")),
+      character_type: value("persona-character-type", "auto"),
+      enable_daily_state: checked("persona-daily-enabled"),
+      daily_outfits: linesFromText(value("persona-daily-outfits")),
+      daily_moods: linesFromText(value("persona-daily-moods")),
+      time_period_prompts: linesFromText(value("persona-time-periods")),
     },
     presets: readPresets(),
   };
@@ -1271,6 +1644,8 @@ function switchTab(tab) {
   const [title, subtitle] = titles[tab] || titles.overview;
   byId("page-title").textContent = title;
   byId("page-subtitle").textContent = subtitle;
+  if (["tasks", "studio"].includes(tab)) startTaskPolling();
+  else stopTaskPolling();
 }
 
 document.addEventListener("click", async (event) => {
@@ -1298,6 +1673,9 @@ document.addEventListener("click", async (event) => {
       }
       switchTab(tabName);
       if (["history", "image-to-image", "favorites"].includes(tabName)) await loadGenerationHistory(0);
+      if (tabName === "tasks") await loadTasks();
+      if (tabName === "studio") { await Promise.all([loadStudio(), loadTasks()]); }
+      if (tabName === "channels") await loadRouteHealth();
       return;
     }
     if (event.target.closest("#save-button")) { await saveConfig(); return; }
@@ -1305,6 +1683,17 @@ document.addEventListener("click", async (event) => {
     const themeOption = event.target.closest("[data-theme-option]");
     if (themeOption) { await changeTheme(themeOption.dataset.themeOption); return; }
     if (event.target.closest("#refresh-usage")) { await loadUsage(); showToast("用量已刷新"); return; }
+    if (event.target.closest("#route-health-refresh")) { await loadRouteHealth(); showToast("渠道健康状态已刷新"); return; }
+    if (event.target.closest("#task-refresh")) { await loadTasks(); showToast("任务中心已刷新"); return; }
+    if (event.target.closest("#task-cleanup")) {
+      if (await confirmAction({ title: "整理任务缓存", message: "会清除超出保留期限的失败请求素材，不会删除成功记录中的收藏或锁定图片。", confirmLabel: "整理缓存" })) {
+        const response = await bridge.apiPost("generation_task", { action: "cleanup" });
+        if (!response?.success) throw new Error(response?.message || "任务缓存整理失败");
+        showToast(response.message || "任务缓存已整理");
+        await loadTasks();
+      }
+      return;
+    }
     if (event.target.closest("#history-refresh")) { await loadGenerationHistory(state.history?.pagination?.offset || 0, true); showToast("成功记录已刷新"); return; }
     const historyModeButton = event.target.closest("[data-history-mode]");
     if (historyModeButton) {
@@ -1335,6 +1724,8 @@ document.addEventListener("click", async (event) => {
       state.config.channels.splice(Number(removeChannel.dataset.removeChannel), 1);
       renderChannels(); return;
     }
+    const refreshModels = event.target.closest("[data-refresh-channel-models]");
+    if (refreshModels) { await refreshChannelModels(refreshModels.dataset.refreshChannelModels); return; }
     if (event.target.closest("#add-preset")) {
       state.config.presets.push({ name: "", prompt: "" }); renderPresets(); return;
     }
@@ -1367,7 +1758,32 @@ document.addEventListener("click", async (event) => {
       return;
     }
     const deleteHistoryButton = event.target.closest("[data-history-delete]");
-    if (deleteHistoryButton) { await deleteGenerationRecord(deleteHistoryButton.dataset.historyDelete); }
+    if (deleteHistoryButton) { await deleteGenerationRecord(deleteHistoryButton.dataset.historyDelete); return; }
+    const historyStudioButton = event.target.closest("[data-history-studio]");
+    if (historyStudioButton) { await addHistoryImageToStudio(historyStudioButton.dataset.historyStudio); return; }
+    const taskActionButton = event.target.closest("[data-task-action]");
+    if (taskActionButton) { await runTaskAction(taskActionButton.dataset.taskAction, taskActionButton.dataset.taskId); return; }
+    const taskRecordButton = event.target.closest("[data-task-record]");
+    if (taskRecordButton) {
+      state.historyFavoriteOnly = false;
+      state.historyMode = "all";
+      state.historyGroupId = "";
+      state.historyUserId = "";
+      switchTab("history");
+      await loadGenerationHistory(0, true);
+      return;
+    }
+    if (event.target.closest("#studio-refresh")) { await loadStudio(); showToast("工作台素材已刷新"); return; }
+    if (event.target.closest("#studio-generate")) { await createStudioGeneration(); return; }
+    const studioDelete = event.target.closest("[data-studio-delete]");
+    if (studioDelete) { await deleteStudioAsset(studioDelete.dataset.studioDeleteSlot, studioDelete.dataset.studioDelete); return; }
+    const studioClear = event.target.closest("[data-studio-clear]");
+    if (studioClear) { await clearStudioSlot(studioClear.dataset.studioClear); return; }
+    if (event.target.closest("#persona-state-refresh")) { await updatePersonaState("refresh"); return; }
+    if (event.target.closest("#persona-state-save")) { await updatePersonaState("update"); return; }
+    if (event.target.closest("#config-export")) { await exportConfig(); showToast("脱敏配置已导出"); return; }
+    if (event.target.closest("#config-import-preview")) { await importConfig("preview"); return; }
+    if (event.target.closest("#config-import-apply")) { await importConfig("apply"); return; }
   } catch (error) {
     console.error(error);
     showToast(error.message || "操作失败", true);
@@ -1406,6 +1822,11 @@ document.addEventListener("error", (event) => {
     tile?.classList.remove("loading");
     tile?.classList.add("failed");
     image.alt = "输入原图预览不可用";
+    return;
+  }
+  if (image.closest(".studio-asset")) {
+    image.closest(".studio-asset")?.classList.add("failed");
+    image.alt = "工作台素材预览不可用";
   }
 }, true);
 
@@ -1427,6 +1848,34 @@ byId("history-user-filter").addEventListener("change", async (event) => {
   } catch (error) {
     console.error(error);
     showToast(error.message || "个人筛选失败", true);
+  }
+});
+byId("task-status-filter").addEventListener("change", async (event) => {
+  try {
+    state.taskStatus = event.target.value || "all";
+    await loadTasks();
+  } catch (error) {
+    console.error(error);
+    showToast(error.message || "任务筛选失败", true);
+  }
+});
+document.addEventListener("change", async (event) => {
+  const selection = event.target.closest?.("[data-studio-select]");
+  if (selection) {
+    if (selection.checked) state.studioSelections.add(selection.dataset.studioSelect);
+    else state.studioSelections.delete(selection.dataset.studioSelect);
+    selection.closest(".studio-asset")?.classList.toggle("selected", selection.checked);
+    return;
+  }
+  const upload = event.target.closest?.("[data-studio-upload]");
+  if (upload) {
+    try {
+      await uploadStudioAssets(upload.files, upload.dataset.studioUpload);
+      upload.value = "";
+    } catch (error) {
+      console.error(error);
+      showToast(error.message || "工作台素材上传失败", true);
+    }
   }
 });
 byId("persona-upload").addEventListener("change", async (event) => {

@@ -418,6 +418,13 @@ class DataManager:
             return minimum
 
     @staticmethod
+    def _history_float(value: Any, minimum: float = 0.0) -> float:
+        try:
+            return max(minimum, float(value))
+        except (TypeError, ValueError):
+            return minimum
+
+    @staticmethod
     def _inspect_generation_image(image_bytes: bytes) -> Tuple[str, str, int, int]:
         """Validate an output image and derive a stable filename suffix."""
         try:
@@ -473,6 +480,32 @@ class DataManager:
             })
         return normalized
 
+    def _normalize_attempt_chain(self, raw_attempts: Any) -> List[Dict[str, Any]]:
+        """Keep bounded, secret-free routing diagnostics in successful records."""
+        if not isinstance(raw_attempts, list):
+            return []
+        normalized: List[Dict[str, Any]] = []
+        for raw in raw_attempts[:64]:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                duration = max(0.0, float(raw.get("duration", 0.0) or 0.0))
+            except (TypeError, ValueError):
+                duration = 0.0
+            normalized.append({
+                "channel_id": self._normalize_display_name(raw.get("channel_id", ""), limit=80),
+                "channel_name": self._normalize_display_name(raw.get("channel_name", ""), limit=160),
+                "model": str(raw.get("model", "") or "").strip()[:200],
+                "duration": round(duration, 4),
+                "success": self._history_bool(raw.get("success", False)),
+                "error_category": self._normalize_display_name(raw.get("error_category", ""), limit=80),
+                "error_label": self._normalize_display_name(raw.get("error_label", ""), limit=120),
+                "error": self._normalize_display_name(raw.get("error", ""), limit=240),
+                "status_code": self._history_int(raw.get("status_code")),
+                "key_attempt": self._history_int(raw.get("key_attempt"), minimum=1),
+            })
+        return normalized
+
     def _normalize_generation_history(self, raw_history: Any) -> List[Dict[str, Any]]:
         """Keep only safe, forward-compatible history entries loaded from disk."""
         if not isinstance(raw_history, list):
@@ -523,6 +556,11 @@ class DataManager:
                 "model": str(raw.get("model", "") or "").strip()[:200],
                 "channel_id": self._normalize_display_name(raw.get("channel_id", ""), limit=80),
                 "channel_name": self._normalize_display_name(raw.get("channel_name", ""), limit=160),
+                "fallback_count": self._history_int(raw.get("fallback_count")),
+                "route_duration": self._history_float(raw.get("route_duration")),
+                "attempt_chain": self._normalize_attempt_chain(raw.get("attempt_chain", [])),
+                "task_id": self._normalize_display_name(raw.get("task_id", ""), limit=80),
+                "delivery_status": self._normalize_display_name(raw.get("delivery_status", "sent"), limit=40) or "sent",
                 "preset": str(raw.get("preset", "") or "").strip()[:160],
                 "task_type": task_type,
                 "image_format": str(raw.get("image_format", "") or "").strip()[:20],
@@ -791,7 +829,12 @@ class DataManager:
             "users": 0,
             "groups": 0,
             "private": 0,
+            "fallback_successes": 0,
+            "route_duration_total": 0.0,
+            "route_p50": 0.0,
+            "route_p95": 0.0,
         }
+        route_durations: List[float] = []
         for item in self.generation_history:
             summary["total"] += 1
             user_id = norm_id(item.get("user_id"))
@@ -808,6 +851,12 @@ class DataManager:
                 summary["locked"] += 1
             if self._history_bool(item.get("favorite", False)) or self._history_bool(item.get("locked", False)):
                 summary["protected"] += 1
+            if self._history_int(item.get("fallback_count")) > 0:
+                summary["fallback_successes"] += 1
+            route_duration = self._history_float(item.get("route_duration"))
+            if route_duration > 0:
+                route_durations.append(route_duration)
+                summary["route_duration_total"] += route_duration
             output_size = self._history_int(item.get("size_bytes"))
             source_size = self._history_int(item.get("source_size_bytes"))
             summary["output_size_bytes"] += output_size
@@ -827,6 +876,10 @@ class DataManager:
 
         summary["users"] = len(unique_users)
         summary["groups"] = len(unique_groups)
+        if route_durations:
+            ordered = sorted(route_durations)
+            summary["route_p50"] = ordered[round((len(ordered) - 1) * 0.50)]
+            summary["route_p95"] = ordered[round((len(ordered) - 1) * 0.95)]
         self._generation_history_summary_cache = (today_key, dict(summary))
         return summary
 
@@ -846,6 +899,11 @@ class DataManager:
             task_type: str = "",
             reference_images: Optional[List[bytes]] = None,
             generation_kind: str = "",
+            fallback_count: int = 0,
+            route_duration: float = 0.0,
+            attempt_chain: Optional[List[Dict[str, Any]]] = None,
+            task_id: str = "",
+            delivery_status: str = "sent",
     ) -> Optional[Dict[str, Any]]:
         """Persist a successful output and the exact image inputs used for it."""
         if not isinstance(image_bytes, bytes) or not image_bytes:
@@ -905,6 +963,11 @@ class DataManager:
             "model": str(model or "").strip()[:200],
             "channel_id": self._normalize_display_name(channel_id, limit=80),
             "channel_name": self._normalize_display_name(channel_name, limit=160),
+            "fallback_count": self._history_int(fallback_count),
+            "route_duration": self._history_float(route_duration),
+            "attempt_chain": self._normalize_attempt_chain(attempt_chain or []),
+            "task_id": self._normalize_display_name(task_id, limit=80),
+            "delivery_status": self._normalize_display_name(delivery_status, limit=40) or "sent",
             "preset": str(preset or "").strip()[:160],
             "task_type": str(task_type or "").strip()[:80],
             "image_format": image_format,
@@ -964,6 +1027,15 @@ class DataManager:
             await self._save_json(self.generation_history_file, self.generation_history)
             if labels_changed:
                 await self._save_json(self.identity_labels_file, self.identity_labels)
+        # Prewarm the result thumbnail and first input thumbnail in the
+        # background. Dashboard still loads them lazily, but the expensive
+        # decode usually finishes before an administrator opens the page.
+        try:
+            asyncio.create_task(self.get_or_create_generation_preview(record))
+            if source_images:
+                asyncio.create_task(self.get_or_create_generation_source_preview(record, 1))
+        except RuntimeError:
+            pass
         return dict(record)
 
     async def get_generation_record(self, record_id: str) -> Optional[Dict[str, Any]]:
@@ -1102,6 +1174,21 @@ class DataManager:
                 return dict(record)
         return None
 
+    async def update_generation_record_delivery(self, record_id: str, delivery_status: str) -> Optional[Dict[str, Any]]:
+        """Persist final platform delivery state after the image is already cached."""
+        record_id = str(record_id or "").strip()
+        delivery_status = self._normalize_display_name(delivery_status, limit=40)
+        if not record_id or not delivery_status:
+            return None
+        async with self._state_lock:
+            for record in self.generation_history:
+                if record.get("id") != record_id:
+                    continue
+                record["delivery_status"] = delivery_status
+                await self._save_json(self.generation_history_file, self.generation_history)
+                return dict(record)
+        return None
+
     async def delete_generation_record(self, record_id: str) -> bool:
         """Explicit Dashboard deletion may remove a protected record as well."""
         record_id = str(record_id or "").strip()
@@ -1153,8 +1240,32 @@ class DataManager:
                 pass
         return None
 
-    async def cleanup_generation_cache(self, retention_days: int = 7) -> Dict[str, int]:
-        """Remove expired unprotected cache entries and stale original/preview files."""
+    def _generation_record_artifact_size(self, record: Dict[str, Any]) -> int:
+        """Return the actual on-disk footprint of one output and its inputs."""
+        total = 0
+        paths: List[Optional[Path]] = [
+            self.get_generation_image_path(record),
+            self.get_generation_preview_path(record),
+        ]
+        for source_index in range(1, len(self._generation_source_entries(record)) + 1):
+            paths.append(self.get_generation_source_path(record, source_index))
+            paths.append(self.get_generation_source_preview_path(record, source_index))
+        for path in paths:
+            if path is None:
+                continue
+            try:
+                total += max(0, int(path.stat().st_size))
+            except OSError:
+                continue
+        return total
+
+    async def cleanup_generation_cache(
+            self,
+            retention_days: int = 7,
+            max_bytes: int = 0,
+            trim_ratio: float = 0.15,
+    ) -> Dict[str, int]:
+        """Remove expired and over-capacity cache entries while protecting favorites/locks."""
         try:
             retention_days = min(max(1, int(retention_days)), 365)
         except (TypeError, ValueError):
@@ -1166,6 +1277,17 @@ class DataManager:
         removed_source_images = 0
         removed_source_previews = 0
         removed_orphans = 0
+        capacity_removed_records = 0
+        capacity_before_bytes = 0
+        capacity_after_bytes = 0
+        try:
+            max_bytes = max(0, int(max_bytes or 0))
+        except (TypeError, ValueError):
+            max_bytes = 0
+        try:
+            trim_ratio = min(max(float(trim_ratio), 0.01), 0.90)
+        except (TypeError, ValueError):
+            trim_ratio = 0.15
 
         async with self._state_lock:
             retained: List[Dict[str, Any]] = []
@@ -1205,6 +1327,54 @@ class DataManager:
                 removed_source_images += source_removed
                 removed_source_previews += source_preview_removed
                 removed_records += 1
+
+            capacity_before_bytes = sum(self._generation_record_artifact_size(record) for record in retained)
+            capacity_after_bytes = capacity_before_bytes
+            if max_bytes > 0 and capacity_before_bytes > max_bytes:
+                target_bytes = max(0, int(max_bytes * (1.0 - trim_ratio)))
+                removable = sorted(
+                    (
+                        record for record in retained
+                        if not self._history_bool(record.get("favorite", False))
+                        and not self._history_bool(record.get("locked", False))
+                    ),
+                    key=lambda record: self._history_created_at(
+                        record, self.get_generation_image_path(record)
+                    ) or datetime.min,
+                )
+                removed_ids: set[str] = set()
+                for record in removable:
+                    if capacity_after_bytes <= target_bytes:
+                        break
+                    artifact_size = self._generation_record_artifact_size(record)
+                    path = self.get_generation_image_path(record)
+                    if path is not None:
+                        try:
+                            await asyncio.to_thread(path.unlink)
+                            removed_images += 1
+                        except FileNotFoundError:
+                            pass
+                        except Exception as exc:
+                            logger.warning("Linghui could not trim cached image %s: %s", path.name, exc)
+                            continue
+                    preview_path = self.get_generation_preview_path(record)
+                    if preview_path is not None:
+                        try:
+                            await asyncio.to_thread(preview_path.unlink)
+                            removed_previews += 1
+                        except FileNotFoundError:
+                            pass
+                        except Exception as exc:
+                            logger.warning("Linghui could not trim generation preview %s: %s", preview_path.name, exc)
+                    source_removed, source_preview_removed = await self._remove_generation_source_artifacts(record)
+                    removed_source_images += source_removed
+                    removed_source_previews += source_preview_removed
+                    removed_ids.add(str(record.get("id", "")))
+                    capacity_after_bytes = max(0, capacity_after_bytes - artifact_size)
+                    capacity_removed_records += 1
+                    removed_records += 1
+                if removed_ids:
+                    retained = [record for record in retained if str(record.get("id", "")) not in removed_ids]
 
             history_changed = len(retained) != len(self.generation_history)
             self.generation_history = retained
@@ -1304,6 +1474,10 @@ class DataManager:
             "removed_source_images": removed_source_images,
             "removed_source_previews": removed_source_previews,
             "removed_orphans": removed_orphans,
+            "capacity_removed_records": capacity_removed_records,
+            "capacity_before_bytes": capacity_before_bytes,
+            "capacity_after_bytes": capacity_after_bytes,
+            "capacity_limit_bytes": max_bytes,
         }
 
     # --- 预设图片管理 ---

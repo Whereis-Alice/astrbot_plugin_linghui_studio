@@ -101,6 +101,67 @@ class ConfigurationDocumentationTest(unittest.TestCase):
                 for field_name, field in (template.get("items") or {}).items():
                     self.assertTrue(field.get("hint"), f"{name}.{field_name} is missing a configuration hint")
 
+    def test_all_upstream_runtime_settings_remain_configurable(self):
+        schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+        expected = {
+            "interface_mode", "base_url", "api_keys", "model_list", "model",
+            "text_to_image_model", "text_to_image_api_url", "text_to_image_api_keys",
+            "image_resolution", "image_aspect_ratio", "enable_luxury_mode",
+            "luxury_request_count", "show_model_info", "debug_mode", "prefix",
+            "extra_prefix", "use_proxy", "proxy_url", "timeout",
+            "result_image_download_timeout", "result_image_download_retries", "use_stream",
+            "download_retries", "help_text", "generating_msg_template", "user_whitelist",
+            "user_blacklist", "enable_obedient_mode", "obedient_whitelist",
+            "group_whitelist", "group_blacklist", "enable_user_limit",
+            "enable_group_limit", "enable_checkin", "checkin_fixed_reward",
+            "enable_random_checkin", "checkin_random_reward_max", "preset_table_quality",
+            "preset_table_columns", "enable_llm_tool", "llm_show_progress",
+            "llm_cooldown_seconds", "enable_llm_auto_detect", "context_rounds",
+            "auto_detect_confidence", "context_max_messages", "context_max_sessions",
+            "batch_max_images", "batch_concurrency", "batch_retries",
+            "enable_preset_ref_images", "enable_persona_mode", "persona_name",
+            "persona_description", "persona_trigger_keywords", "persona_scene_prompts",
+            "persona_default_prompt", "persona_photo_style", "enable_rebellious_mode",
+            "rebellious_probability", "prompt_list",
+        }
+        self.assertTrue(expected.issubset(schema))
+
+    def test_default_presets_keep_upstream_pack_and_linghui_additions(self):
+        schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+        entries = schema["prompt_list"]["default"]
+        names = [entry.split(":", 1)[0] for entry in entries]
+        upstream_names = {
+            "手办化", "手办化2", "手办化3", "手办化4", "手办化5", "手办化6",
+            "Q版化", "cos化", "cos自拍", "痛屋化", "痛屋化2", "痛车化",
+            "孤独的我", "第一视角", "第三视角", "鬼图", "贴纸化", "玉足",
+            "玩偶化", "cos相遇", "三视图", "穿搭拆解", "拆解图", "角色界面",
+            "角色设定", "3D打印", "微型化", "挂件化", "姿势表", "高清修复",
+            "人物转身", "绘画四宫格", "发型九宫格", "头像九宫格", "表情九宫格",
+            "多机位", "电影分镜", "动漫分镜", "真人化", "真人化2", "半真人",
+            "半融合", "洗澡", "洗澡2",
+        }
+        enhanced_names = {
+            "捧脸", "变真人", "果冻化", "变COS", "漫画封面", "证件照", "男友视角", "漏腰",
+        }
+        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(set(names), upstream_names | enhanced_names)
+        self.assertEqual(len(names), 52)
+
+    def test_upstream_public_command_aliases_remain_registered(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        aliases = {
+            "lm列表", "lmlist", "lm添加", "lma", "lm删除", "lmd", "lm查看", "lmv",
+            "lm删", "删除预设", "lm预览",
+            "手办化签到", "手办化查询次数", "切换API模式", "切换模型", "手办化今日统计",
+            "手办化增加用户次数", "手办化增加群组次数", "手办化添加key", "手办化key列表",
+            "手办化删除key", "手办化帮助", "lmh", "lmref添加", "lmref查看", "lmref清除",
+            "lmref删除", "lmref统计", "lmref列表", "添加参考图", "查看参考图",
+            "清除参考图", "删除参考图", "参考图统计", "参考图列表", "图片转PDF",
+            "合成PDF", "添加人设图", "查看人设图", "清除人设图", "场景列表",
+        }
+        for alias in aliases:
+            self.assertIn(f'"{alias}"', source, f"missing upstream command alias: {alias}")
+
 
 class PromptProcessorTest(unittest.TestCase):
     @classmethod
@@ -291,6 +352,37 @@ class DrawingChannelRouterTest(unittest.IsolatedAsyncioTestCase):
         )
         await router.close()
 
+    async def test_final_instruction_is_last_and_shared_by_every_fallback(self):
+        self.fake_api_manager.outcomes = {"primary": "primary failed", "backup": b"result"}
+        router = self._router({
+            "drawing_channels": [
+                {"id": "primary", "base_url": "primary", "api_keys": "one"},
+                {"id": "backup", "base_url": "backup", "api_keys": "two"},
+            ],
+        })
+
+        class PreparedPrompt:
+            async def prepare(self, prompt):
+                return f"prepared: {prompt}"
+
+        router.prompt_processor = PreparedPrompt()
+        instruction = "图片不带艾特名字和 ID"
+        result = await router.call_api(
+            [],
+            "cinematic portrait",
+            "model",
+            negative_prompt="blurry",
+            final_instruction=instruction,
+        )
+        self.assertEqual(result, b"result")
+        expected = (
+            "prepared: cinematic portrait\n\nNegative prompt: blurry\n\n"
+            "图片不带艾特名字和 ID"
+        )
+        self.assertEqual(self.fake_api_manager.prompts, [expected, expected])
+        self.assertTrue(all(prompt.endswith(instruction) for prompt in self.fake_api_manager.prompts))
+        await router.close()
+
 
 class DashboardRegistrationTest(unittest.TestCase):
     @classmethod
@@ -325,6 +417,16 @@ class DashboardRegistrationTest(unittest.TestCase):
                 "/astrbot_plugin_linghui_studio/generation_source_preview",
                 "/astrbot_plugin_linghui_studio/generation_source_download",
                 "/astrbot_plugin_linghui_studio/generation_record",
+                "/astrbot_plugin_linghui_studio/route_health",
+                "/astrbot_plugin_linghui_studio/generation_tasks",
+                "/astrbot_plugin_linghui_studio/generation_task",
+                "/astrbot_plugin_linghui_studio/persona_state",
+                "/astrbot_plugin_linghui_studio/studio",
+                "/astrbot_plugin_linghui_studio/studio_asset",
+                "/astrbot_plugin_linghui_studio/studio_generate",
+                "/astrbot_plugin_linghui_studio/channel_models",
+                "/astrbot_plugin_linghui_studio/config_export",
+                "/astrbot_plugin_linghui_studio/config_import",
             ],
         )
 

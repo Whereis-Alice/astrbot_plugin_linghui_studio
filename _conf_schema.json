@@ -20,14 +20,14 @@
   "extra_prefix": {
     "type": "string",
     "description": "【命令与帮助】自定义绘图子命令",
-    "hint": "默认“画”：#画 <提示词>。设置命名空间后使用 #绘图 画 <提示词>。上游兼容指令 #bnn [@用户 ...] <提示词> 始终保留，并支持用一个或多个被艾特用户的 QQ 头像作参考图。",
+    "hint": "默认“画”：#画 <提示词>。设置命名空间后使用 #绘图 画 <提示词>。上游兼容指令 #bnn [@用户 ...] <提示词> 始终保留，支持用一个或多个被艾特用户的 QQ 头像作参考图，并会自动禁止把艾特名称、群名、QQ 号或 ID 画进结果。",
     "default": "画"
   },
   "help_text": {
     "type": "text",
     "description": "【命令与帮助】帮助文本",
     "hint": "回复“帮助”时发送的内容。可使用换行；命令前缀仍由 AstrBot 的全局设置决定。",
-    "default": "灵绘工坊使用说明\n\n基础绘图\n#画 <提示词>：自定义绘图；带图片时图生图，无图片时文生图。\n#bnn [@用户 ...] <提示词>：自定义绘图；可按艾特顺序用一个或多个 QQ 头像作参考图。\n#文生图 <提示词>：显式文生图。\n#头像图生图 <提示词>：只使用发送者自己的 QQ 头像。\n#<预设名> [追加要求]：调用预设，例如 #手办化。\n\n常用\n#签到：领取签到额度。\n#额度：查询额度。\n#通道 [渠道ID/自动]：查看或切换主渠道（管理员）。\n#帮助：查看完整帮助。\n\n共存模式：在 Dashboard 设置命名空间并关闭直接命令后，使用 #绘图 文生图、#绘图 画、#绘图 bnn、#绘图 手办化。"
+    "default": "灵绘工坊使用说明\n\n基础绘图\n#画 <提示词>：自定义绘图；带图片时图生图，无图片时文生图。\n#bnn [@用户 ...] <提示词>：自定义绘图；可按艾特顺序用一个或多个 QQ 头像作参考图，并自动排除艾特名称、群名、QQ 号和 ID。\n#文生图 <提示词>：显式文生图。\n#头像图生图 <提示词>：只使用发送者自己的 QQ 头像。\n#<预设名> [追加要求]：调用预设，例如 #手办化。\n\n常用\n#签到：领取签到额度。\n#额度：查询额度。\n#通道 [渠道ID/自动]：查看或切换主渠道（管理员）。\n#帮助：查看完整帮助。\n\n共存模式：在 Dashboard 设置命名空间并关闭直接命令后，使用 #绘图 文生图、#绘图 画、#绘图 bnn、#绘图 手办化。"
   },
   "drawing_channels": {
     "type": "template_list",
@@ -145,6 +145,36 @@
     "hint": "仅影响人设拍照、QQ 头像图生图、预设参考图和普通图生图。留空时跟随当前主渠道；填写渠道 ID 后，带参考图请求会优先从该渠道开始，失败后仍按回退顺序尝试其他允许带参考图请求的渠道。",
     "default": ""
   },
+  "channel_failure_threshold": {
+    "type": "int",
+    "description": "【绘图渠道与回退】渠道连续失败冷却阈值",
+    "hint": "网络、超时、5xx 或异常响应连续达到此次数后，渠道会短暂进入冷却；鉴权和普通参数错误不会误触发冷却。",
+    "default": 3,
+    "min": 1,
+    "max": 20
+  },
+  "channel_cooldown_seconds": {
+    "type": "int",
+    "description": "【绘图渠道与回退】异常渠道冷却秒数",
+    "hint": "进入冷却的渠道会暂时被跳过；如果所有渠道都在冷却，程序仍会探测最早恢复的一个，避免完全不可用。",
+    "default": 90,
+    "min": 5,
+    "max": 3600
+  },
+  "channel_key_retry_count": {
+    "type": "int",
+    "description": "【绘图渠道与回退】同渠道密钥轮换次数",
+    "hint": "鉴权失败或限流时，在切换渠道前最多额外轮换多少个 Key。实际尝试数不会超过该渠道已配置的 Key 数量。",
+    "default": 1,
+    "min": 0,
+    "max": 20
+  },
+  "fallback_on_safety_error": {
+    "type": "bool",
+    "description": "【绘图渠道与回退】安全拦截后继续回退",
+    "hint": "默认关闭，避免同一提示词被多个渠道重复拦截。只有确认不同渠道安全规则差异明显时才建议开启。",
+    "default": false
+  },
   "interface_mode": {
     "type": "string",
     "description": "【兼容单接口】兼容单接口模式",
@@ -179,6 +209,23 @@
     "description": "【兼容单接口】兼容单接口 API Key",
     "hint": "仅在“绘图渠道”列表为空时使用。每行一个 Key，可轮换使用。",
     "default": ""
+  },
+  "text_to_image_api_url": {
+    "type": "string",
+    "description": "【兼容单接口】文生图专用接口地址",
+    "hint": "保留主上游的独立文生图接口能力。仅在绘图渠道列表为空时使用；填写服务基础地址即可，留空时沿用兼容单接口地址。",
+    "default": ""
+  },
+  "text_to_image_api_keys": {
+    "type": "list",
+    "description": "【兼容单接口】文生图专用 API Key 池",
+    "hint": "保留主上游的独立文生图 Key 池。每项一个 Key；留空时沿用兼容单接口 Key。新安装更建议在“绘图渠道”中为文生图配置模型和渠道。",
+    "items": {
+      "type": "string",
+      "description": "文生图 API Key",
+      "hint": "填写一个文生图专用 API Key。"
+    },
+    "default": []
   },
   "model_list": {
     "type": "list",
@@ -237,6 +284,12 @@
     "default": 120,
     "min": 5,
     "max": 900
+  },
+  "use_stream": {
+    "type": "bool",
+    "description": "【兼容单接口】OpenAI Chat 流式请求",
+    "hint": "保留主上游的 SSE 流式兼容能力，仅对 openai_chat/兼容聊天接口生效；可用于降低部分反向代理长请求超时风险。OpenAI Images 接口不使用此项。",
+    "default": false
   },
   "use_proxy": {
     "type": "bool",
@@ -326,6 +379,30 @@
       "type": "string"
     },
     "default": []
+  },
+  "user_whitelist": {
+    "type": "list",
+    "description": "【访问权限】旧版用户白名单（自动迁移）",
+    "hint": "仅用于保留主上游旧配置，启动时会自动合并到“用户白名单（可选）”。新配置请使用 allowed_users。",
+    "items": {
+      "type": "string",
+      "description": "旧版用户 ID",
+      "hint": "兼容旧配置，无需手动新增。"
+    },
+    "default": [],
+    "invisible": true
+  },
+  "user_blacklist": {
+    "type": "list",
+    "description": "【访问权限】旧版用户黑名单（自动迁移）",
+    "hint": "仅用于保留主上游旧配置，启动时会自动合并到“用户黑名单”。新配置请使用 blocked_users。",
+    "items": {
+      "type": "string",
+      "description": "旧版用户 ID",
+      "hint": "兼容旧配置，无需手动新增。"
+    },
+    "default": [],
+    "invisible": true
   },
   "allow_private_messages": {
     "type": "bool",
@@ -518,6 +595,14 @@
       "真人化:in Studio, pure white background, a cosplayer dressed in an identical outfit, as the girl in the reference image, mimicking her pose and outfit. enhanced with film grain for a gritty, authentic particle effect reminiscent of 35mm film stock; 8K ultra-HD, sharp and believable, no abstraction.",
       "真人化2:Generate a highly detailed photo of a girl cosplaying this illustration, at Comiket. Exactly replicate the same pose, body posture, hand gestures, facial expression, and camera framing as in the original illustration. Keep the same angle, perspective, and composition, without any deviation",
       "半真人:Take the image of the woman in [Input Photo]. Apply a creative split-style effect. Keep the lower half of her body (legs and boots) as the original photograph. Transform the upper half of her body (torso, arms, head) into a vibrant, 2D anime style with bold outlines and flat colors, similar to the anime 'Cyberpunk: Edgerunners'. The transition between the two styles should be a clean, slightly curved line.",
+      "捧脸:Create a polished close-up portrait based on the reference subject. Preserve identity, hairstyle, facial proportions, age appearance, and visual style. Pose the subject with both hands gently framing the cheeks, relaxed shoulders, warm eye contact, and a natural soft expression. Use flattering diffused light, clean composition, detailed hands, and an uncluttered background.",
+      "变真人:Translate the referenced illustrated or anime character into a believable real-person portrait while preserving the exact identity cues: face shape, eye impression, hairstyle, hair color, outfit design, accessories, age appearance, and expression. Use natural skin texture, realistic anatomy, cinematic but credible lighting, and photographic detail. Do not turn the character into a generic model.",
+      "果冻化:Transform the referenced subject into a charming translucent jelly sculpture. Preserve the recognizable silhouette, face design, hairstyle, colors, outfit shapes, and signature accessories. Use glossy soft-gel material, subtle internal bubbles, subsurface scattering, rounded edges, colorful reflections, and a neat studio display surface.",
+      "变COS:Create a high-quality real-world cosplay photograph of the referenced character. The cosplayer must match the character's identity, hairstyle, hair color, costume structure, patterns, accessories, makeup language, and pose as closely as possible. Use carefully crafted costume materials, natural human anatomy, realistic lighting, and a professional camera look.",
+      "漫画封面:Design a premium vertical manga cover featuring the referenced subject as the clear protagonist. Preserve the original identity and art style, then build a strong cover composition with expressive posing, layered background storytelling, dynamic lighting, clean negative space for a title, refined linework, rich color separation, and print-ready detail. Do not add unreadable random text.",
+      "证件照:Create a clean formal ID-photo portrait of the referenced subject. Preserve identity, face shape, hairstyle, age appearance, and core character features. Use a centered front-facing pose, neutral pleasant expression, tidy clothing, even shadow-free lighting, plain light background, accurate proportions, and crisp professional photo quality.",
+      "男友视角:Create a natural first-person companion-perspective lifestyle photo of the referenced adult subject. Preserve identity, hairstyle, outfit details, and age appearance. Use comfortable conversational distance, candid eye contact, relaxed body language, realistic surroundings, and gentle everyday lighting. Keep the composition tasteful and non-explicit.",
+      "漏腰:Restyle the referenced adult subject in a tasteful modern outfit with a small fashion-oriented midriff detail, such as a cropped jacket or coordinated high-waist set. Preserve identity, hairstyle, age appearance, body proportions, and the original design language. Use confident natural posing and a fully clothed, non-explicit composition.",
       "半融合:A striking, high-definition frontal portrait of the character from the input photo, with the face perfectly centered. The image blends two styles seamlessly: the left half retains the character's original realistic appearance, including detailed skin textures, natural lighting, and exact facial features from the input image, while the right half transitions into a vibrant manga-style version, featuring bold outlines, expressive eyes, and stylized features typical of high-quality anime art, while preserving recognizable traits (e.g., hair shape, facial structure). The transition between the realistic and manga halves is smooth and gradual, with no visible dividing line, ensuring a natural, cohesive fusion at the center of the face. The blending emphasizes the contrast between realistic and manga aesthetics while maintaining a unified appearance. The background is a neutral, solid color (e.g., soft gray or white) to highlight the fusion effect, with consistent lighting to enhance the artistic impact and no harsh separation.",
       "洗澡:`任务：根据给出图片中的人物，生成一张场景细节丰富画风精美的二次元图片。必须健全的图片不要露点\n前景与主体（床铺）：\n- 画面下方和中心是一张铺着粉红色床单的大床。床单看起来非常凌乱，布满褶皱，并且布满湿痕和黏液。\n- 床上分布散落着图中人物的各种衣服和饰品（上衣，下衣，内衣，袜子/裤袜，腿环，choker，手套等全身衣着），需要分开零散放置，衣服也潮湿且褶皱。\n床上一角放置一张与原来参照图相同的照片。\n- 床上还放置了用过的润滑液瓶\n后景（磨砂玻璃）：\n- 画面的上方是一面巨大的半透明磨砂玻璃\n- 透过磨砂玻璃可以极端模糊看到图中人物除了头发以外无衣物无身体细节一丝不挂但身材完美的外轮廓的面向镜头，趴在玻璃上```",
       "洗澡2:`任务：根据给出图片中的人物，生成一张场景细节丰富画风精美的二次元图片。必须健全的图片不要露点 前景与主体（床铺）： - 画面下方和中心是一张铺着粉红色床单的大床。床单看起来非常凌乱，布满褶皱，并且布满湿痕和黏液。 - 床上分布散落着图中人物的各种衣服和饰品（上衣，下衣，内衣，袜子/裤袜，腿环，choker，手套等全身衣着），需要分开零散放置，衣服也潮湿且褶皱。 床上一角放置一张与原来参照图相同的照片。 - 床上还放置了用过的润滑液瓶 后景（磨砂玻璃）： - 画面的上方是一面巨大的半透明磨砂玻璃 - 透过磨砂玻璃可以极端模糊看到图中人物除了头发以外无衣物无身体细节一丝不挂但身材完美的外轮廓的面向镜头，趴在玻璃上```"
@@ -592,11 +677,121 @@
     "hint": "未指定人设场景时使用的默认环境与构图要求。",
     "default": "a natural everyday portrait"
   },
+  "persona_character_type": {
+    "type": "string",
+    "description": "【人设与参考图】人设形象类型",
+    "hint": "auto 会按人设参考图判断真人或动漫并保持原类型；real 强制真人摄影逻辑；anime 强制保留动漫/插画身份，避免错误真人化。",
+    "options": [
+      "auto",
+      "real",
+      "anime"
+    ],
+    "default": "auto"
+  },
+  "enable_persona_daily_state": {
+    "type": "bool",
+    "description": "【人设与参考图】启用每日稳定人设状态",
+    "hint": "开启后，同一天普通人设照片会稳定使用同一套穿搭和心情，并随早晨、白天、傍晚、夜间调整氛围；用户明确换装、COS 或指定表情时优先服从用户要求。",
+    "default": true
+  },
+  "persona_daily_outfits": {
+    "type": "list",
+    "description": "【人设与参考图】每日穿搭候选",
+    "hint": "每天从候选中稳定选择一项并持久化。每项写完整穿搭描述；明确换装或 COS 请求会临时覆盖当天穿搭。",
+    "items": {
+      "type": "string"
+    },
+    "default": [
+      "舒适的浅色针织上衣、百褶短裙和简洁的小配饰",
+      "干净的白衬衫、深色高腰裙和低调发饰",
+      "柔软连帽外套、休闲短裙和轻便运动鞋",
+      "简约连衣裙、薄款开衫和小巧耳饰",
+      "宽松卫衣、百褶裙和日常帆布鞋"
+    ]
+  },
+  "persona_daily_moods": {
+    "type": "list",
+    "description": "【人设与参考图】每日心情候选",
+    "hint": "每天从候选中稳定选择一项。用户明确指定开心、生气、哭泣等表情时会覆盖当天心情。",
+    "items": {
+      "type": "string"
+    },
+    "default": [
+      "轻松愉快，表情自然温柔",
+      "有一点俏皮，眼神灵动",
+      "安静放松，带着浅浅微笑",
+      "精神很好，显得活力十足",
+      "略微慵懒，但心情平稳"
+    ]
+  },
+  "persona_time_period_prompts": {
+    "type": "list",
+    "description": "【人设与参考图】时间段状态提示词",
+    "hint": "格式为 早晨:提示词、白天:提示词、傍晚:提示词、夜间:提示词，也支持 morning/day/evening/night。用于调整光线与生活状态，不会强制覆盖用户指定场景。",
+    "items": {
+      "type": "string"
+    },
+    "default": [
+      "早晨:清晨状态，光线柔和清透，刚开始一天，精神自然",
+      "白天:白天状态，自然日光充足，动作从容，生活感真实",
+      "傍晚:傍晚状态，暖色余晖或室内灯光，氛围舒缓",
+      "夜间:夜间状态，环境光柔和，带一点安静放松的夜晚氛围"
+    ]
+  },
+  "persona_state_timezone": {
+    "type": "string",
+    "description": "【人设与参考图】每日状态时区",
+    "hint": "使用 IANA 时区名称决定日期和时间段，例如 Asia/Shanghai。填写无效时会回退到 AstrBot 服务器本地时区。",
+    "default": "Asia/Shanghai"
+  },
+  "persona_daily_state_salt": {
+    "type": "string",
+    "description": "【人设与参考图】每日状态选择种子",
+    "hint": "用于稳定选择每天的穿搭和心情。修改后当天及未来的组合会变化；普通用户无需修改。",
+    "default": "linghui"
+  },
   "enable_llm_tool": {
     "type": "bool",
     "description": "【智能工具与批量处理】启用 Linghui LLM 工具",
     "hint": "控制 AstrBot Agent 是否能调用本插件提供的生图、图生图、批量处理和人设工具。",
     "default": true
+  },
+  "llm_show_progress": {
+    "type": "bool",
+    "description": "【智能工具与批量处理】LLM 调用显示处理中提示",
+    "hint": "开启时，Agent 调用生图、图生图或人设拍照工具会先发送自然的处理中提示；关闭后只发送最终图片。",
+    "default": true
+  },
+  "enable_obedient_mode": {
+    "type": "bool",
+    "description": "【人格互动】启用偏爱名单",
+    "hint": "开启后，偏爱名单中的用户会获得更温柔、耐心和配合的互动提示；最终措辞仍由 AstrBot 当前人格与上下文组织。",
+    "default": false
+  },
+  "obedient_whitelist": {
+    "type": "list",
+    "description": "【人格互动】偏爱用户名单",
+    "hint": "每项填写一个用户 ID。仅影响 Agent 调用后的语气和叛逆触发，不授予插件访问权限，也不会免除生图额度。需同时开启“启用偏爱名单”。",
+    "items": {
+      "type": "string",
+      "description": "用户 ID",
+      "hint": "填写需要更温柔互动的用户 ID。"
+    },
+    "default": []
+  },
+  "enable_rebellious_mode": {
+    "type": "bool",
+    "description": "【人格互动】启用可选叛逆提示",
+    "hint": "开启后，Agent 生图工具可按触发词或概率得到傲娇、调侃等互动建议；是否采用及具体表达仍由当前 AstrBot 人格决定。",
+    "default": true
+  },
+  "rebellious_probability": {
+    "type": "float",
+    "description": "【人格互动】无关键词时叛逆触发概率",
+    "hint": "取值 0 到 1。0 表示仅命中触发词时出现，1 表示每次都提供叛逆建议；偏爱名单用户不会触发。",
+    "default": 0.3,
+    "min": 0.0,
+    "max": 1.0
   },
   "enable_llm_auto_detect": {
     "type": "bool",
@@ -636,6 +831,52 @@
     "min": 0,
     "max": 3600
   },
+  "auto_detect_confidence": {
+    "type": "float",
+    "description": "【智能工具与批量处理】智能判断最低置信度",
+    "hint": "只有智能判断置信度达到此值才自动生图。提高可减少误触发，降低会更积极。建议保持 0.75 至 0.9。",
+    "default": 0.8,
+    "min": 0.1,
+    "max": 1.0
+  },
+  "llm_max_count": {
+    "type": "int",
+    "description": "【智能工具与批量处理】LLM 工具通用最大张数",
+    "hint": "LLM 工具一次调用允许的通用张数上限；具体绘图、编辑和人设工具还可使用下方独立上限。",
+    "default": 10,
+    "min": 1,
+    "max": 50
+  },
+  "draw_max_count": {
+    "type": "int",
+    "description": "【智能工具与批量处理】LLM 文生图最大张数",
+    "hint": "限制 linghui_draw_image 和相关智能文生图一次最多输出的图片数量。",
+    "default": 10,
+    "min": 1,
+    "max": 50
+  },
+  "edit_max_count": {
+    "type": "int",
+    "description": "【智能工具与批量处理】LLM 图生图最大张数",
+    "hint": "限制 linghui_edit_image 和相关智能图生图一次最多输出的图片数量。",
+    "default": 10,
+    "min": 1,
+    "max": 50
+  },
+  "persona_photo_max_count": {
+    "type": "int",
+    "description": "【智能工具与批量处理】人设拍照最大张数",
+    "hint": "用户一次明确索要多张自拍或写真时允许的最大张数，默认仍只拍 1 张。",
+    "default": 10,
+    "min": 1,
+    "max": 50
+  },
+  "generating_msg_template": {
+    "type": "string",
+    "description": "【智能工具与批量处理】命令处理中提示模板",
+    "hint": "命令开始时发送的提示。可使用 {preset} 代表预设名；自定义绘图会自动移除空预设占位。",
+    "default": "🎨 收到请求，正在生成 [{preset}]..."
+  },
   "batch_max_images": {
     "type": "int",
     "description": "【智能工具与批量处理】批量处理最大图片数",
@@ -660,6 +901,30 @@
     "min": 0,
     "max": 5
   },
+  "task_dedup_seconds": {
+    "type": "int",
+    "description": "【任务中心】重复请求判定窗口（秒）",
+    "hint": "同一消息、提示词、模型和参考图在此时间内重复触发时只执行一次；Dashboard 的“强制重跑”会绕过该限制。",
+    "default": 180,
+    "min": 0,
+    "max": 86400
+  },
+  "task_history_limit": {
+    "type": "int",
+    "description": "【任务中心】任务历史最大条数",
+    "hint": "任务中心最多保留的任务元数据条数。进行中的任务不会因达到上限被清理。",
+    "default": 500,
+    "min": 50,
+    "max": 5000
+  },
+  "task_request_retention_days": {
+    "type": "int",
+    "description": "【任务中心】失败任务请求素材保留天数",
+    "hint": "为了支持强制重跑，任务中心会暂存失败请求的参考图；超过期限后清理。成功结果仍按成功记录缓存规则管理。",
+    "default": 7,
+    "min": 1,
+    "max": 90
+  },
   "generation_cache_retention_days": {
     "type": "int",
     "description": "【Dashboard 与缓存】成功记录缓存保留天数",
@@ -667,6 +932,72 @@
     "default": 7,
     "min": 1,
     "max": 365
+  },
+  "generation_cache_max_mb": {
+    "type": "int",
+    "description": "【Dashboard 与缓存】成功记录最大容量（MB）",
+    "hint": "结果图、图生图输入原图和缩略图合计超过此容量时，会从最旧的未收藏、未锁定记录开始清理。设置为 0 表示不限制容量。",
+    "default": 2048,
+    "min": 0,
+    "max": 102400
+  },
+  "generation_cache_trim_ratio": {
+    "type": "float",
+    "description": "【Dashboard 与缓存】超容量清理余量比例",
+    "hint": "达到容量上限后额外腾出的比例。例如 0.15 表示清理到上限的 85%，避免每新增一张图就立即再次清理。",
+    "default": 0.15,
+    "min": 0.01,
+    "max": 0.9
+  },
+  "result_image_download_timeout": {
+    "type": "int",
+    "description": "【Dashboard 与缓存】结果图片下载超时（秒）",
+    "hint": "当上游返回图片 URL 而不是 Base64 时，单次下载结果图的超时时间。",
+    "default": 45,
+    "min": 5,
+    "max": 300
+  },
+  "result_image_download_retries": {
+    "type": "int",
+    "description": "【Dashboard 与缓存】结果图片下载重试次数",
+    "hint": "上游图片 URL 下载失败后的额外重试次数；程序会结合直连、代理和可信来源转发路线处理。",
+    "default": 2,
+    "min": 0,
+    "max": 10
+  },
+  "download_retries": {
+    "type": "int",
+    "description": "【Dashboard 与缓存】用户与参考图下载重试次数",
+    "hint": "下载用户消息图片、QQ 头像、预设参考图和字体等素材时的额外重试次数。",
+    "default": 3,
+    "min": 0,
+    "max": 10
+  },
+  "preset_table_quality": {
+    "type": "string",
+    "description": "【Dashboard 与缓存】预设列表图片清晰度",
+    "hint": "控制聊天中“预设列表”图片的缩略图尺寸和字体大小；越高越清晰，也会占用更多内存。",
+    "options": [
+      "标准",
+      "高清",
+      "超清"
+    ],
+    "default": "高清"
+  },
+  "preset_table_columns": {
+    "type": "int",
+    "description": "【Dashboard 与缓存】预设列表图片列数",
+    "hint": "控制聊天中“预设列表”图片每行显示多少个预设。屏幕较窄时可降低。",
+    "default": 5,
+    "min": 2,
+    "max": 10
+  },
+  "installed_default_preset_pack_version": {
+    "type": "int",
+    "description": "【内部迁移】已安装默认预设包版本",
+    "hint": "用于确保新默认预设只追加一次，避免你以后手动删除的预设在重启后重新出现。请勿手动修改。",
+    "default": 0,
+    "invisible": true
   },
   "dashboard_theme": {
     "type": "string",

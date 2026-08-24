@@ -17,6 +17,10 @@ from .data_manager import DataManager
 from .image_manager import ImageManager
 from .access_control import AccessPolicy
 from .channel_router import DrawingChannelRouter
+from .default_presets import ADDITIONAL_DEFAULT_PRESETS, DEFAULT_PRESET_PACK_VERSION
+from .persona_profile import PersonaProfileManager
+from .studio_manager import StudioAssetManager
+from .task_manager import GenerationTaskManager
 from .config_persistence import (
     merge_native_fallback_snapshots,
     should_restore_fallback_value,
@@ -24,10 +28,13 @@ from .config_persistence import (
 from .context_manager import ContextManager, LLMTaskAnalyzer
 from .dashboard_api import DRAWING_CHANNEL_TEMPLATE_KEY, LinghuiDashboardApi, PLUGIN_NAME
 from .utils import (
+    append_final_instruction,
     append_negative_prompt,
     extract_image_urls_from_text,
+    has_mention_privacy_instruction,
     is_ambiguous_message_delivery_timeout,
     is_custom_drawing_command,
+    MENTION_AVATAR_PRIVACY_INSTRUCTION,
     norm_id,
     normalize_model_list,
 )
@@ -144,7 +151,7 @@ def _direct_command_only(handler):
     PLUGIN_NAME,
     "Whereis-Alice",
     "灵绘工坊：带参考图专用渠道回退、受控群白名单、自定义绘图反向提示词与可视化管理的文生图/图生图插件",
-    "3.5.2",
+    "3.6.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_linghui_studio",
 )
 class LinghuiStudioPlugin(Star):
@@ -172,20 +179,37 @@ class LinghuiStudioPlugin(Star):
         "prompt_list",
         "custom_drawing_negative_prompt",
         "generation_cache_retention_days",
+        "generation_cache_max_mb",
+        "generation_cache_trim_ratio",
         "dashboard_theme",
         "drawing_channels",
         "active_drawing_channel",
         "reference_image_drawing_channel",
+        "channel_failure_threshold",
+        "channel_cooldown_seconds",
+        "channel_key_retry_count",
+        "fallback_on_safety_error",
         "generic_api_url",
         "generic_api_keys",
         "gemini_api_url",
         "gemini_api_keys",
+        "persona_character_type",
+        "enable_persona_daily_state",
+        "persona_daily_outfits",
+        "persona_daily_moods",
+        "persona_time_period_prompts",
+        "persona_state_timezone",
+        "persona_daily_state_salt",
+        "task_dedup_seconds",
+        "task_history_limit",
+        "task_request_retention_days",
+        "installed_default_preset_pack_version",
     ]
     _DYNAMIC_CONFIG_META_KEY = "__dynamic_overrides__"
     _DYNAMIC_CONFIG_VERSION_KEY = "__dynamic_config_version__"
     _DYNAMIC_CONFIG_UPDATED_AT_KEY = "__dynamic_updated_at__"
     _DYNAMIC_CONFIG_NATIVE_SNAPSHOT_KEY = "__native_values_at_fallback__"
-    _DYNAMIC_CONFIG_VERSION = 5
+    _DYNAMIC_CONFIG_VERSION = 6
     _LEGACY_DYNAMIC_RESTORE_KEYS = {
         "model",
         "text_to_image_model",
@@ -245,6 +269,10 @@ class LinghuiStudioPlugin(Star):
         self.img_mgr = ImageManager(config)
         self.api_mgr = DrawingChannelRouter(config)
         self.access_policy = AccessPolicy(config)
+        data_dir = StarTools.get_data_dir()
+        self.task_mgr = GenerationTaskManager(data_dir, config)
+        self.persona_profile = PersonaProfileManager(data_dir, config)
+        self.studio_mgr = StudioAssetManager(data_dir)
         self._generation_cache_cleanup_task: Optional[asyncio.Task] = None
 
         # 上下文管理器
@@ -311,6 +339,7 @@ class LinghuiStudioPlugin(Star):
         # 会话级任务进度表（用于催促时优先返回当前任务状态，避免重复开新任务）
         self._session_task_status: Dict[str, Dict[str, Any]] = {}
         self._session_task_status_lock = asyncio.Lock()
+        self._session_persisted_task_ids: Dict[str, str] = {}
 
     def _command_namespace(self) -> str:
         """Return the optional, deployment-specific command namespace."""
@@ -326,11 +355,11 @@ class LinghuiStudioPlugin(Star):
     def _strip_command_marker(text: str) -> str:
         return re.sub(r"^[#/！!]+", "", str(text or "")).strip()
 
-    def _namespaced_command_text(self, event: AstrMessageEvent) -> Optional[str]:
+    def _namespaced_command_text(self, event: AstrMessageEvent, source_text: Optional[str] = None) -> Optional[str]:
         namespace = self._command_namespace()
         if not namespace:
             return None
-        compact = self._strip_command_marker(event.message_str)
+        compact = self._strip_command_marker(event.message_str if source_text is None else source_text)
         if compact == namespace:
             return ""
         if not compact.startswith(namespace):
@@ -413,6 +442,63 @@ class LinghuiStudioPlugin(Star):
         if changed:
             self.conf["drawing_channels"] = migrated
         return changed
+
+    @staticmethod
+    def _config_id_list(value: Any) -> List[str]:
+        if isinstance(value, str):
+            values = re.split(r"[\s,;，；]+", value)
+        elif isinstance(value, (list, tuple, set)):
+            values = value
+        else:
+            values = []
+        result: List[str] = []
+        for item in values:
+            normalized = norm_id(item)
+            if normalized and normalized not in result:
+                result.append(normalized)
+        return result
+
+    def _migrate_legacy_access_lists(self) -> List[str]:
+        """Merge upstream user list fields into Linghui's clearer names once."""
+        changed: List[str] = []
+        for current_key, legacy_key in (
+            ("allowed_users", "user_whitelist"),
+            ("blocked_users", "user_blacklist"),
+        ):
+            current = self._config_id_list(self.conf.get(current_key, []))
+            merged = list(current)
+            for identity_id in self._config_id_list(self.conf.get(legacy_key, [])):
+                if identity_id not in merged:
+                    merged.append(identity_id)
+            if merged != current:
+                self.conf[current_key] = merged
+                changed.append(current_key)
+        return changed
+
+    def _install_default_preset_pack_once(self) -> bool:
+        """Append Linghui-authored public presets once without resurrecting later deletions."""
+        try:
+            installed_version = int(self.conf.get("installed_default_preset_pack_version", 0) or 0)
+        except (TypeError, ValueError):
+            installed_version = 0
+        if installed_version >= DEFAULT_PRESET_PACK_VERSION:
+            return False
+
+        prompt_list = self.conf.get("prompt_list", [])
+        if not isinstance(prompt_list, list):
+            prompt_list = []
+        existing_names = {
+            str(item).split(":", 1)[0].strip()
+            for item in prompt_list
+            if isinstance(item, str) and ":" in item
+        }
+        updated = list(prompt_list)
+        for name, prompt in ADDITIONAL_DEFAULT_PRESETS.items():
+            if name not in existing_names:
+                updated.append(f"{name}:{prompt}")
+        self.conf["prompt_list"] = updated
+        self.conf["installed_default_preset_pack_version"] = DEFAULT_PRESET_PACK_VERSION
+        return True
 
     def _get_schema_defaults(self) -> Dict[str, Any]:
         """读取配置 schema 默认值，用于判断 dynamic_config 是否会覆盖用户面板保存的新配置。"""
@@ -886,6 +972,14 @@ class LinghuiStudioPlugin(Star):
             self._save_config(["drawing_channels"])
             logger.info("LinghuiStudio: 已修复旧版绘图渠道缺少的 template_list 标识")
 
+        migrated_access_keys = self._migrate_legacy_access_lists()
+        if migrated_access_keys:
+            self._save_config(migrated_access_keys)
+            logger.info(
+                "LinghuiStudio: 已将旧版用户黑白名单合并到新访问配置：%s",
+                ", ".join(migrated_access_keys),
+            )
+
         removed_from_runtime = self._purge_deprecated_config_keys()
         if removed_from_runtime > 0:
             logger.info(f"LinghuiStudio: 已从运行时配置中清理 {removed_from_runtime} 个废弃强力模式字段")
@@ -990,7 +1084,14 @@ class LinghuiStudioPlugin(Star):
             except Exception as e:
                 logger.error(f"LinghuiStudio: 恢复动态配置失败 {e}")
 
+        if self._install_default_preset_pack_once():
+            self._save_config(["prompt_list", "installed_default_preset_pack_version"])
+            logger.info("LinghuiStudio: 已安装默认增强预设包 v%s", DEFAULT_PRESET_PACK_VERSION)
+
         await self.data_mgr.initialize()
+        await self.task_mgr.initialize()
+        await self.persona_profile.initialize()
+        await self.studio_mgr.initialize()
         await self._cleanup_generation_cache()
         if self._generation_cache_cleanup_task is None or self._generation_cache_cleanup_task.done():
             self._generation_cache_cleanup_task = asyncio.create_task(
@@ -1002,7 +1103,7 @@ class LinghuiStudioPlugin(Star):
 
         auto_detect_status = "已启用" if self._llm_auto_detect else "未启用"
         logger.info(
-            f"LinghuiStudio 已加载 v3.5.2 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
+            f"LinghuiStudio 已加载 v3.6.0 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
 
     def _generation_cache_retention_days(self) -> int:
         """Return a bounded retention period for output and input image cache files."""
@@ -1011,9 +1112,27 @@ class LinghuiStudioPlugin(Star):
         except (TypeError, ValueError):
             return 7
 
+    def _generation_cache_max_bytes(self) -> int:
+        """Return zero for no size cap, otherwise a bounded byte limit."""
+        try:
+            max_mb = max(0, int(self.conf.get("generation_cache_max_mb", 2048) or 0))
+        except (TypeError, ValueError):
+            max_mb = 2048
+        return min(max_mb, 102_400) * 1024 * 1024
+
+    def _generation_cache_trim_ratio(self) -> float:
+        try:
+            return min(max(float(self.conf.get("generation_cache_trim_ratio", 0.15) or 0.15), 0.01), 0.90)
+        except (TypeError, ValueError):
+            return 0.15
+
     async def _cleanup_generation_cache(self) -> Dict[str, int]:
         """Delete only expired, unprotected output and image-to-image input cache entries."""
-        result = await self.data_mgr.cleanup_generation_cache(self._generation_cache_retention_days())
+        result = await self.data_mgr.cleanup_generation_cache(
+            self._generation_cache_retention_days(),
+            max_bytes=self._generation_cache_max_bytes(),
+            trim_ratio=self._generation_cache_trim_ratio(),
+        )
         removed = sum(int(result.get(key, 0) or 0) for key in (
             "removed_records", "removed_images", "removed_previews", "removed_source_images",
             "removed_source_previews", "removed_orphans"
@@ -1345,7 +1464,7 @@ class LinghuiStudioPlugin(Star):
     def _build_count_limit_reply(self, actual_count: int, task_type: str = "generic") -> str:
         """当请求数量过多时，给 LLM 一个自然发挥的提示文本"""
         if task_type == "persona":
-            return f"哼，最多只给你拍{actual_count}张，才不给你一下拍那么多。照片我会慢慢整理好再发给你。"
+            return f"本次按管理员设置的上限保留为 {actual_count} 张；请沿用当前 AstrBot 人格自然说明，不要套用固定傲娇文案。"
         if task_type == "edit":
             return f"这么多可不行，我最多先给你处理{actual_count}张。剩下的下次再说。"
         return f"一下要这么多也太贪心了，我最多先给你弄{actual_count}张。"
@@ -1531,9 +1650,13 @@ class LinghuiStudioPlugin(Star):
 
         return False
 
-    def _build_current_time_persona_hint(self) -> str:
-        """保留空实现：主文件不再注入任何硬编码动作/时间/场景提示。"""
-        return ""
+    async def _build_current_time_persona_hint(self, extra_request: str = "") -> str:
+        """Return the persisted daily outfit, mood, period, and appearance type hint."""
+        try:
+            return await self.persona_profile.build_prompt_hint(extra_request)
+        except Exception:
+            logger.exception("LinghuiStudio: failed to build persona daily-state prompt")
+            return ""
 
     def _extract_explicit_requested_count_from_text(self, message: str) -> Optional[int]:
         """仅提取用户文本里明确说出的数量；未明确说明时返回 None。"""
@@ -1659,6 +1782,8 @@ class LinghuiStudioPlugin(Star):
             *,
             user_id: str,
             group_id: str = "",
+            user_name: str = "",
+            group_name: str = "",
             prompt: str = "",
             model: str = "",
             preset_name: str = "",
@@ -1666,7 +1791,9 @@ class LinghuiStudioPlugin(Star):
             reference_images: Optional[List[bytes]] = None,
             route_metrics: Optional[Dict[str, Any]] = None,
             event: Optional[AstrMessageEvent] = None,
-    ) -> None:
+            task_id: str = "",
+            delivery_status: str = "pending",
+    ) -> Optional[Dict[str, Any]]:
         """Persist one successful output without letting cache failures affect delivery.
 
         The cache stores the exact output bytes sent to the platform plus the
@@ -1680,13 +1807,16 @@ class LinghuiStudioPlugin(Star):
         if channel_id.lower() == "legacy" and not channel_name:
             channel_name = "兼容单接口"
         actual_model = str(metrics.get("model", "") or model or "").strip()[:200]
-        user_name, group_name = self._event_identity_labels(event)
+        event_user_name, event_group_name = self._event_identity_labels(event)
+        user_name = str(user_name or event_user_name or "").strip()[:160]
+        group_name = str(group_name or event_group_name or "").strip()[:160]
         await self.data_mgr.record_usage(
             user_id,
             group_id,
             user_name=user_name,
             group_name=group_name,
         )
+        record = None
         try:
             record = await self.data_mgr.save_generation_record(
                 image_bytes,
@@ -1701,6 +1831,11 @@ class LinghuiStudioPlugin(Star):
                 preset=preset_name,
                 task_type=task_type,
                 reference_images=reference_images,
+                fallback_count=int(metrics.get("fallback_count", 0) or 0),
+                route_duration=float(metrics.get("route_duration", metrics.get("total_duration", 0.0)) or 0.0),
+                attempt_chain=metrics.get("attempt_chain", []),
+                task_id=task_id,
+                delivery_status=delivery_status,
             )
             if record is None:
                 logger.warning("LinghuiStudio: successful output was not added to generation history")
@@ -1709,6 +1844,7 @@ class LinghuiStudioPlugin(Star):
 
         await self._register_generation_success(session_id, 1)
         await self._register_generated_image(session_id, image_bytes)
+        return dict(record) if isinstance(record, dict) else None
 
     async def _register_generation_success(self, session_id: str, count: int = 1):
         """登记会话中成功生成的图片数量"""
@@ -2467,7 +2603,8 @@ class LinghuiStudioPlugin(Star):
             result = "[TOOL_SUCCESS] 任务已完成，结果已发送给用户。"
 
         guard_rule = (
-            "【对话要求】你现在要根据以上工具结果，用自己的语气给用户回一句自然的话，就像真人在聊天一样。"
+            "【对话要求】你现在要根据以上工具结果，严格沿用当前 AstrBot 人格设定、口吻和与用户的关系，自然接话。"
+            "不要采用插件预设的固定性格，也不要像客服汇报。"
             "严格禁止以下行为：\n"
             "- 说出'生成''绘制''绘图''渲染''处理完成''任务完成''已发送'等机械词汇\n"
             "- 暴露工具名称、预设名、内部参数或系统信息\n"
@@ -2491,10 +2628,11 @@ class LinghuiStudioPlugin(Star):
         """发送前保持原图，避免任何有损压缩或缩放。"""
         return image_bytes
 
-    async def _send_generated_result(self, event: AstrMessageEvent, chain: Any) -> None:
+    async def _send_generated_result(self, event: AstrMessageEvent, chain: Any) -> str:
         """Send one completed image result without duplicating QQ late-ACK sends."""
         try:
             await event.send(chain)
+            return "sent"
         except Exception as exc:
             if not is_ambiguous_message_delivery_timeout(exc):
                 raise
@@ -2502,6 +2640,100 @@ class LinghuiStudioPlugin(Star):
                 "Linghui image result has a late QQ send receipt; keeping the completed task successful without retrying: %s",
                 exc,
             )
+            return "possibly_sent"
+
+    @staticmethod
+    def _event_request_id(event: Optional[AstrMessageEvent]) -> str:
+        try:
+            return str(event.message_obj.message_id or "").strip()
+        except Exception:
+            return ""
+
+    async def _begin_generation_task(
+            self,
+            event: AstrMessageEvent,
+            *,
+            images: List[bytes],
+            prompt: str,
+            model: str,
+            preset_name: str,
+            task_type: str,
+            use_text_to_image_api: bool = False,
+            aspect_ratio: str = None,
+            resolution: str = None,
+            force: bool = False,
+            nonce: str = "",
+            rerun_of: str = "",
+    ) -> Tuple[Dict[str, Any], bool]:
+        user_name, group_name = self._event_identity_labels(event)
+        return await self.task_mgr.begin_task(
+            request_id=self._event_request_id(event),
+            session_id=event.unified_msg_origin,
+            user_id=norm_id(event.get_sender_id()),
+            group_id=norm_id(event.get_group_id()),
+            user_name=user_name,
+            group_name=group_name,
+            task_type=task_type,
+            prompt=prompt,
+            preset=preset_name,
+            requested_model=model,
+            images=images,
+            force=force,
+            nonce=nonce,
+            rerun_of=rerun_of,
+            request={
+                "use_text_to_image_api": bool(use_text_to_image_api),
+                "aspect_ratio": str(aspect_ratio or ""),
+                "resolution": str(resolution or ""),
+            },
+        )
+
+    async def _call_generation_api_task(
+            self,
+            task_id: str,
+            images: List[bytes],
+            prompt: str,
+            model: str,
+            *,
+            use_text_to_image_api: bool = False,
+            aspect_ratio: str = None,
+            resolution: str = None,
+            negative_prompt: str = None,
+            final_instruction: str = None,
+            preferred_channel_id: str = None,
+            allow_fallback: bool = True,
+    ) -> bytes | str:
+        runtime_task = asyncio.create_task(self.api_mgr.call_api(
+            images,
+            prompt,
+            model,
+            False,
+            self.img_mgr.proxy,
+            use_text_to_image_api=use_text_to_image_api,
+            aspect_ratio=aspect_ratio,
+            resolution=resolution,
+            negative_prompt=negative_prompt,
+            final_instruction=final_instruction,
+            preferred_channel_id=preferred_channel_id,
+            allow_fallback=allow_fallback,
+        ))
+        await self.task_mgr.attach_runtime_task(task_id, runtime_task)
+        try:
+            return await runtime_task
+        finally:
+            await self.task_mgr.detach_runtime_task(task_id, runtime_task)
+
+    async def _refund_quota(self, deduction: Dict[str, Any], uid: str, gid: str, amount: int) -> None:
+        """Refund only provider-side failures; successful but late deliveries remain charged."""
+        if amount <= 0:
+            return
+        try:
+            if deduction.get("source") == "user":
+                await self.data_mgr.add_user_count(uid, amount)
+            elif deduction.get("source") == "group" and gid:
+                await self.data_mgr.add_group_count(gid, amount)
+        except Exception:
+            logger.exception("LinghuiStudio: failed to refund quota after generation failure")
 
     async def _get_active_session_task(self, session_id: str) -> Optional[Dict[str, Any]]:
         """获取当前会话中的进行中任务"""
@@ -2513,7 +2745,16 @@ class LinghuiStudioPlugin(Star):
                 return dict(task)
             return None
 
-    async def _begin_session_task(self, session_id: str, task_type: str, total: int):
+    async def _begin_session_task(
+            self,
+            session_id: str,
+            task_type: str,
+            total: int,
+            event: Optional[AstrMessageEvent] = None,
+            prompt: str = "",
+            preset_name: str = "",
+            model: str = "",
+    ):
         """登记会话任务开始"""
         if not session_id:
             return
@@ -2527,6 +2768,21 @@ class LinghuiStudioPlugin(Star):
                 "fail": 0,
                 "started_at": datetime.now().isoformat(timespec="seconds"),
             }
+        if event is not None:
+            task, _ = await self._begin_generation_task(
+                event,
+                images=[],
+                prompt=prompt,
+                model=model,
+                preset_name=preset_name,
+                task_type=task_type,
+                force=True,
+                nonce=f"batch:{datetime.now().timestamp()}",
+            )
+            task_id = str(task.get("id", "") or "")
+            if task_id:
+                self._session_persisted_task_ids[session_id] = task_id
+                await self.task_mgr.update_progress(task_id, total=total)
 
     async def _update_session_task_progress(self, session_id: str, current: Optional[int] = None,
                                             success: Optional[int] = None, fail: Optional[int] = None):
@@ -2543,16 +2799,38 @@ class LinghuiStudioPlugin(Star):
                 task["success"] = max(0, int(success))
             if fail is not None:
                 task["fail"] = max(0, int(fail))
+        persisted_task_id = self._session_persisted_task_ids.get(session_id, "")
+        if persisted_task_id:
+            await self.task_mgr.update_progress(
+                persisted_task_id,
+                current=current,
+                success=success,
+                fail=fail,
+            )
 
     async def _finish_session_task(self, session_id: str):
         """标记会话任务完成"""
         if not session_id:
             return
+        snapshot: Optional[Dict[str, Any]] = None
         async with self._session_task_status_lock:
             task = self._session_task_status.get(session_id)
             if task:
                 task["running"] = False
                 task["finished_at"] = datetime.now().isoformat(timespec="seconds")
+                snapshot = dict(task)
+        persisted_task_id = self._session_persisted_task_ids.pop(session_id, "")
+        if persisted_task_id and snapshot:
+            if int(snapshot.get("success", 0) or 0) > 0:
+                await self.task_mgr.finish_success(
+                    persisted_task_id,
+                    delivery_status="sent",
+                )
+            else:
+                await self.task_mgr.finish_failure(
+                    persisted_task_id,
+                    "批量任务没有成功结果。",
+                )
 
     def _build_active_task_reply(self, active_task: Optional[Dict[str, Any]]) -> str:
         """构建进行中任务的统一回复，避免用户催促时重复开新任务"""
@@ -2671,7 +2949,9 @@ class LinghuiStudioPlugin(Star):
                                    extra_rules: str = "", model_override: str = "", hide_text: bool = False,
                                    charge_quota: bool = True, use_text_to_image_api: bool = False,
                                    suppress_user_error: bool = False,
-                                   aspect_ratio: str = None, resolution: str = None) -> Tuple[bool, str]:
+                                   aspect_ratio: str = None, resolution: str = None,
+                                   force_task: bool = False, task_nonce: str = "",
+                                   task_type_override: str = "") -> Tuple[bool, str]:
         """
         后台执行生成任务，并在完成后主动发送消息。
 
@@ -2680,50 +2960,70 @@ class LinghuiStudioPlugin(Star):
             model_override: 指定使用的模型（如果为空则使用默认模型）
             hide_text: 是否隐藏生成成功提示文字
         """
+        task_id = ""
+        charged = False
+        record: Optional[Dict[str, Any]] = None
         try:
-            # 1. 扣费
-            if charge_quota:
-                if deduction["source"] == "user":
-                    await self.data_mgr.decrease_user_count(uid, cost)
-                elif deduction["source"] == "group":
-                    await self.data_mgr.decrease_group_count(gid, cost)
-
-            # 2. 加载预设参考图（如果有）
-            # 注意：人设功能（preset_name 以 "人设-" 开头）已经在调用前加载了参考图，不需要重复加载
+            # 人设功能的参考图已在调用前合并，普通预设在这里补齐。
             if preset_name != "自定义" and not preset_name.startswith("人设-") and self.conf.get(
                     "enable_preset_ref_images", True):
                 ref_images = await self._load_preset_ref_images(preset_name)
                 if ref_images:
-                    # 将参考图添加到图片列表前面
                     images = ref_images + images
                     logger.info(f"已加载 {len(ref_images)} 张预设参考图: {preset_name}")
 
-            # 3. 调用 API（使用指定模型或默认模型）
             model = model_override if model_override else self.conf.get("model", "nano-banana")
-            start_time = datetime.now()
+            task_type = task_type_override or ("文生图" if use_text_to_image_api else (
+                "人设拍照" if preset_name.startswith("人设-") else "图生图"
+            ))
+            task, duplicate = await self._begin_generation_task(
+                event,
+                images=images,
+                prompt=prompt,
+                model=model,
+                preset_name=preset_name,
+                task_type=task_type,
+                use_text_to_image_api=use_text_to_image_api,
+                aspect_ratio=aspect_ratio,
+                resolution=resolution,
+                force=force_task,
+                nonce=task_nonce,
+            )
+            task_id = str(task.get("id", "") or "")
+            if duplicate:
+                return False, "检测到同一条消息的相同请求正在处理或刚刚完成，已避免重复执行。"
 
-            res = None
+            if charge_quota:
+                if deduction["source"] == "user":
+                    await self.data_mgr.decrease_user_count(uid, cost)
+                    charged = True
+                elif deduction["source"] == "group":
+                    await self.data_mgr.decrease_group_count(gid, cost)
+                    charged = True
+
+            start_time = datetime.now()
+            res: bytes | str | None = None
             for attempt in range(2):
-                res = await self.api_mgr.call_api(
-                    images, prompt, model, False, self.img_mgr.proxy,
+                res = await self._call_generation_api_task(
+                    task_id,
+                    images,
+                    prompt,
+                    model,
                     use_text_to_image_api=use_text_to_image_api,
-                    aspect_ratio=aspect_ratio, resolution=resolution
+                    aspect_ratio=aspect_ratio,
+                    resolution=resolution,
                 )
                 if isinstance(res, bytes) or not self._is_transient_generation_error(res) or attempt == 1:
                     break
                 logger.warning(f"Background task transient error, retrying once: {res}")
                 await asyncio.sleep(1.2)
 
-            # 4. 处理结果
+            route_metrics = self._snapshot_generation_route_metrics()
             if isinstance(res, bytes):
-                route_metrics = self._snapshot_generation_route_metrics()
                 res = await self._prepare_send_image_bytes(res)
                 elapsed = (datetime.now() - start_time).total_seconds()
                 actual_model = str(route_metrics.get("model", "") or model)
-                task_type = "文生图" if use_text_to_image_api else (
-                    "人设拍照" if preset_name.startswith("人设-") else "图生图"
-                )
-                await self._record_generation_result(
+                record = await self._record_generation_result(
                     event.unified_msg_origin,
                     res,
                     user_id=uid,
@@ -2735,17 +3035,30 @@ class LinghuiStudioPlugin(Star):
                     reference_images=images,
                     route_metrics=route_metrics,
                     event=event,
+                    task_id=task_id,
+                    delivery_status="pending",
+                )
+                record_id = str(record.get("id", "") or "") if record else ""
+                await self.task_mgr.mark_generated(
+                    task_id,
+                    metrics=route_metrics,
+                    result_record_id=record_id,
                 )
 
-                # 5. 检查是否处于 PDF 暂存模式
                 if await self._maybe_stage_after_grace(event.unified_msg_origin, res):
+                    if record_id:
+                        await self.data_mgr.update_generation_record_delivery(record_id, "staged")
+                    await self.task_mgr.finish_success(
+                        task_id,
+                        metrics=route_metrics,
+                        result_record_id=record_id,
+                        delivery_status="staged",
+                    )
                     return True, ""
 
-                # 6. 主动发送结果
                 chain_nodes = [Image.fromBytes(res)]
                 if not hide_text:
                     quota_str = self._get_quota_str(deduction, uid, gid)
-                    # 构建成功文案
                     timing_text = self._format_success_timing(elapsed)
                     info_text = f"\n✅ 生成成功 ({timing_text}) | 预设: {preset_name}"
                     if extra_rules:
@@ -2755,28 +3068,64 @@ class LinghuiStudioPlugin(Star):
                         info_text += f" | {actual_model}"
                     chain_nodes.append(Plain(info_text))
                 else:
-                    chain_nodes.append(Plain(" "))  # 防止某些适配器丢弃纯图片消息
+                    chain_nodes.append(Plain(" "))
 
-                chain = event.chain_result(chain_nodes)
-                await self._send_generated_result(event, chain)
+                delivery_status = await self._send_generated_result(event, event.chain_result(chain_nodes))
+                if record_id:
+                    await self.data_mgr.update_generation_record_delivery(record_id, delivery_status)
+                await self.task_mgr.finish_success(
+                    task_id,
+                    metrics=route_metrics,
+                    result_record_id=record_id,
+                    delivery_status=delivery_status,
+                )
                 return True, ""
-            else:
-                error_msg = self._resolve_debug_error_message(res,
-                                                              "这次没弄好，请稍后再试。") if suppress_user_error else str(
-                    res)
-                if (not suppress_user_error) or self._should_show_debug_errors():
-                    display_msg = error_msg
-                    if not str(display_msg).startswith("❌"):
-                        display_msg = f"没搞好: {display_msg}"
-                    else:
-                        display_msg = str(display_msg).removeprefix("❌").strip()
-                    await event.send(event.chain_result([Plain(display_msg)]))
-                return False, str(error_msg).removeprefix("❌").strip()
 
+            if charged:
+                await self._refund_quota(deduction, uid, gid, cost)
+                charged = False
+            await self.task_mgr.finish_failure(task_id, res, metrics=route_metrics)
+            error_msg = self._resolve_debug_error_message(
+                res, "这次没弄好，请稍后再试。"
+            ) if suppress_user_error else str(res)
+            if (not suppress_user_error) or self._should_show_debug_errors():
+                display_msg = error_msg
+                if not str(display_msg).startswith("❌"):
+                    display_msg = f"没搞好: {display_msg}"
+                else:
+                    display_msg = str(display_msg).removeprefix("❌").strip()
+                await event.send(event.chain_result([Plain(display_msg)]))
+            return False, str(error_msg).removeprefix("❌").strip()
+
+        except asyncio.CancelledError:
+            if charged and record is None:
+                await self._refund_quota(deduction, uid, gid, cost)
+            if task_id:
+                await self.task_mgr.finish_failure(
+                    task_id,
+                    "任务已取消",
+                    metrics=self._snapshot_generation_route_metrics(),
+                    status="cancelled",
+                    delivery_status="cancelled",
+                )
+            return False, "这次任务已取消。"
         except Exception as e:
             logger.error(f"Background task error: {e}")
-            error_msg = self._resolve_debug_error_message(e,
-                                                          "这次没弄好，请稍后再试。") if suppress_user_error else f"系统错误: {e}"
+            metrics = self._snapshot_generation_route_metrics()
+            if record is None and charged:
+                await self._refund_quota(deduction, uid, gid, cost)
+                charged = False
+            if task_id:
+                await self.task_mgr.finish_failure(
+                    task_id,
+                    e,
+                    metrics=metrics,
+                    status="send_failed" if record is not None else "failed",
+                    delivery_status="failed",
+                )
+            error_msg = self._resolve_debug_error_message(
+                e, "这次没弄好，请稍后再试。"
+            ) if suppress_user_error else f"系统错误: {e}"
             if (not suppress_user_error) or self._should_show_debug_errors():
                 _display = str(error_msg).removeprefix("❌").strip()
                 await event.send(event.chain_result([Plain(f"出了点状况: {_display}")]))
@@ -3220,7 +3569,6 @@ class LinghuiStudioPlugin(Star):
 
         # 0.2 限制批量生成数量
         requested_count = self._resolve_tool_requested_count(prompt, incoming_count=count, default=1, multi_default=3)
-        raw_count = requested_count
         count, count_limited = self._normalize_generation_count(requested_count, "draw")
 
         # 1. 计算预设和追加规则
@@ -3586,10 +3934,13 @@ class LinghuiStudioPlugin(Star):
         if self.conf.get("prefix", True) and not event.is_at_or_wake_command:
             return
 
-        text = event.message_str.strip()
+        # Build prompts from user-authored Plain components. QQ adapters may
+        # expand At components into group cards or numeric IDs in message_str;
+        # those display labels must never become visual instructions.
+        text = self.img_mgr.extract_plain_text_without_mentions(event).strip()
         if not text: return
 
-        namespaced_text = self._namespaced_command_text(event)
+        namespaced_text = self._namespaced_command_text(event, text)
         if namespaced_text is not None:
             text = namespaced_text
         else:
@@ -3673,6 +4024,7 @@ class LinghuiStudioPlugin(Star):
         await event.send(event.chain_result([Plain(feedback)]))
 
         bot_id = self._get_bot_id(event)
+        mentioned_user_ids = self.img_mgr.extract_mentioned_user_ids(event, ignore_id=bot_id)
         # 传递 bot_id 给 image manager 以过滤，并传入 context 支持 message_id
         # #bnn/#画 accept every mentioned user's QQ avatar as an input image.
         # The image manager preserves mention order and ignores duplicate/bot mentions.
@@ -3733,40 +4085,89 @@ class LinghuiStudioPlugin(Star):
             if 0 <= model_idx_override < len(all_models):
                 model = all_models[model_idx_override]
 
-        if deduction["source"] == "user":
-            await self.data_mgr.decrease_user_count(uid, cost)
-        elif deduction["source"] == "group":
-            await self.data_mgr.decrease_group_count(gid, cost)
-
         negative_prompt = self._get_custom_drawing_negative_prompt() if is_custom_command else ""
+        final_instruction = ""
+        if (
+            is_custom_command
+            and mentioned_user_ids
+            and not has_mention_privacy_instruction(user_prompt)
+        ):
+            # An At component selects avatar references; it must never become
+            # visible text in the result. A direct instruction at the very end
+            # is more reliable than treating this as an ordinary negative
+            # prompt, and the router adds it only after optional prompt
+            # translation/optimization.
+            final_instruction = MENTION_AVATAR_PRIVACY_INSTRUCTION
+        stored_prompt = append_final_instruction(
+            append_negative_prompt(user_prompt, negative_prompt),
+            final_instruction,
+        )
         self._log_prompt_preview(
             f"command:{base_cmd if base_cmd else 'bnn'}",
-            append_negative_prompt(user_prompt, negative_prompt)
+            stored_prompt
         )
 
-        start = datetime.now()
-        res = await self.api_mgr.call_api(
-            images, user_prompt, model, self.img_mgr.proxy,
+        direct_task_type = "自定义文生图" if is_text_to_image else "自定义图生图"
+        task, duplicate = await self._begin_generation_task(
+            event,
+            images=images,
+            prompt=stored_prompt,
+            model=model,
+            preset_name=preset_name,
+            task_type=direct_task_type,
             use_text_to_image_api=is_text_to_image,
-            negative_prompt=negative_prompt,
         )
+        task_id = str(task.get("id", "") or "")
+        if duplicate:
+            yield event.chain_result([Plain("这条请求已经在处理或刚完成，我先不重复来一遍。")])
+            return
+
+        charged = False
+        if deduction["source"] == "user":
+            await self.data_mgr.decrease_user_count(uid, cost)
+            charged = True
+        elif deduction["source"] == "group":
+            await self.data_mgr.decrease_group_count(gid, cost)
+            charged = True
+
+        start = datetime.now()
+        try:
+            res = await self._call_generation_api_task(
+                task_id,
+                images,
+                user_prompt,
+                model,
+                use_text_to_image_api=is_text_to_image,
+                negative_prompt=negative_prompt,
+                final_instruction=final_instruction,
+            )
+        except asyncio.CancelledError:
+            if charged:
+                await self._refund_quota(deduction, uid, gid, cost)
+            await self.task_mgr.finish_failure(
+                task_id, "任务已取消", status="cancelled", delivery_status="cancelled"
+            )
+            yield event.chain_result([Plain("这次已经取消了。")])
+            return
 
         if isinstance(res, bytes):
             route_metrics = self._snapshot_generation_route_metrics()
             res = await self._prepare_send_image_bytes(res)
             elapsed = (datetime.now() - start).total_seconds()
-            await self._record_generation_result(
+            record = await self._record_generation_result(
                 event.unified_msg_origin,
                 res,
                 user_id=uid,
                 group_id=gid,
-                prompt=append_negative_prompt(user_prompt, negative_prompt),
+                prompt=stored_prompt,
                 model=model,
                 preset_name=preset_name,
-                task_type="自定义文生图" if is_text_to_image else "自定义图生图",
+                task_type=direct_task_type,
                 reference_images=images,
                 route_metrics=route_metrics,
                 event=event,
+                task_id=task_id,
+                delivery_status="pending",
             )
             if not is_custom_command: await self.data_mgr.save_preset_image(base_cmd, res)
 
@@ -3775,9 +4176,35 @@ class LinghuiStudioPlugin(Star):
             info = f"\n✅ 生成成功 ({timing_text}) | 预设: {preset_name} | 剩余: {quota_str}"
             if self.conf.get("show_model_info", False):
                 info += f" | {model}"
-
-            yield event.chain_result([Image.fromBytes(res), Plain(info)])
+            record_id = str(record.get("id", "") or "") if record else ""
+            await self.task_mgr.mark_generated(task_id, metrics=route_metrics, result_record_id=record_id)
+            try:
+                delivery_status = await self._send_generated_result(
+                    event, event.chain_result([Image.fromBytes(res), Plain(info)])
+                )
+                if record_id:
+                    await self.data_mgr.update_generation_record_delivery(record_id, delivery_status)
+                await self.task_mgr.finish_success(
+                    task_id,
+                    metrics=route_metrics,
+                    result_record_id=record_id,
+                    delivery_status=delivery_status,
+                )
+            except Exception as exc:
+                await self.task_mgr.finish_failure(
+                    task_id,
+                    exc,
+                    metrics=route_metrics,
+                    status="send_failed",
+                    delivery_status="failed",
+                )
+                yield event.chain_result([Plain("图片已经做好并缓存，但这次发送失败了，可以到 Dashboard 任务中心重发。")])
         else:
+            if charged:
+                await self._refund_quota(deduction, uid, gid, cost)
+            await self.task_mgr.finish_failure(
+                task_id, res, metrics=self._snapshot_generation_route_metrics()
+            )
             yield event.chain_result([Plain(f"没弄好: {self._resolve_debug_error_message(res, '这次没弄好，请稍后再试。')}")])
 
     @filter.command("文生图", prefix_optional=True)
@@ -3800,55 +4227,23 @@ class LinghuiStudioPlugin(Star):
             "[{preset}]", "")
         await event.send(event.chain_result([Plain(feedback)]))
 
-        if deduction["source"] == "user":
-            await self.data_mgr.decrease_user_count(uid, 1)
-        elif deduction["source"] == "group":
-            await self.data_mgr.decrease_group_count(event.get_group_id(), 1)
-
-        # 加载预设参考图
-        images = []
-        if preset_name != "自定义" and self.conf.get("enable_preset_ref_images", True):
-            ref_images = await self._load_preset_ref_images(preset_name)
-            if ref_images:
-                images = ref_images
-                logger.info(f"已加载 {len(ref_images)} 张预设参考图: {preset_name}")
-
-        # 文生图使用专用模型
         model = self._get_text_to_image_model()
         self._log_prompt_preview("command:文生图", final_prompt)
-        start = datetime.now()
-        res = await self.api_mgr.call_api(
-            images, final_prompt, model, False, self.img_mgr.proxy,
-            use_text_to_image_api=True
+        group_id = norm_id(event.get_group_id())
+        await self._register_pending_generation(event.unified_msg_origin, 1)
+        await self._run_background_task(
+            event,
+            [],
+            final_prompt,
+            preset_name,
+            deduction,
+            uid,
+            group_id,
+            1,
+            extra_rules=extra_rules,
+            model_override=model,
+            use_text_to_image_api=True,
         )
-
-        if isinstance(res, bytes):
-            route_metrics = self._snapshot_generation_route_metrics()
-            res = await self._prepare_send_image_bytes(res)
-            elapsed = (datetime.now() - start).total_seconds()
-            group_id = norm_id(event.get_group_id())
-            await self._record_generation_result(
-                event.unified_msg_origin,
-                res,
-                user_id=uid,
-                group_id=group_id,
-                prompt=final_prompt,
-                model=model,
-                preset_name=preset_name,
-                task_type="文生图",
-                reference_images=images,
-                route_metrics=route_metrics,
-                event=event,
-            )
-            quota_str = self._get_quota_str(deduction, uid, group_id)
-            timing_text = self._format_success_timing(elapsed)
-            info = f"\n✅ 生成成功 ({timing_text}) | 预设: {preset_name}"
-            if extra_rules:
-                info += f" | 规则: {extra_rules[:15]}..."
-            info += f" | 剩余: {quota_str}"
-            yield event.chain_result([Image.fromBytes(res), Plain(info)])
-        else:
-            yield event.chain_result([Plain(str(res))])
 
     @filter.command("头像图生图", prefix_optional=True)
     @_direct_command_only
@@ -3878,37 +4273,21 @@ class LinghuiStudioPlugin(Star):
             final_prompt = prompt
 
         await event.send(event.chain_result([Plain("正在以你的 QQ 头像作为参考图生成...")]))
-        if deduction["source"] == "user":
-            await self.data_mgr.decrease_user_count(uid, 1)
-        elif deduction["source"] == "group":
-            await self.data_mgr.decrease_group_count(gid, 1)
-
         model = self.conf.get("model", "")
-        start = datetime.now()
-        result = await self.api_mgr.call_api([avatar], final_prompt, model, False, self.img_mgr.proxy)
-        if not isinstance(result, bytes):
-            yield event.chain_result([Plain(f"头像图生图失败：{self._resolve_debug_error_message(result, '请稍后再试。')}")])
-            return
-
-        route_metrics = self._snapshot_generation_route_metrics()
-        result = await self._prepare_send_image_bytes(result)
-        await self._record_generation_result(
-            event.unified_msg_origin,
-            result,
-            user_id=uid,
-            group_id=gid,
-            prompt=final_prompt,
-            model=model,
-            preset_name=preset_name,
-            task_type="头像图生图",
-            reference_images=[avatar],
-            route_metrics=route_metrics,
-            event=event,
+        await self._register_pending_generation(event.unified_msg_origin, 1)
+        await self._run_background_task(
+            event,
+            [avatar],
+            final_prompt,
+            preset_name,
+            deduction,
+            uid,
+            gid,
+            1,
+            extra_rules=extra_rules,
+            model_override=model,
+            task_type_override="头像图生图",
         )
-        elapsed = (datetime.now() - start).total_seconds()
-        quota = self._get_quota_str(deduction, uid, gid)
-        message = f"头像图生图完成（{self._format_success_timing(elapsed)}） | 剩余：{quota}"
-        yield event.chain_result([Image.fromBytes(result), Plain(message)])
 
     # 辅助方法
     def _get_help_node(self, event):
@@ -3916,7 +4295,7 @@ class LinghuiStudioPlugin(Star):
         bot_id = self._get_bot_id(event) or "2854196310"
         return event.chain_result([Nodes(nodes=[Node(name="灵绘工坊", uin=bot_id, content=[Plain(txt)])])])
 
-    @filter.command("预设列表", prefix_optional=True)
+    @filter.command("预设列表", alias={"lm列表", "lmlist"}, prefix_optional=True)
     @_direct_command_only
     async def on_preset_list(self, event: AstrMessageEvent, ctx=None):
         presets = []
@@ -3927,11 +4306,11 @@ class LinghuiStudioPlugin(Star):
         img_data = await self.img_mgr.create_preset_table(presets, self.data_mgr)
         yield event.chain_result([Image.fromBytes(img_data)])
 
-    @filter.command("预设添加", prefix_optional=True)
+    @filter.command("预设添加", alias={"lm添加", "lma"}, prefix_optional=True)
     @_direct_command_only
     async def on_add_preset(self, event: AstrMessageEvent, ctx=None):
         if not self.is_admin(event): return
-        msg = self._command_args(event, "预设添加")
+        msg = self._command_args(event, "预设添加", "lm添加", "lma")
         if ":" not in msg: yield event.chain_result([Plain("格式: 词:提示词")]); return
 
         k, v = msg.split(":", 1)
@@ -3955,12 +4334,14 @@ class LinghuiStudioPlugin(Star):
 
         yield event.chain_result([Plain(f"✅ 已添加预设: {k}\n💾 已同步保存到配置文件")])
 
-    @filter.command("预设删除", prefix_optional=True)
+    @filter.command("预设删除", alias={"lm删除", "lmd", "lm删", "删除预设"}, prefix_optional=True)
     @_direct_command_only
     async def on_delete_preset(self, event: AstrMessageEvent, ctx=None):
         if not self.is_admin(event): return
 
-        name = self._command_args(event, "预设删除").lstrip(":：").strip()
+        name = self._command_args(
+            event, "预设删除", "lm删除", "lmd", "lm删", "删除预设"
+        ).lstrip(":：").strip()
 
         if not name:
             command = self._command_example("预设删除")
@@ -4014,16 +4395,16 @@ class LinghuiStudioPlugin(Star):
         detail_text = "\n已清理: " + "、".join(details) if details else ""
         yield event.chain_result([Plain(f"✅ 已删除预设: {name}{detail_text}")])
 
-    @filter.command("预设查看", prefix_optional=True)
+    @filter.command("预设查看", alias={"lm查看", "lmv", "lm预览"}, prefix_optional=True)
     @_direct_command_only
     async def on_view_preset(self, event: AstrMessageEvent, ctx=None):
-        kw = self._command_args(event, "预设查看")
+        kw = self._command_args(event, "预设查看", "lm查看", "lmv", "lm预览")
         if not kw: yield event.chain_result([Plain(f"用法: {self._command_example('预设查看')} <关键词>")]); return
         prompt = self.data_mgr.get_prompt(kw)
         msg = f"🔍 [{kw}]:\n{prompt}" if prompt else f"没找到 [{kw}]"
         yield event.chain_result([Plain(msg)])
 
-    @filter.command("签到", prefix_optional=True)
+    @filter.command("签到", alias={"手办化签到"}, prefix_optional=True)
     @_direct_command_only
     async def on_checkin(self, event: AstrMessageEvent, ctx=None):
         if not self.conf.get("enable_checkin", False): yield event.chain_result([Plain("未开启签到")]); return
@@ -4036,7 +4417,7 @@ class LinghuiStudioPlugin(Star):
         msg = await self.data_mgr.process_checkin(uid)
         yield event.chain_result([Plain(msg)])
 
-    @filter.command("额度", prefix_optional=True)
+    @filter.command("额度", alias={"手办化查询次数"}, prefix_optional=True)
     @_direct_command_only
     async def on_query_count(self, event: AstrMessageEvent, ctx=None):
         uid = norm_id(event.get_sender_id())
@@ -4061,7 +4442,7 @@ class LinghuiStudioPlugin(Star):
             msg += f"\n👥 本群剩余: {self.data_mgr.get_group_count(norm_id(gid))}"
         yield event.chain_result([Plain(msg)])
 
-    @filter.command("接口模式", prefix_optional=True)
+    @filter.command("接口模式", alias={"切换API模式"}, prefix_optional=True)
     @_direct_command_only
     async def on_switch_mode(self, event: AstrMessageEvent, ctx=None):
         if not self.is_admin(event): return
@@ -4080,7 +4461,7 @@ class LinghuiStudioPlugin(Star):
                 "模式无效 (openai_image / openai_chat / gemini_official / custom_endpoint；旧 generic 仍兼容)"
             )])
 
-    @filter.command("模型", prefix_optional=True)
+    @filter.command("模型", alias={"切换模型"}, prefix_optional=True)
     @_direct_command_only
     async def on_switch_model(self, event: AstrMessageEvent, ctx=None):
         if not self.is_admin(event):
@@ -4162,7 +4543,7 @@ class LinghuiStudioPlugin(Star):
         await self.api_mgr.refresh()
         yield event.chain_result([Plain(f"已切换主渠道为 {selected}；失败时仍会按回退顺序尝试其他渠道。")])
 
-    @filter.command("统计", prefix_optional=True)
+    @filter.command("统计", alias={"手办化今日统计"}, prefix_optional=True)
     @_direct_command_only
     async def on_daily_stats(self, event: AstrMessageEvent, ctx=None):
         if not self.is_admin(event): return
@@ -4176,7 +4557,7 @@ class LinghuiStudioPlugin(Star):
         msg += "\n\n👤 用户排行:\n" + ("\n".join([f"{k}: {v}" for k, v in u_top]) or "无")
         yield event.chain_result([Plain(msg)])
 
-    @filter.command("加用户额度", prefix_optional=True)
+    @filter.command("加用户额度", alias={"手办化增加用户次数"}, prefix_optional=True)
     @_direct_command_only
     async def on_add_user_counts(self, event: AstrMessageEvent, ctx=None):
         if not self.is_admin(event): return
@@ -4224,7 +4605,7 @@ class LinghuiStudioPlugin(Star):
                     f"或: {self._command_example('加用户额度')} @用户 <次数>"
                 )])
 
-    @filter.command("加群额度", prefix_optional=True)
+    @filter.command("加群额度", alias={"手办化增加群组次数"}, prefix_optional=True)
     @_direct_command_only
     async def on_add_group_counts(self, event: AstrMessageEvent, ctx=None):
         if not self.is_admin(event): return
@@ -4256,7 +4637,7 @@ class LinghuiStudioPlugin(Star):
                 yield event.chain_result([Plain(
                     "⚠️ 注意：当前配置中 enable_group_limit=False，群组次数不会生效。请在配置中开启 enable_group_limit。")])
 
-    @filter.command("添加密钥", prefix_optional=True)
+    @filter.command("添加密钥", alias={"手办化添加key"}, prefix_optional=True)
     @_direct_command_only
     async def on_add_key(self, event: AstrMessageEvent, ctx=None):
         if not self.is_admin(event): return
@@ -4272,7 +4653,7 @@ class LinghuiStudioPlugin(Star):
         self._save_config([field])
         yield event.chain_result([Plain(f"✅ 已向 {field} 添加 {len(keys)} 个 Key")])
 
-    @filter.command("密钥列表", prefix_optional=True)
+    @filter.command("密钥列表", alias={"手办化key列表"}, prefix_optional=True)
     @_direct_command_only
     async def on_list_keys(self, event: AstrMessageEvent, ctx=None):
         if not self.is_admin(event): return
@@ -4284,7 +4665,7 @@ class LinghuiStudioPlugin(Star):
         msg = f"🔑 模式: {mode}\n📌 普通池 ({len(nk)}):\n" + "\n".join([f"{k[:8]}..." for k in nk])
         yield event.chain_result([Plain(msg)])
 
-    @filter.command("删除密钥", prefix_optional=True)
+    @filter.command("删除密钥", alias={"手办化删除key"}, prefix_optional=True)
     @_direct_command_only
     async def on_delete_key(self, event: AstrMessageEvent, ctx=None):
         if not self.is_admin(event): return
@@ -4331,7 +4712,7 @@ class LinghuiStudioPlugin(Star):
         cnt, size = self.data_mgr.get_preset_stats()
         yield event.chain_result([Plain(f"📊 缓存统计:\n数量: {cnt} 张\n占用: {size:.2f} MB")])
 
-    @filter.command("帮助", prefix_optional=True)
+    @filter.command("帮助", alias={"手办化帮助", "lmh", "lm帮助"}, prefix_optional=True)
     @_direct_command_only
     async def on_help(self, event: AstrMessageEvent, ctx=None):
         yield self._get_help_node(event)
@@ -4668,7 +5049,7 @@ class LinghuiStudioPlugin(Star):
 
     # ================= 预设参考图管理 =================
 
-    @filter.command("预设参考图添加", prefix_optional=True)
+    @filter.command("预设参考图添加", alias={"lmref添加", "添加参考图"}, prefix_optional=True)
     @_direct_command_only
     async def on_add_preset_ref(self, event: AstrMessageEvent, ctx=None):
         """为预设添加参考图（管理员）
@@ -4712,7 +5093,7 @@ class LinghuiStudioPlugin(Star):
         else:
             yield event.chain_result([Plain("参考图保存失败了，再试试？")])
 
-    @filter.command("预设参考图查看", prefix_optional=True)
+    @filter.command("预设参考图查看", alias={"lmref查看", "查看参考图"}, prefix_optional=True)
     @_direct_command_only
     async def on_view_preset_ref(self, event: AstrMessageEvent, ctx=None):
         """查看预设的参考图（管理员）
@@ -4749,7 +5130,7 @@ class LinghuiStudioPlugin(Star):
 
         yield event.chain_result(result)
 
-    @filter.command("预设参考图清除", prefix_optional=True)
+    @filter.command("预设参考图清除", alias={"lmref清除", "清除参考图"}, prefix_optional=True)
     @_direct_command_only
     async def on_clear_preset_ref(self, event: AstrMessageEvent, ctx=None):
         """清除预设的所有参考图（管理员）
@@ -4772,7 +5153,7 @@ class LinghuiStudioPlugin(Star):
         else:
             yield event.chain_result([Plain(f"预设 [{preset_name}] 没有参考图")])
 
-    @filter.command("预设参考图删除", prefix_optional=True)
+    @filter.command("预设参考图删除", alias={"lmref删除", "删除参考图"}, prefix_optional=True)
     @_direct_command_only
     async def on_remove_preset_ref(self, event: AstrMessageEvent, ctx=None):
         """删除预设的指定参考图（管理员）
@@ -4803,7 +5184,7 @@ class LinghuiStudioPlugin(Star):
         else:
             yield event.chain_result([Plain("删除失败了，检查一下预设名和序号对不对？")])
 
-    @filter.command("预设参考图统计", prefix_optional=True)
+    @filter.command("预设参考图统计", alias={"lmref统计", "参考图统计"}, prefix_optional=True)
     @_direct_command_only
     async def on_preset_ref_stats(self, event: AstrMessageEvent, ctx=None):
         """查看预设参考图统计（管理员）"""
@@ -4826,7 +5207,7 @@ class LinghuiStudioPlugin(Star):
 
         yield event.chain_result([Plain(msg)])
 
-    @filter.command("预设参考图列表", prefix_optional=True)
+    @filter.command("预设参考图列表", alias={"lmref列表", "参考图列表"}, prefix_optional=True)
     @_direct_command_only
     async def on_list_preset_refs(self, event: AstrMessageEvent, ctx=None):
         """列出所有有参考图的预设（管理员）"""
@@ -5604,7 +5985,15 @@ class LinghuiStudioPlugin(Star):
         elif deduction["source"] == "group":
             await self.data_mgr.decrease_group_count(gid, total_cost)
 
-        await self._begin_session_task(event.unified_msg_origin, "批量处理任务", total_images)
+        await self._begin_session_task(
+            event.unified_msg_origin,
+            "批量处理任务",
+            total_images,
+            event=event,
+            prompt=final_prompt,
+            preset_name=preset_name,
+            model=self.conf.get("model", ""),
+        )
 
         # 7. 启动批量处理任务
         async def process_all():
@@ -5908,7 +6297,15 @@ class LinghuiStudioPlugin(Star):
         elif deduction["source"] == "group":
             await self.data_mgr.decrease_group_count(gid, total_cost)
 
-        await self._begin_session_task(event.unified_msg_origin, "并发批量处理任务", total_images)
+        await self._begin_session_task(
+            event.unified_msg_origin,
+            "并发批量处理任务",
+            total_images,
+            event=event,
+            prompt=final_prompt,
+            preset_name=preset_name,
+            model=self.conf.get("model", ""),
+        )
 
         # 7. 使用信号量控制并发
         semaphore = asyncio.Semaphore(concurrency)
@@ -6064,7 +6461,6 @@ class LinghuiStudioPlugin(Star):
                         ordered_images = [pdf_result_images_dict[k] for k in sorted(pdf_result_images_dict.keys())]
                         pdf_bytes_result = self.img_mgr.images_to_pdf(ordered_images)
                         if pdf_bytes_result:
-                            import uuid
                             import os
                             from astrbot.core.message.components import File
                             filename = self._build_pdf_filename_hint(
@@ -6242,7 +6638,7 @@ class LinghuiStudioPlugin(Star):
 
         # 4. 构建完整提示词
         full_prompt = self._build_persona_prompt(scene_prompt, extra_request)
-        full_prompt += " " + self._build_current_time_persona_hint()
+        full_prompt += " " + await self._build_current_time_persona_hint(extra_request)
         if user_images:
             persona_ref_text = " ".join([str(scene_hint or ""), str(extra_request or "")])
             if "合影" in persona_ref_text:
@@ -6291,7 +6687,6 @@ class LinghuiStudioPlugin(Star):
                 logger.info(f"人设拍照：根据用户文本语义推断为多张输出，count={requested_count}")
 
         # 6. 限制数量（必须先做，避免错误批量参数影响配额检查和分支选择）
-        raw_count = requested_count
         count, count_limited = self._normalize_generation_count(requested_count, "persona")
 
         # 7. 根据配置决定是否发送进度提示
@@ -6342,7 +6737,7 @@ class LinghuiStudioPlugin(Star):
                 return self._finalize_llm_tool_success(
                     f"[TOOL_SUCCESS] 照片已经发给用户。{self._build_count_limit_reply(count, 'persona')} 请自然收尾一句。")
             return self._finalize_llm_tool_success(
-                "[TOOL_SUCCESS] 照片已经发给用户。请用你自己的语气自然收尾一句，比如“给你啦，才不是特意拍给你的呢。”不要提系统、工具或生成。")
+                "[TOOL_SUCCESS] 照片已经发给用户。请严格按照当前 AstrBot 人格与上下文自然接话；可以只说一句，也可以不额外说话。不要提系统、工具或生成。")
         else:
             # 对于人设的多张生成，因为传递的是最终合并好的图片（包含人设参考+用户参考），
             # 所以使用 _run_batch_image_to_image。但是要防止该函数再次从数据库读取 "_persona_" 导致图片翻倍。
@@ -6373,7 +6768,7 @@ class LinghuiStudioPlugin(Star):
                 return self._finalize_llm_tool_success(
                     f"[TOOL_SUCCESS] 照片已经发给用户，成功 {total_success} 张，有 {total_fail} 张没弄好。请自然地随口带过。")
             return self._finalize_llm_tool_success(
-                f"[TOOL_SUCCESS] {total_success} 张照片已经发给用户。请用你自己的语气自然收尾一句，比如“给你啦，才不是特意拍给你的呢。”不要提系统、工具或生成。")
+                f"[TOOL_SUCCESS] {total_success} 张照片已经发给用户。请严格按照当前 AstrBot 人格与上下文自然接话，不要套用固定性格，也不要提系统、工具或生成。")
 
     @filter.command("人设拍照", prefix_optional=True)
     @_direct_command_only
@@ -6427,7 +6822,7 @@ class LinghuiStudioPlugin(Star):
 
         # 构建提示词
         full_prompt = self._build_persona_prompt(scene_prompt, extra_request)
-        full_prompt += " " + self._build_current_time_persona_hint()
+        full_prompt += " " + await self._build_current_time_persona_hint(extra_request)
         if user_images:
             if "合影" in ref_text:
                 full_prompt += (
@@ -6852,4 +7247,7 @@ class LinghuiStudioPlugin(Star):
                 await cleanup_task
             except asyncio.CancelledError:
                 pass
+        await self.dashboard_api.close()
+        await self.task_mgr.close()
+        await self.studio_mgr.close()
         await self.api_mgr.close()

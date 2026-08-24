@@ -9,7 +9,7 @@ from typing import List, Tuple, Optional
 from pathlib import Path
 from PIL import Image as PILImage, ImageFont, ImageDraw
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
-from astrbot.core.message.components import At, Image, Reply
+from astrbot.core.message.components import At, Image, Plain, Reply
 from astrbot import logger
 
 
@@ -41,7 +41,7 @@ class ImageManager:
                     async with session.get(url, proxy=self.proxy, timeout=timeout or self.timeout) as resp:
                         resp.raise_for_status()
                         return await resp.read()
-            except Exception as e:
+            except Exception:
                 if i < self.max_retries:
                     await asyncio.sleep(1)
         return None
@@ -581,25 +581,116 @@ class ImageManager:
 
         return pdf_bytes
 
+    @staticmethod
+    def extract_plain_text_without_mentions(event: AstrMessageEvent) -> str:
+        """Build command text from Plain components while excluding At labels.
+
+        ``event.message_str`` is adapter-generated display text. On QQ it can
+        expand an ``At`` component into a group card, group name, or numeric
+        ID, which must not become part of an image prompt. Plain components are
+        the authoritative user-authored text; a conservative text fallback is
+        retained for adapters that do not provide a structured chain.
+        """
+
+        message_obj = getattr(event, "message_obj", None)
+        chain = list(getattr(message_obj, "message", []) or [])
+        plain_parts: List[str] = []
+        mentioned_ids: List[str] = []
+        mentioned_names: List[str] = []
+        for component in chain:
+            if isinstance(component, Plain):
+                text = str(getattr(component, "text", "") or "")
+                if text:
+                    plain_parts.append(text)
+            elif isinstance(component, At):
+                user_id = str(
+                    getattr(component, "qq", None)
+                    or getattr(component, "user_id", None)
+                    or ""
+                ).strip()
+                if user_id:
+                    mentioned_ids.append(user_id)
+                display_name = str(getattr(component, "name", "") or "").strip()
+                if display_name:
+                    mentioned_names.append(display_name)
+
+        if plain_parts:
+            # A separator is safer than concatenating two Plain components
+            # that appeared on opposite sides of an At component.
+            text = " ".join(part.strip() for part in plain_parts if part.strip())
+        else:
+            text = str(getattr(event, "message_str", "") or "")
+
+        # Text-only adapters may expose CQ codes or literal @QQ tokens instead
+        # of At components. Remove only definite mention syntax; ordinary
+        # numbers in the user's prompt remain untouched.
+        text = re.sub(r"\[CQ:at,[^\]]*?qq=\d+[^\]]*\]", " ", text, flags=re.IGNORECASE)
+        text = re.sub(
+            r"@[^\s@()（）]{1,80}[（(]\s*\d{1,20}\s*[)）]",
+            " ",
+            text,
+        )
+        for user_id in mentioned_ids:
+            escaped = re.escape(user_id)
+            text = re.sub(rf"@\s*{escaped}\b", " ", text)
+            text = re.sub(rf"@[^\s@()（）]{{1,80}}[（(]\s*{escaped}\s*[)）]", " ", text)
+        for display_name in mentioned_names:
+            escaped_name = re.escape(display_name)
+            # Some QQ adapters preserve an At component but also inject its
+            # visible group card into an adjacent Plain component.  Remove
+            # only the exact card captured by that At component.
+            text = re.sub(
+                rf"@\s*{escaped_name}(?:\s*[（(]\s*\d{{5,20}}\s*[)）])?(?=\s|$|[,，。:：;；!?！？])",
+                " ",
+                text,
+            )
+        if not plain_parts:
+            text = re.sub(r"@\s*\d{5,20}\b", " ", text)
+
+        return re.sub(r"\s+", " ", text).strip()
+
+    @staticmethod
+    def extract_mentioned_user_ids(event: AstrMessageEvent, ignore_id: str = None) -> List[str]:
+        """Return mentioned account IDs in message order, excluding duplicates."""
+        ignored = str(ignore_id or "").strip()
+        users: List[str] = []
+        seen = set()
+
+        def add(raw_user_id) -> None:
+            user_id = str(raw_user_id or "").strip()
+            if not user_id or user_id == ignored or user_id in seen:
+                return
+            seen.add(user_id)
+            users.append(user_id)
+
+        message_obj = getattr(event, "message_obj", None)
+        for component in list(getattr(message_obj, "message", []) or []):
+            if isinstance(component, At):
+                add(getattr(component, "qq", None) or getattr(component, "user_id", None))
+
+        # Text-only adapters may not expose At components.  Structured At
+        # components win ordering, while any additional literal IDs are
+        # appended in their textual order.
+        for user_id in re.findall(
+            r"@[^\s@()（）]{1,80}[（(]\s*(\d{1,20})\s*[)）]",
+            str(getattr(event, "message_str", "") or ""),
+        ):
+            add(user_id)
+        for user_id in re.findall(r"@\s*(\d{1,20})\b", str(getattr(event, "message_str", "") or "")):
+            add(user_id)
+        return users
+
     async def extract_images_from_event(self, event: AstrMessageEvent, ignore_id: str = None, context=None,
                                         include_at_avatar: bool = True) -> List[bytes]:
         """从消息事件中提取所有图片 - 并发加速"""
         tasks = []
         # Keep mention order stable: multi-person reference prompts rely on the
         # image order matching the order in which users were mentioned.
-        at_users: List[str] = []
-        seen_at_users = set()
+        at_users = self.extract_mentioned_user_ids(event, ignore_id=ignore_id)
 
         # 1. 规范化 ignore_id，确保是字符串且去除空白
         if ignore_id:
             ignore_id = str(ignore_id).strip()
-
-        def add_at_user(raw_user_id) -> None:
-            qq = str(raw_user_id or "").strip()
-            if not qq or (ignore_id and qq == ignore_id) or qq in seen_at_users:
-                return
-            seen_at_users.add(qq)
-            at_users.append(qq)
 
         logger.debug(f"extract_images_from_event: ignore_id={ignore_id}")
 
@@ -639,29 +730,17 @@ class ImageManager:
                     tasks.append(self.load_bytes(seg.url))
                 elif self._is_probably_valid_source(getattr(seg, "file", None)):
                     tasks.append(self.load_bytes(seg.file))
-            # @用户
-            elif isinstance(seg, At):
-                # AstrBot 4.x uses ``qq``.  ``user_id`` keeps this compatible
-                # with adapters/components that expose the generic field name.
-                add_at_user(getattr(seg, "qq", None) or getattr(seg, "user_id", None))
-
-        # 3. 文本中正则匹配的@
-        # 有些平台 At 可能表现为纯文本
-        text_ats = re.findall(r'@(\d+)', event.message_str)
-        for qq in text_ats:
-            add_at_user(qq)
-
-        # 4. 头像任务（按艾特顺序有序去重）
+        # 3. 头像任务（按艾特顺序有序去重）
         if include_at_avatar and at_users:
             logger.debug(f"At users to fetch avatars: {at_users}")
             for uid in at_users:
                 tasks.append(self.get_avatar(uid))
 
-        # 5. 并发执行所有任务
+        # 4. 并发执行所有任务
         if not tasks: return []
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # 6. 过滤有效结果
+        # 5. 过滤有效结果
         img_bytes = []
         for res in results:
             if isinstance(res, bytes):

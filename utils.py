@@ -10,6 +10,27 @@ _QQ_AMBIGUOUS_DELIVERY_TIMEOUT_MARKERS = (
 )
 
 
+# QQ mentions are input selectors, not visual text instructions.  This is a
+# final, direct instruction rather than an ordinary negative-prompt item:
+# several image gateways give a user-authored sentence in the main prompt more
+# weight than a generic ``Negative prompt:`` section.  Keeping the guard
+# independent from the optional administrator setting also prevents accidental
+# exposure when that setting is empty.
+MENTION_AVATAR_PRIVACY_INSTRUCTION = (
+    "【必须严格遵守】图片不带艾特对象的名字、昵称、群名、QQ 号和任何 ID；"
+    "不要出现 @ 文本、资料卡文字、账号信息、聊天界面、标签、字幕或水印。"
+    "艾特和 QQ 头像只用于选择参考人物、提供人物外观特征，不是要写进图片的内容；"
+    "即使参考头像或输入素材里含有这些身份文字，也必须忽略并移除。 "
+    "Mandatory final instruction: do not include any mentioned person's name, "
+    "display name, group name, QQ number, account ID, @mention text, profile-card "
+    "text, chat UI, label, caption, or watermark in the image. Use the supplied "
+    "avatars only as visual appearance references and omit all identifying text."
+)
+
+# Compatibility alias for code/tests importing the earlier internal name.
+MENTION_AVATAR_PRIVACY_NEGATIVE_PROMPT = MENTION_AVATAR_PRIVACY_INSTRUCTION
+
+
 def norm_id(raw_id: Any) -> str:
     """标准化 ID 为字符串"""
     if raw_id is None:
@@ -69,6 +90,75 @@ def append_negative_prompt(prompt: Any, negative_prompt: Any) -> str:
     if clause.casefold() in final_prompt.casefold():
         return final_prompt
     return f"{final_prompt}\n\n{clause}"
+
+
+def append_final_instruction(prompt: Any, instruction: Any) -> str:
+    """Append a high-priority instruction at the very end of a prompt.
+
+    Unlike :func:`append_negative_prompt`, this deliberately avoids a generic
+    negative-prompt label.  It is used for constraints that must survive prompt
+    translation/optimization and remain the last instruction sent to every
+    fallback channel.
+    """
+    final_prompt = str(prompt or "").strip()
+    suffix = str(instruction or "").strip()
+    if not suffix:
+        return final_prompt
+    if not final_prompt:
+        return suffix
+    if suffix.casefold() in final_prompt.casefold():
+        return final_prompt
+    return f"{final_prompt}\n\n{suffix}"
+
+
+def combine_negative_prompts(*values: Any) -> str:
+    """Join optional portable negative clauses without duplicate entries."""
+    combined = []
+    seen = set()
+    for value in values:
+        text = str(value or "").strip().strip(",; ")
+        if not text:
+            continue
+        folded = text.casefold()
+        if folded in seen:
+            continue
+        seen.add(folded)
+        combined.append(text)
+    return "; ".join(combined)
+
+
+def has_mention_privacy_instruction(prompt: Any) -> bool:
+    """Return whether the user already forbids mention names and account IDs.
+
+    The automatic avatar privacy guard should remain a fallback, not produce
+    a second copy of an instruction the user has already written explicitly.
+    Keep the check deliberately conservative: both a name-like identifier and
+    an account/ID-like identifier must appear near a negative instruction.
+    """
+    text = re.sub(r"\s+", " ", str(prompt or "")).strip().casefold()
+    if not text:
+        return False
+
+    negative_hit = bool(re.search(
+        r"(?:不带|不要|不得|禁止|避免|别|去掉|移除|不能出现|不要出现|不要显示|"
+        r"do\s+not|don't|without|must\s+not|never|no\s+visible)",
+        text,
+    ))
+    if not negative_hit:
+        return False
+
+    name_hit = bool(re.search(
+        r"(?:艾特名|提及名|名字|名称|昵称|用户名|群名|群聊名|display\s+names?|"
+        r"usernames?|group\s+names?|mention\s+names?)",
+        text,
+    ))
+    id_hit = bool(re.search(
+        r"(?:qq\s*(?:号|号码|id)?|帐号|账号|账户|用户\s*id|艾特\s*id|提及\s*id|"
+        r"account\s+(?:ids?|numbers?)|qq\s*ids?|user\s*ids?|\bids?\b)",
+        text,
+        flags=re.IGNORECASE,
+    ))
+    return name_hit and id_hit
 
 
 def is_ambiguous_message_delivery_timeout(error: Any) -> bool:

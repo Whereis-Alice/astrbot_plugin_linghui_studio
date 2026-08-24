@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>灵绘工坊</title>
-    <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./style.css?v=3.6.0" />
   </head>
   <body>
     <main class="shell">
@@ -21,12 +21,14 @@
               <button class="nav-item" data-tab="history"><span class="nav-icon" aria-hidden="true">T</span><span>文生图</span></button>
               <button class="nav-item" data-tab="image-to-image"><span class="nav-icon" aria-hidden="true">I</span><span>图生图</span></button>
               <button class="nav-item" data-tab="favorites"><span class="nav-icon" aria-hidden="true">★</span><span>收藏</span></button>
+              <button class="nav-item" data-tab="tasks"><span class="nav-icon" aria-hidden="true">◴</span><span>任务中心</span></button>
             </div>
           </div>
           <div class="nav-group">
             <span class="nav-group-label">创作</span>
             <div class="nav-group-items">
               <button class="nav-item" data-tab="channels"><span class="nav-icon" aria-hidden="true">⇄</span><span>绘图渠道</span></button>
+              <button class="nav-item" data-tab="studio"><span class="nav-icon" aria-hidden="true">◇</span><span>图像工作台</span></button>
               <button class="nav-item" data-tab="prompts"><span class="nav-icon" aria-hidden="true">✦</span><span>提示词与预设</span></button>
               <button class="nav-item" data-tab="persona"><span class="nav-icon" aria-hidden="true">◎</span><span>人设与参考图</span></button>
             </div>
@@ -133,7 +135,28 @@
           </div>
         </section>
 
+        <section id="tab-tasks" class="tab-pane">
+          <div class="task-toolbar">
+            <div class="history-metric-strip" aria-label="任务统计">
+              <span class="history-quick-stat"><small>全部</small><strong id="task-total">-</strong></span>
+              <span class="history-quick-stat"><small>进行中</small><strong id="task-active">-</strong></span>
+              <span class="history-quick-stat"><small>成功</small><strong id="task-success">-</strong></span>
+              <span class="history-quick-stat"><small>失败</small><strong id="task-failed">-</strong></span>
+            </div>
+            <div class="task-toolbar-actions">
+              <label class="compact-field"><span>状态</span><select id="task-status-filter"><option value="all">全部</option><option value="running">进行中</option><option value="succeeded">成功</option><option value="failed">失败</option><option value="send_failed">发送失败</option><option value="cancelled">已取消</option><option value="expired">已过期</option></select></label>
+              <button id="task-refresh" class="quiet-action" type="button">刷新</button>
+              <button id="task-cleanup" class="danger-action" type="button">整理缓存</button>
+            </div>
+          </div>
+          <div id="task-list" class="task-list"></div>
+        </section>
+
         <section id="tab-channels" class="tab-pane">
+          <section class="section-block route-health-block">
+            <div class="section-heading"><div><h2>渠道健康</h2><p>展示成功率、延迟、连续失败和冷却状态；指标来自插件启动后的真实请求。</p></div><button id="route-health-refresh" class="quiet-action" type="button">刷新状态</button></div>
+            <div id="route-health-list" class="route-health-list"></div>
+          </section>
           <section class="section-block">
             <div class="section-heading"><div><h2>绘图渠道</h2><p>顺序就是默认优先级。仅启用且允许回退的渠道会成为备用渠道。</p></div><button id="add-channel" class="quiet-action">添加渠道</button></div>
             <div class="channel-routing-grid">
@@ -142,6 +165,29 @@
             </div>
             <div id="channel-list" class="channel-list"></div>
           </section>
+        </section>
+
+        <section id="tab-studio" class="tab-pane">
+          <div class="studio-layout">
+            <section class="section-block studio-composer">
+              <div class="section-heading"><div><h2>真实试画</h2><p>从右侧槽位选择参考图，指定渠道和模型后创建真实任务。结果会进入成功记录，不消耗群友额度。</p></div></div>
+              <div class="form-grid">
+                <label class="field full"><span>提示词</span><textarea id="studio-prompt" rows="7" placeholder="描述想要的画面、人物关系、服装、镜头和风格"></textarea></label>
+                <label class="field"><span>模式</span><select id="studio-mode"><option value="auto">自动判断</option><option value="text_to_image">文生图</option><option value="image_to_image">图生图</option></select></label>
+                <label class="field"><span>指定渠道</span><select id="studio-channel"><option value="">自动回退</option></select></label>
+                <label class="field"><span>指定模型</span><input id="studio-model" placeholder="留空使用渠道配置" /></label>
+                <label class="field"><span>比例</span><select id="studio-aspect"><option>1:1</option><option>16:9</option><option>9:16</option><option>4:3</option><option>3:4</option><option>3:2</option><option>2:3</option></select></label>
+                <label class="field"><span>分辨率</span><select id="studio-resolution"><option>1K</option><option>2K</option><option>4K</option></select></label>
+                <label class="toggle-field"><input id="studio-fallback" type="checkbox" checked /><span class="toggle-copy"><span>失败时自动回退</span><small class="field-hint">关闭后只尝试指定渠道或当前首选渠道。</small></span></label>
+                <label class="field full"><span>本次反向提示词（可选）</span><textarea id="studio-negative" rows="3" placeholder="只影响这一次工作台试画"></textarea></label>
+              </div>
+              <div class="studio-run-row"><button id="studio-generate" class="primary-action" type="button">创建真实试画任务</button><span id="studio-run-state" class="studio-run-state">尚未创建任务</span></div>
+            </section>
+            <section class="section-block studio-assets-panel">
+              <div class="section-heading"><div><h2>参考图槽位</h2><p>身份、服装、姿势、场景等素材分开保存；勾选的图片会按槽位顺序提交。</p></div><button id="studio-refresh" class="quiet-action" type="button">刷新素材</button></div>
+              <div id="studio-slots" class="studio-slots"></div>
+            </section>
+          </div>
         </section>
 
         <section id="tab-access" class="tab-pane">
@@ -217,6 +263,11 @@
                 <label class="field full"><span>触发关键词</span><input id="persona-keywords" placeholder="用逗号分隔" /><small class="field-hint">用逗号分隔。用于智能识别与人设相关的拍照意图。</small></label>
                 <label class="field full"><span>默认场景提示词</span><textarea id="persona-default-prompt" rows="3"></textarea><small class="field-hint">未指定场景时使用的默认环境与构图要求。</small></label>
                 <label class="field full"><span>场景预设</span><textarea id="persona-scene-prompts" rows="5" placeholder="每行一个：场景名:提示词"></textarea><small class="field-hint">每行一个“场景名:提示词”，例如“咖啡馆:窗边自然光人像”。</small></label>
+                <label class="field"><span>形象类型</span><select id="persona-character-type"><option value="auto">自动识别真人 / 动漫</option><option value="real">真人形象</option><option value="anime">动漫 / 插画形象</option></select><small class="field-hint">用于稳定保留素材的视觉类型，避免真人与动漫互相转换。</small></label>
+                <label class="toggle-field"><input id="persona-daily-enabled" type="checkbox" /><span class="toggle-copy"><span>启用每日稳定状态</span><small class="field-hint">普通自拍在同一天维持稳定穿搭与心情；明确换装或 COS 时服从用户要求。</small></span></label>
+                <label class="field full"><span>每日穿搭候选</span><textarea id="persona-daily-outfits" rows="4" placeholder="每行一套穿搭"></textarea></label>
+                <label class="field full"><span>每日心情候选</span><textarea id="persona-daily-moods" rows="4" placeholder="每行一种心情状态"></textarea></label>
+                <label class="field full"><span>时间段状态</span><textarea id="persona-time-periods" rows="4" placeholder="早晨:提示词&#10;白天:提示词&#10;傍晚:提示词&#10;夜间:提示词"></textarea></label>
               </div>
               <div class="asset-toolbar"><label class="upload-action">上传人设图<input id="persona-upload" type="file" accept="image/*" multiple /></label><button class="quiet-action" type="button" data-clear-ref="_persona_">清空人设图</button></div>
               <div id="persona-images" class="image-grid"></div>
@@ -228,6 +279,10 @@
               <div id="reference-images" class="image-grid"></div>
             </section>
           </div>
+          <section class="section-block persona-state-panel">
+            <div class="section-heading"><div><h2>今日人设状态</h2><p>这里展示今天实际生效的穿搭、心情和时间段状态，可临时修改或重新抽取。</p></div><div class="persona-state-actions"><button id="persona-state-refresh" class="quiet-action" type="button">重新抽取</button><button id="persona-state-save" class="primary-action" type="button">保存今日状态</button></div></div>
+            <div class="persona-state-grid"><label class="field"><span>今日穿搭</span><input id="persona-state-outfit" /></label><label class="field"><span>今日心情</span><input id="persona-state-mood" /></label><div class="persona-state-readout"><small>日期 / 时段</small><strong id="persona-state-period">尚未读取</strong><span id="persona-state-period-prompt"></span></div></div>
+          </section>
         </section>
 
         <section id="tab-settings" class="tab-pane">
@@ -246,6 +301,12 @@
               <label class="toggle-field"><input id="enable-preset-refs" type="checkbox" /><span class="toggle-copy"><span>启用预设参考图</span><small class="field-hint">开启后，调用预设会自动附带该预设在“人设与参考图”中保存的图片。</small></span></label>
             </div>
           </section>
+          <section class="section-block narrow config-transfer-block">
+            <div class="section-heading"><div><h2>配置备份与迁移</h2><p>默认导出会脱敏所有 API Key。导入前先预览变更和渠道完整性，应用失败会自动回滚。</p></div><button id="config-export" class="quiet-action" type="button">导出脱敏配置</button></div>
+            <label class="field full"><span>导入配置 JSON</span><textarea id="config-import-json" rows="9" placeholder="粘贴灵绘工坊导出的 JSON"></textarea></label>
+            <div class="config-transfer-actions"><button id="config-import-preview" class="quiet-action" type="button">预览变化</button><button id="config-import-apply" class="primary-action" type="button">确认导入</button></div>
+            <div id="config-import-preview-result" class="config-import-preview"></div>
+          </section>
         </section>
       </section>
     </main>
@@ -261,6 +322,6 @@
       </section>
     </dialog>
     <div id="toast" class="toast" role="status"></div>
-    <script type="module" src="./app.js"></script>
+    <script type="module" src="./app.js?v=3.6.0"></script>
   </body>
 </html>
