@@ -19,6 +19,7 @@ from .access_control import AccessPolicy
 from .channel_router import DrawingChannelRouter
 from .default_presets import ADDITIONAL_DEFAULT_PRESETS, DEFAULT_PRESET_PACK_VERSION
 from .persona_profile import PersonaProfileManager
+from .persona_dialogue import build_persona_progress_prompts, sanitize_persona_progress_reply
 from .studio_manager import StudioAssetManager
 from .task_manager import GenerationTaskManager
 from .config_persistence import (
@@ -151,7 +152,7 @@ def _direct_command_only(handler):
     PLUGIN_NAME,
     "Whereis-Alice",
     "灵绘工坊：带参考图专用渠道回退、受控群白名单、自定义绘图反向提示词与可视化管理的文生图/图生图插件",
-    "3.6.0",
+    "3.6.1",
     "https://github.com/Whereis-Alice/astrbot_plugin_linghui_studio",
 )
 class LinghuiStudioPlugin(Star):
@@ -1103,7 +1104,7 @@ class LinghuiStudioPlugin(Star):
 
         auto_detect_status = "已启用" if self._llm_auto_detect else "未启用"
         logger.info(
-            f"LinghuiStudio 已加载 v3.6.0 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
+            f"LinghuiStudio 已加载 v3.6.1 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
 
     def _generation_cache_retention_days(self) -> int:
         """Return a bounded retention period for output and input image cache files."""
@@ -2400,160 +2401,134 @@ class LinghuiStudioPlugin(Star):
         ]
         return any(keyword in text for keyword in transient_keywords)
 
-    def _build_llm_progress_text(self, action: str, preset_name: str = "", count: int = 1,
-                                 scene_name: str = "", extra_request: str = "", total_images: int = 0,
-                                 confidence: Optional[float] = None, concurrency: int = 0,
-                                 has_user_images: bool = False) -> str:
-        """为 LLM 工具构建更自然的对外提示，避免暴露"生成/报错"等字眼。"""
-        import random
-        # 内部占位符不向用户展示；只显示真实有意义的预设名
-        _internal = {"", "自定义", "编辑", "edit", "custom"}
-        preset_display = "" if (not preset_name or preset_name.strip().lower() in _internal) else preset_name
+    async def _resolve_astrbot_persona_context(self, event: AstrMessageEvent) -> Tuple[str, List[Any]]:
+        """Resolve the persona prompt and example dialogues selected for this conversation."""
+        manager = getattr(self.context, "persona_manager", None)
+        if manager is None:
+            return "", []
 
-        # 检测是否为换衣/穿搭相关请求
-        _is_clothing = extra_request and any(kw in extra_request for kw in _CLOTHING_KEYWORDS)
+        umo = str(getattr(event, "unified_msg_origin", "") or "")
+        conversation_persona_id = None
+        try:
+            conversation_manager = getattr(self.context, "conversation_manager", None)
+            if conversation_manager is not None and umo:
+                cid = await conversation_manager.get_curr_conversation_id(umo)
+                if cid:
+                    conversation = await conversation_manager.get_conversation(umo, cid)
+                    if conversation is not None:
+                        conversation_persona_id = getattr(conversation, "persona_id", None)
+        except Exception as e:
+            logger.debug(f"LinghuiStudio: 读取当前会话人格 ID 失败，跳过人格化进度提示: {e}")
 
-        if action == "draw":
-            if count <= 1:
-                msg = random.choice([
-                    "稍等一下哦。",
-                    "等我一下。",
-                    "好，先搞搞看。",
-                    "嗯嗯，稍等。",
-                    "好好好，等一下。",
-                    "诶好，稍等。",
-                ])
-            else:
-                msg = random.choice([
-                    f"稍等，给你弄{count}张。",
-                    f"好，先搞{count}张看看。",
-                    f"等一下，整{count}张给你。",
-                    f"嗯，{count}张稍等。",
-                ])
-            if preset_display:
-                msg += random.choice([
-                    f" 按{preset_display}来。",
-                    f" 用{preset_display}风格。",
-                    f" {preset_display}风啊，好。",
-                ])
-            return msg
-        elif action == "edit":
-            if _is_clothing:
-                return random.choice([
-                    "那我去翻下柜子…等一下哦。",
-                    "行，我去换一套。",
-                    "好好好，等我换个衣服。",
-                    "稍等，先让我找找衣服。",
-                    "好吧，我去试试这套。",
-                    "行行行，换就换。",
-                    "得嘞，我去换。",
-                    "嗯，我去找找看有没有。",
-                ])
-            if total_images > 1:
-                return random.choice([
-                    f"稍等，帮你把这{total_images}张都弄一下。",
-                    f"好，{total_images}张我来处理。",
-                    f"等等哦，{total_images}张我来搞搞。",
-                    f"嗯，{total_images}张，稍等。",
-                ])
-            elif count > 1:
-                return random.choice([
-                    f"好，给你多整{count}个版本看看。",
-                    f"稍等，弄{count}个版本给你选。",
-                    f"嗯，{count}个版本，等一下。",
-                ])
-            else:
-                base = random.choice([
-                    "稍等，帮你弄一下这张。",
-                    "好，我来处理一下。",
-                    "等一下哦。",
-                    "嗯，弄弄看。",
-                    "好的，稍等。",
-                ])
-                if preset_display:
-                    base += random.choice([f" 按{preset_display}来。", f" 用{preset_display}。"])
-                return base
-        elif action == "persona":
-            if count > 1:
-                if _is_clothing:
-                    return random.choice([
-                        f"好，那我去准备一套{count}张的写真，换好就发你。",
-                        f"行，我先去换衣服，给你拍{count}张不同感觉的。",
-                        f"等我一下，我去整理下造型，拍{count}张给你看。",
-                        f"那我先去准备一下，给你拍{count}张不同场景和角度的。",
-                    ])
-                if has_user_images:
-                    return random.choice([
-                        f"收到，我先参考一下你给的图，拍{count}张给你。",
-                        f"好，我照着你发的感觉来，给你准备{count}张。",
-                        f"嗯，我先看看参考图，拍一组{count}张给你。",
-                    ])
-                return random.choice([
-                    f"好呀，那我去准备一组{count}张给你。",
-                    f"等我一下，我去拍一套{count}张给你看。",
-                    f"嗯嗯，我去整理一下，给你拍{count}张不同感觉的。",
-                    f"好，给你拍一组{count}张，场景和角度我会尽量错开。",
-                ])
-            if _is_clothing:
-                return random.choice([
-                    "那我去翻下柜子，等我一下哦。",
-                    "好，等我换件衣服先。",
-                    "嗯嗯，我先去换个造型，稍等。",
-                    "行吧，先让我翻翻衣柜。",
-                    "稍等哦，换好了就来。",
-                    "好好好，我去换一套。",
-                    "等我一下，先去换个衣服。",
-                    "行，我去试试看。",
-                ])
-            if has_user_images:
-                return random.choice([
-                    "嗯，我看看你给的图，稍等。",
-                    "收到，我参考一下，等我哦。",
-                    "好的好的，照着来，稍等。",
-                    "嗯嗯，我看看，等一下。",
-                ])
-            return random.choice([
-                "稍等一下哦，马上好。",
-                "好，等我一下。",
-                "嗯嗯，稍等，我弄一下。",
-                "好的，稍等哦。",
-                "收到，等我一下。",
-            ])
-        elif action == "auto_text":
-            return random.choice([
-                "等一下，按你说的搞搞看。",
-                "好，稍等。",
-                "嗯嗯，我来弄一下。",
-                "诶好，稍等。",
-            ])
-        elif action == "auto_image":
-            return random.choice([
-                "好，帮你调一下这张。",
-                "稍等，照着这张弄弄看。",
-                "等一下哦。",
-                "嗯，看看。",
-            ])
-        elif action == "batch":
-            if total_images > 0:
-                return random.choice([
-                    f"好，这{total_images}张我来搞，稍等。",
-                    f"等一下，{total_images}张慢慢来。",
-                    f"稍等，{total_images}张一起弄。",
-                    f"嗯，{total_images}张，稍等哦。",
-                ])
-            return random.choice(["稍等，慢慢来。", "等一下哦。", "好，来了。"])
-        elif action == "pack_pdf":
-            return random.choice([
-                "等一下，帮你整理一下。",
-                "稍等，打包一下。",
-                "好，马上好。",
-                "嗯，整理中。",
-            ])
-        return "稍等。"
+        persona_id = conversation_persona_id
+        persona = None
+        resolver = getattr(manager, "resolve_selected_persona", None)
+        if callable(resolver):
+            try:
+                config = self.context.get_config(umo=umo) if umo else {}
+                provider_settings = config.get("provider_settings", {}) if hasattr(config, "get") else {}
+                platform_name = event.get_platform_name() if hasattr(event, "get_platform_name") else ""
+                persona_id, persona, _, _ = await resolver(
+                    umo=umo,
+                    conversation_persona_id=conversation_persona_id,
+                    platform_name=platform_name,
+                    provider_settings=provider_settings,
+                )
+            except Exception as e:
+                logger.debug(f"LinghuiStudio: 解析 AstrBot 当前人格失败，尝试兼容路径: {e}")
 
+        if persona is None and persona_id and persona_id != "[%None]":
+            getter = getattr(manager, "get_persona_v3_by_id", None)
+            if callable(getter):
+                try:
+                    persona = getter(persona_id)
+                except Exception as e:
+                    logger.debug(f"LinghuiStudio: 按 ID 读取 AstrBot 人格失败: {e}")
+
+        if persona_id == "[%None]":
+            return "", []
+
+        if persona is None:
+            default_getter = getattr(manager, "get_default_persona_v3", None)
+            if callable(default_getter):
+                try:
+                    persona = await default_getter(umo)
+                except Exception as e:
+                    logger.debug(f"LinghuiStudio: 读取 AstrBot 默认人格失败: {e}")
+
+        if isinstance(persona, dict):
+            persona_prompt = str(persona.get("prompt", "") or "").strip()
+            begin_dialogs = persona.get("_begin_dialogs_processed", [])
+        else:
+            persona_prompt = str(getattr(persona, "prompt", "") or "").strip()
+            begin_dialogs = getattr(persona, "_begin_dialogs_processed", [])
+        if not isinstance(begin_dialogs, (list, tuple)):
+            begin_dialogs = []
+        return persona_prompt, list(begin_dialogs)
+
+    async def _build_llm_progress_text(self, event: AstrMessageEvent, action: str,
+                                       preset_name: str = "", count: int = 1,
+                                       scene_name: str = "", extra_request: str = "",
+                                       total_images: int = 0, confidence: Optional[float] = None,
+                                       concurrency: int = 0, has_user_images: bool = False) -> str:
+        """Ask the current AstrBot persona for one short pre-tool line; never use a fixed personality."""
+        del preset_name, scene_name, confidence, concurrency
+        persona_prompt, persona_dialogues = await self._resolve_astrbot_persona_context(event)
+        if not persona_prompt:
+            return ""
+
+        try:
+            provider_id = await self.context.get_current_chat_provider_id(event.unified_msg_origin)
+        except Exception as e:
+            logger.debug(f"LinghuiStudio: 获取当前 Chat Provider 失败，跳过人格化进度提示: {e}")
+            return ""
+        if not provider_id:
+            return ""
+
+        system_prompt, user_prompt = build_persona_progress_prompts(
+            persona_prompt,
+            action,
+            count=count,
+            total_images=total_images,
+            has_user_images=has_user_images,
+            is_clothing_request=bool(extra_request and any(kw in extra_request for kw in _CLOTHING_KEYWORDS)),
+        )
+        try:
+            response = await asyncio.wait_for(
+                self.context.llm_generate(
+                    chat_provider_id=provider_id,
+                    prompt=user_prompt,
+                    system_prompt=system_prompt,
+                    contexts=persona_dialogues,
+                ),
+                timeout=10,
+            )
+        except asyncio.TimeoutError:
+            logger.debug("LinghuiStudio: AstrBot 人格化进度提示生成超时，静默继续任务")
+            return ""
+        except Exception as e:
+            logger.debug(f"LinghuiStudio: AstrBot 人格化进度提示生成失败，静默继续任务: {e}")
+            return ""
+
+        return sanitize_persona_progress_reply(getattr(response, "completion_text", ""))
+
+    async def _send_llm_progress(self, event: AstrMessageEvent, action: str, **kwargs: Any) -> bool:
+        """Send a persona-authored progress line when enabled; failure must not block image work."""
+        if not self._get_conf_bool("llm_show_progress", True):
+            return False
+        feedback = await self._build_llm_progress_text(event, action, **kwargs)
+        if not feedback:
+            return False
+        try:
+            await event.send(event.chain_result([Plain(feedback)]))
+            return True
+        except Exception as e:
+            logger.debug(f"LinghuiStudio: 人格化进度提示发送失败，静默继续任务: {e}")
+            return False
+
+    # The final Agent response also stays with AstrBot's current persona.
     def _build_llm_tool_failure(self, error: Any, default_msg: str = "这边刚才有点小问题，稍后我再试试。") -> str:
         """仅返回给 LLM 的失败信息，不直接向用户暴露底层报错。"""
-        import random
         masked = self._mask_llm_error(error, default_msg)
         low_level_failures = {
             "API服务器内部错误", "API网关错误", "API服务暂时不可用", "网络连接异常",
@@ -2564,17 +2539,9 @@ class LinghuiStudioPlugin(Star):
         if str(masked).strip() in low_level_failures:
             masked = default_msg
         masked = str(masked).removeprefix("❌").strip()
-        # 给 LLM 多种自然表达失败的参考，不要让它照搬机械话术
-        fail_styles = random.choice([
-            "刚才有点小状况，稍后我再试一次。",
-            "哎，刚刚有点问题，过一会儿再来更稳一点。",
-            "应该是网络轻轻抖了一下，我等会儿再试。",
-            "先缓一缓，待会儿我再继续。",
-            "这边有点卡，稍后再接着处理。",
-        ])
         return self._finalize_llm_tool_result(
             f"[TOOL_FAILED] 失败原因（不要对用户说）：{masked}。"
-            f"请用你自己的语气告诉用户这次没弄好，参考语气：'{fail_styles}'，但不要照抄，自然表达即可。"
+            "请严格按照当前 AstrBot 人格、称呼习惯和上下文关系，自然告诉用户这次没有成功；不要套用插件固定口吻。"
             f"绝对不要提'系统''工具''API''参数''配置'等词汇。"
         )
 
@@ -3523,6 +3490,9 @@ class LinghuiStudioPlugin(Star):
 
         调用前请判断用户是否明确要求生成图片。如果用户只是闲聊则不要调用。
 
+        【调用前发言】
+        请直接发起工具调用，不要在同一条回复里先输出“稍等”等等待语。若管理员开启进度提示，插件会另用当前 AstrBot 人格生成一句自然承接话；完成后的收尾也必须继续沿用当前人格。
+
         【批量生成数量控制】
         - 除非用户明确说出了具体数字（如"画5张"），否则【严禁】随意设置大量 count。
         - 用户说"打包成PDF"、"发个PDF"并不等于要多张！只说打包不说数量时 count 必须保持 1。
@@ -3577,17 +3547,9 @@ class LinghuiStudioPlugin(Star):
         requested_resolution = None if str(resolution).strip().lower() in {"", "auto"} else resolution
 
         # 根据配置决定是否隐藏进度提示（白名单用户和普通用户使用同一开关）
-        show_llm_progress = self._get_conf_bool("llm_show_progress", True)
         hide_llm_result_text = True
 
-        # 2. 根据配置决定是否发送进度提示
-        if show_llm_progress:
-            feedback = self._build_llm_progress_text(
-                "draw", preset_name=preset_name, count=count, extra_request=extra_rules
-            )
-            await event.send(event.chain_result([Plain(feedback)]))
-
-        # 3. 检查配额（批量生成需要足够的次数）
+        # 2. 检查配额（批量生成需要足够的次数）
         gid = norm_id(event.get_group_id())
         total_cost = count
         deduction = await self._check_quota(event, uid, gid, total_cost)
@@ -3597,6 +3559,11 @@ class LinghuiStudioPlugin(Star):
                 "请用你自己平时的语气告诉用户现在搞不了，"
                 "别提'次数''配额''限制'等词汇，随口带过就好，可以让TA联系管理员或等等再来。"
             )
+
+        # 3. 仅在任务确实允许执行时生成并发送人格化开始提示，避免浪费模型请求。
+        await self._send_llm_progress(
+            event, "draw", preset_name=preset_name, count=count, extra_request=extra_rules
+        )
 
         # 4. 更新图片生成冷却时间
         self._update_image_cooldown(uid)
@@ -3653,7 +3620,7 @@ class LinghuiStudioPlugin(Star):
                 return self._finalize_llm_tool_success(
                     f"[TOOL_SUCCESS] 图片已经发给用户，成功 {total_success} 张，有 {total_fail} 张没弄好。请自然地随口带过。")
             return self._finalize_llm_tool_success(
-                "[TOOL_SUCCESS] 图片已经发给用户。请用自己的语气自然收尾一句，比如“给你啦，别说我没帮你。”不要提系统、工具或生成。")
+                "[TOOL_SUCCESS] 图片已经发给用户。请严格按照当前 AstrBot 人格与上下文自然收尾，也可以不额外说话。不要提系统、工具或生成。")
 
     @filter.llm_tool(name="linghui_edit_image")
     async def image_edit_tool(self, event: AstrMessageEvent, prompt: str, use_message_images: bool = True,
@@ -3668,6 +3635,9 @@ class LinghuiStudioPlugin(Star):
         如果用户只是发送图片但没有明确要求处理，或者只是闲聊，请不要调用此工具。
         如果用户要求“你/Bot本人/人设角色”和图片里的人合影、同框，或要求你参考上图换装/摆姿势/拍自拍，请改用 linghui_persona_photo，不要用本工具。
         如果用户明确要求“修改上面那张 / 改刚才生成的图 / 继续改 / 在这个基础上改”，即使当前消息没有图片也要调用本工具；系统会自动使用最近的用户图片或Bot生成图片作为输入，不需要让用户引用。
+
+        【调用前发言】
+        请直接发起工具调用，不要在同一条回复里先输出“稍等”等等待语。若管理员开启进度提示，插件会另用当前 AstrBot 人格生成一句自然承接话；完成后的收尾也必须继续沿用当前人格。
 
         【多图处理规则】当用户提供/引用了多张图片时：
         - 默认情况 (merge_multiple_images=false)：会将这多张图片拆开，【分别、独立地】生成每一张图片。适用于用户一次性发多张图片想分别转化的场景。
@@ -3738,7 +3708,6 @@ class LinghuiStudioPlugin(Star):
                 final_prompt = processed_prompt
 
         # 根据配置决定是否隐藏进度提示（白名单用户和普通用户使用同一开关）
-        show_llm_progress = self._get_conf_bool("llm_show_progress", True)
         hide_llm_result_text = True
 
         # 3. 提取图片。当前消息没有图时，自动回溯用户/机器人最近图片上下文。
@@ -3776,12 +3745,10 @@ class LinghuiStudioPlugin(Star):
             self._update_image_cooldown(uid)
 
             # 发送进度提示
-            if show_llm_progress:
-                feedback = self._build_llm_progress_text(
-                    "edit", preset_name=preset_name, count=count, total_images=total_images,
-                    extra_request=extra_rules or prompt
-                )
-                await event.send(event.chain_result([Plain(feedback)]))
+            await self._send_llm_progress(
+                event, "edit", preset_name=preset_name, count=count, total_images=total_images,
+                extra_request=extra_rules or prompt
+            )
 
             # 多张图片分别处理时也走并发，避免 LLM 识别到多图后仍然一张张串行跑
             await self._register_pending_generation(event.unified_msg_origin, total_images * count)
@@ -3847,11 +3814,9 @@ class LinghuiStudioPlugin(Star):
             )
 
         # 2. 根据配置决定是否发送进度提示
-        if show_llm_progress:
-            feedback = self._build_llm_progress_text(
-                "edit", preset_name=preset_name, count=count, extra_request=extra_rules or prompt
-            )
-            await event.send(event.chain_result([Plain(feedback)]))
+        await self._send_llm_progress(
+            event, "edit", preset_name=preset_name, count=count, extra_request=extra_rules or prompt
+        )
 
         # 6. 更新图片生成冷却时间
         self._update_image_cooldown(uid)
@@ -3905,7 +3870,7 @@ class LinghuiStudioPlugin(Star):
                 return self._finalize_llm_tool_success(
                     f"[TOOL_SUCCESS] 图片已经发给用户，成功 {total_success} 张，有 {total_fail} 张没弄好。请自然地随口带过。")
             return self._finalize_llm_tool_success(
-                "[TOOL_SUCCESS] 图片已经发给用户。请用自己的语气自然收尾一句，比如“给你啦，别说我没帮你。”不要提系统、工具或生成。")
+                "[TOOL_SUCCESS] 图片已经发给用户。请严格按照当前 AstrBot 人格与上下文自然收尾，也可以不额外说话。不要提系统、工具或生成。")
 
     # ================= 传统指令触发 =================
 
@@ -4815,6 +4780,9 @@ class LinghuiStudioPlugin(Star):
         此工具会消耗用户的使用次数，请谨慎调用。
         如果用户明确说“修改上面那张 / 改刚才那张 / 继续改 / 在这个基础上改”，即使当前消息没带图片，也应按 image_to_image 处理，系统会自动取最近图片上下文。
 
+        【调用前发言】
+        请直接发起工具调用，不要在同一条回复里先输出等待语；插件会按配置使用当前 AstrBot 人格发送承接话。
+
         Args:
             user_request(string): 用户的请求描述（可选，如果为空则使用当前消息）
         '''
@@ -4896,17 +4864,15 @@ class LinghuiStudioPlugin(Star):
             prompt = analysis.get("suggested_prompt", current_message)
             final_prompt, preset_name, extra_rules = self._process_prompt_and_preset(prompt)
 
-            # 根据配置决定是否发送进度提示
-            if self._get_conf_bool("llm_show_progress", True):
-                feedback = self._build_llm_progress_text(
-                    "auto_text", preset_name=preset_name, extra_request=extra_rules, confidence=confidence
-                )
-                await event.send(event.chain_result([Plain(feedback)]))
-
             gid = norm_id(event.get_group_id())
             deduction = await self._check_quota(event, uid, gid, 1)
             if not deduction["allowed"]:
                 return deduction["msg"]
+
+            await self._send_llm_progress(
+                event, "auto_text", preset_name=preset_name,
+                extra_request=extra_rules, confidence=confidence
+            )
 
             # 更新冷却时间
             self._update_image_cooldown(uid)
@@ -4927,13 +4893,6 @@ class LinghuiStudioPlugin(Star):
             prompt = analysis.get("suggested_prompt", current_message)
             processed_prompt, preset_name, extra_rules = self._process_prompt_and_preset(prompt)
 
-            # 根据配置决定是否发送进度提示
-            if self._get_conf_bool("llm_show_progress", True):
-                feedback = self._build_llm_progress_text(
-                    "auto_image", preset_name=preset_name, extra_request=extra_rules, confidence=confidence
-                )
-                await event.send(event.chain_result([Plain(feedback)]))
-
             # 提取图片；当前消息没图时，会自动使用最近用户图片或 Bot 生成图。
             images = await self._resolve_contextual_image_inputs(
                 event,
@@ -4951,6 +4910,11 @@ class LinghuiStudioPlugin(Star):
             deduction = await self._check_quota(event, uid, gid, 1)
             if not deduction["allowed"]:
                 return deduction["msg"]
+
+            await self._send_llm_progress(
+                event, "auto_image", preset_name=preset_name,
+                extra_request=extra_rules, confidence=confidence
+            )
 
             # 更新冷却时间
             self._update_image_cooldown(uid)
@@ -5866,6 +5830,9 @@ class LinghuiStudioPlugin(Star):
 
         此工具会消耗用户大量使用次数（每张图片消耗1次），请谨慎调用。
 
+        【调用前发言】
+        请直接发起工具调用，不要在同一条回复里先输出等待语；插件会按配置使用当前 AstrBot 人格发送承接话。
+
         Args:
             prompt(string): 图片处理的提示词，可以是预设名+追加规则，如"手办化 皮肤白一点"
             max_images(int): 最多处理的图片数量，默认10张
@@ -5969,15 +5936,13 @@ class LinghuiStudioPlugin(Star):
         self._update_image_cooldown(uid)
 
         # 根据配置决定是否隐藏进度提示（白名单用户和普通用户使用同一开关）
-        show_llm_progress = self._get_conf_bool("llm_show_progress", True)
         hide_llm_result_text = True
 
         # 5. 发送开始提示
-        if show_llm_progress:
-            feedback = self._build_llm_progress_text(
-                "batch", preset_name=preset_name, total_images=total_images, extra_request=extra_rules
-            )
-            await event.send(event.chain_result([Plain(feedback)]))
+        await self._send_llm_progress(
+            event, "batch", preset_name=preset_name,
+            total_images=total_images, extra_request=extra_rules
+        )
 
         # 6. 扣费
         if deduction["source"] == "user":
@@ -6162,7 +6127,7 @@ class LinghuiStudioPlugin(Star):
                 else:
                     if self._should_show_debug_errors():
                         await event.send(event.chain_result([Plain("抱歉，这批图都没弄好，打包不了 PDF。")]))
-            elif show_llm_progress:
+            elif self._get_conf_bool("llm_show_progress", True):
                 summary = "这批图我先整理完了，能发出来的都已经给你了。"
                 await event.send(event.chain_result([Plain(summary)]))
 
@@ -6189,6 +6154,9 @@ class LinghuiStudioPlugin(Star):
         3. 如果用户只是发送了多张图片但没有要求处理，请不要调用此工具
 
         此工具会消耗用户大量使用次数（每张图片消耗1次），请谨慎调用。
+
+        【调用前发言】
+        请直接发起工具调用，不要在同一条回复里先输出等待语；插件会按配置使用当前 AstrBot 人格发送承接话。
 
         Args:
             prompt(string): 图片处理的提示词，可以是预设名+追加规则
@@ -6280,16 +6248,13 @@ class LinghuiStudioPlugin(Star):
         self._update_image_cooldown(uid)
 
         # 根据配置决定是否隐藏进度提示（白名单用户和普通用户使用同一开关）
-        show_llm_progress = self._get_conf_bool("llm_show_progress", True)
         hide_llm_result_text = True
 
         # 5. 发送开始提示
-        if show_llm_progress:
-            feedback = self._build_llm_progress_text(
-                "batch", preset_name=preset_name, total_images=total_images,
-                extra_request=extra_rules, concurrency=concurrency
-            )
-            await event.send(event.chain_result([Plain(feedback)]))
+        await self._send_llm_progress(
+            event, "batch", preset_name=preset_name, total_images=total_images,
+            extra_request=extra_rules, concurrency=concurrency
+        )
 
         # 6. 扣费
         if deduction["source"] == "user":
@@ -6485,7 +6450,7 @@ class LinghuiStudioPlugin(Star):
                 else:
                     if self._should_show_debug_errors():
                         await event.send(event.chain_result([Plain("抱歉，这批图都没弄好，打包不了 PDF。")]))
-            elif show_llm_progress:
+            elif self._get_conf_bool("llm_show_progress", True):
                 # 发送完成汇总
                 summary = "这批图我先整理完了，能发出来的都已经给你了。"
                 await event.send(event.chain_result([Plain(summary)]))
@@ -6539,6 +6504,9 @@ class LinghuiStudioPlugin(Star):
         1. 用户明确要求看 Bot 本人照片、自拍、外貌、写真、换装、cos、动作展示或与参考图合影时才调用
         2. 用户只是问"你在干嘛"、"你在做什么"、"闲聊" → 用文字回答即可，不要发照片
         3. 没有明确表达想看照片意愿 → 不要主动发照片
+
+        【调用前与完成后发言】
+        识别到请求后请直接调用本工具，不要先在同一条回复中套用“嗯嗯，稍等”等固定等待语。插件会按配置使用当前 AstrBot 人格单独生成开始前承接话；工具完成后的最终回复也必须继续使用同一个 AstrBot 人格、称呼习惯和上下文关系。
 
         【数量控制（极度重要！）】
         - 默认只生成1张，除非用户明确说出了具体数字（如"来5张""拍3张"）。
@@ -6689,15 +6657,7 @@ class LinghuiStudioPlugin(Star):
         # 6. 限制数量（必须先做，避免错误批量参数影响配额检查和分支选择）
         count, count_limited = self._normalize_generation_count(requested_count, "persona")
 
-        # 7. 根据配置决定是否发送进度提示
-        if self._get_conf_bool("llm_show_progress", True):
-            feedback = self._build_llm_progress_text(
-                "persona", count=count, scene_name=scene_name,
-                extra_request=extra_request, has_user_images=bool(user_images)
-            )
-            await event.send(event.chain_result([Plain(feedback)]))
-
-        # 8. 检查配额
+        # 7. 检查配额
         gid = norm_id(event.get_group_id())
         deduction = await self._check_quota(event, uid, gid, count)
         if not deduction["allowed"]:
@@ -6705,6 +6665,12 @@ class LinghuiStudioPlugin(Star):
                 "[TOOL_FAILED] 用户次数不足，无法完成。"
                 "请用你自己平时的语气告诉用户现在搞不了，随口带过就好。"
             )
+
+        # 8. 仅在任务确实允许执行时生成并发送人格化开始提示。
+        await self._send_llm_progress(
+            event, "persona", count=count, scene_name=scene_name,
+            extra_request=extra_request, has_user_images=bool(user_images)
+        )
 
         # 8. 更新冷却时间
         self._update_image_cooldown(uid)

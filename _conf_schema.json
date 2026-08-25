@@ -758,8 +758,8 @@
   },
   "llm_show_progress": {
     "type": "bool",
-    "description": "【智能工具与批量处理】LLM 调用显示处理中提示",
-    "hint": "开启时，Agent 调用生图、图生图或人设拍照工具会先发送自然的处理中提示；关闭后只发送最终图片。",
+    "description": "【智能工具与批量处理】使用当前人格发送开始提示",
+    "hint": "开启时，Agent 调用生图、图生图、批量或人设拍照工具前，会额外使用当前会话的 Chat Provider 和 AstrBot 当前人格生成一句简短承接话，因此每次任务会多一次小型模型请求。人格读取或请求失败时会静默继续，不会回退到插件固定口吻；关闭后不发送开始提示。",
     "default": true
   },
   "enable_obedient_mode": {
