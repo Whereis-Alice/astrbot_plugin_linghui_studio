@@ -9,10 +9,26 @@ from urllib.parse import quote
 from urllib.parse import urljoin
 from urllib.parse import urlparse
 import aiohttp
-from typing import List, Dict
+from typing import Any, List, Dict
 from astrbot import logger
 from PIL import Image as PILImage, ImageChops, ImageOps, ImageStat
 from .generation_params import detect_aspect_ratio_from_image, resolve_image_generation_params
+from .protocol_adapters import (
+    PROTOCOL_AUTO,
+    PROTOCOL_LABELS,
+    build_protocol_request,
+    default_base_url,
+    default_model,
+    is_native_protocol,
+    normalize_protocol,
+    protocol_supports_reference_images,
+)
+from .response_parsing import (
+    extract_mixed_image_payload,
+    iter_sse_payloads,
+    looks_like_sse,
+    parse_response_body,
+)
 from .utils import normalize_api_root
 
 
@@ -670,12 +686,48 @@ class ApiManager:
         ]
         return any(keyword in error_lower for keyword in keywords)
 
-    async def _parse_images_api_success_response(self, resp_text: str, proxy: str = None) -> bytes | str:
-        """统一解析 Images API 成功响应"""
+    async def _read_response_body(self, resp) -> tuple:
+        """读取并归一化响应体。
+
+        返回 (payload, text, kind)。相比直接 resp.text()，这里可以识别裸图片
+        字节、ZIP 包、裸 base64 以及夹在文本里的图片，并且不会把二进制内容
+        塞进日志或错误消息。
+        """
         try:
-            res_data = json.loads(resp_text)
-        except json.JSONDecodeError:
-            return f"数据解析失败: 返回内容不是 JSON. 内容: {resp_text[:100]}..."
+            raw = await resp.read()
+        except Exception as exc:
+            logger.warning(f"读取响应体失败，回退到文本读取: {exc}")
+            try:
+                return None, await resp.text(), "text"
+            except Exception:
+                return None, "", "empty"
+
+        allow_binary = self.config.get("enable_binary_image_response", True) is not False
+        allow_bare_base64 = self.config.get("enable_bare_base64_response", True) is not False
+        return parse_response_body(
+            raw,
+            getattr(resp, "charset", None),
+            allow_binary=allow_binary,
+            allow_bare_base64=allow_bare_base64,
+        )
+
+    async def _parse_images_api_success_response(self, resp_text: str, proxy: str = None,
+                                                 payload: Any = None, kind: str = "") -> bytes | str:
+        """统一解析 Images API 成功响应"""
+        if kind in ("binary", "base64") and isinstance(payload, (bytes, bytearray)):
+            return bytes(payload)
+
+        if isinstance(payload, dict):
+            res_data = payload
+        else:
+            try:
+                res_data = json.loads(resp_text)
+            except json.JSONDecodeError:
+                rescued = extract_mixed_image_payload(resp_text)
+                if rescued is None:
+                    return f"数据解析失败: 返回内容不是 JSON. 内容: {resp_text[:100]}..."
+                logger.warning("Images API 返回非 JSON，但从文本中挽救到图片负载")
+                res_data = rescued
 
         if "error" in res_data:
             return json.dumps(res_data["error"], ensure_ascii=False)
@@ -738,7 +790,9 @@ class ApiManager:
 
                 current_proxy = self._get_request_proxy(url, proxy)
                 async with session.post(url, data=form, headers=headers, proxy=current_proxy, timeout=timeout) as resp:
-                    resp_text = await resp.text()
+                    resp_payload, resp_text, resp_kind = await self._read_response_body(resp)
+                    if resp.status == 200 and resp_kind in ("binary", "base64"):
+                        return bytes(resp_payload)
 
                     if "<html" in resp_text.lower() and idx < len(candidate_urls) - 1:
                         logger.warning(f"Images API multipart 返回 HTML 页面，尝试下一个候选地址: {candidate_urls[idx + 1]}")
@@ -765,7 +819,9 @@ class ApiManager:
                     if "<html" in resp_text.lower():
                         return f"HTTP 200: 服务端返回了网页而非图片接口数据 | URL: {url}"
 
-                    return await self._parse_images_api_success_response(resp_text, proxy)
+                    return await self._parse_images_api_success_response(
+                        resp_text, proxy, payload=resp_payload, kind=resp_kind
+                    )
 
             return f"Images API Multipart Error: 未找到可用接口地址 | Candidates: {candidate_urls}"
         except asyncio.TimeoutError:
@@ -843,7 +899,9 @@ class ApiManager:
             for idx, url in enumerate(candidate_urls):
                 current_proxy = self._get_request_proxy(url, proxy)
                 async with session.post(url, json=payload, headers=headers, proxy=current_proxy, timeout=timeout) as resp:
-                    resp_text = await resp.text()
+                    resp_payload, resp_text, resp_kind = await self._read_response_body(resp)
+                    if resp.status == 200 and resp_kind in ("binary", "base64"):
+                        return bytes(resp_payload)
 
                     if "<html" in resp_text.lower() and idx < len(candidate_urls) - 1:
                         logger.warning(f"Images API 返回 HTML 页面，尝试下一个候选地址: {candidate_urls[idx + 1]}")
@@ -883,7 +941,9 @@ class ApiManager:
                     if "<html" in resp_text.lower():
                         return f"HTTP 200: 服务端返回了网页而非图片接口数据 | URL: {url}"
 
-                    return await self._parse_images_api_success_response(resp_text, proxy)
+                    return await self._parse_images_api_success_response(
+                        resp_text, proxy, payload=resp_payload, kind=resp_kind
+                    )
 
             return f"Images API Error: 未找到可用接口地址 | Candidates: {candidate_urls}"
 
@@ -1133,6 +1193,147 @@ class ApiManager:
         )
         return await self._validate_reference_result(result, images)
 
+    async def _call_native_protocol_api(self, protocol: str, images: List[bytes], prompt: str,
+                                        model: str, proxy: str = None,
+                                        use_text_to_image_api: bool = False,
+                                        aspect_ratio: str = None,
+                                        resolution: str = None) -> bytes | str:
+        """按原生协议直连绘图服务（Grok / Agnes / NovelAI / Jimeng）。
+
+        这些服务的请求体与 OpenAI 差异较大（尺寸写法、参考图字段、甚至用 GET
+        传参），所以请求构造集中在 protocol_adapters 里，这里只负责发送、
+        归一化响应并记录耗时指标。
+        """
+        label = PROTOCOL_LABELS.get(protocol, protocol)
+        self._reset_metrics()
+        call_start = asyncio.get_running_loop().time()
+
+        base_url = self._get_base_url("openai_image", use_text_to_image_api=use_text_to_image_api)
+        base_url = (base_url or "").strip() or default_base_url(protocol)
+        if not base_url:
+            return f"{label} 渠道缺少 API 地址，请在渠道配置里填写 base_url"
+
+        key = await self.get_key("openai_image", use_text_to_image_api=use_text_to_image_api)
+        if not key:
+            return "无可用 API Key"
+
+        if images and not protocol_supports_reference_images(protocol):
+            return f"{label} 协议暂不支持参考图，请改用文生图或回退到其它渠道"
+
+        default_ratio = self.config.get("image_aspect_ratio", "4:3")
+        if images:
+            default_ratio = detect_aspect_ratio_from_image(images[0], default_ratio)
+        generation_params = resolve_image_generation_params(
+            prompt,
+            default_resolution=self.config.get("image_resolution", "1K"),
+            default_aspect_ratio=default_ratio,
+            resolution=resolution,
+            aspect_ratio=aspect_ratio,
+        )
+
+        request = build_protocol_request(
+            protocol,
+            base_url=base_url,
+            key=key,
+            model=str(model or "").strip() or default_model(protocol),
+            prompt=prompt,
+            images=list(images) if images else None,
+            aspect_ratio=generation_params["aspect_ratio"],
+            resolution=generation_params["resolution"],
+            negative_prompt=str(self.config.get("custom_drawing_negative_prompt", "") or "").strip(),
+            mime_resolver=self.get_mime_type,
+        )
+        if request is None:
+            return f"{label} 协议请求构造失败，请检查模型与渠道配置"
+
+        timeout_val = self.config.get("timeout", 120)
+        timeout = aiohttp.ClientTimeout(total=timeout_val)
+        session = await self._get_session()
+        current_proxy = self._get_request_proxy(request.url, proxy)
+        logger.info(f"原生协议调用: {request.describe()}")
+
+        try:
+            async with session.request(
+                request.method,
+                request.url,
+                json=request.json_body or None,
+                params=request.params or None,
+                headers=request.headers,
+                proxy=current_proxy,
+                timeout=timeout,
+            ) as resp:
+                status = resp.status
+                resp_payload, resp_text, resp_kind = await self._read_response_body(resp)
+
+            upstream_duration = asyncio.get_running_loop().time() - call_start
+
+            if resp_kind in ("binary", "base64") and isinstance(resp_payload, (bytes, bytearray)):
+                self._last_metrics = {
+                    "upstream_duration": upstream_duration,
+                    "download_duration": 0.0,
+                    "total_duration": upstream_duration,
+                    "download_route": f"native-{protocol}",
+                }
+                return bytes(resp_payload)
+
+            if status != 200:
+                err_msg = resp_text
+                if isinstance(resp_payload, dict):
+                    err_body = resp_payload.get("error", resp_payload)
+                    err_msg = json.dumps(err_body, ensure_ascii=False)
+                return f"{label} 接口返回 HTTP {status}: {err_msg[:300]} | URL: {request.url}"
+
+            res_data = resp_payload if isinstance(resp_payload, dict) else None
+
+            if res_data is None and resp_kind == "sse":
+                for chunk_str in iter_sse_payloads(resp_text):
+                    try:
+                        chunk = json.loads(chunk_str)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(chunk, dict) and self.extract_image_url(chunk):
+                        res_data = chunk
+                        break
+
+            if res_data is None:
+                res_data = extract_mixed_image_payload(resp_text)
+
+            if res_data is None:
+                return f"{label} 接口返回成功但未找到图片数据。Raw: {resp_text[:200]}..."
+
+            img_url = self.extract_image_url(res_data)
+            if not img_url:
+                if "error" in res_data:
+                    return json.dumps(res_data["error"], ensure_ascii=False)
+                return f"{label} 接口返回成功但未找到图片数据。Raw: {str(res_data)[:200]}..."
+
+            if img_url.startswith("data:"):
+                self._last_metrics = {
+                    "upstream_duration": upstream_duration,
+                    "download_duration": 0.0,
+                    "total_duration": asyncio.get_running_loop().time() - call_start,
+                    "download_route": "inline-base64",
+                }
+                return base64.b64decode(img_url.split(",")[-1])
+
+            result = await self._download_result_image(img_url, proxy, base_url)
+            self._last_metrics = {
+                "upstream_duration": upstream_duration,
+                "download_duration": float(self._last_download_metrics.get("download_duration", 0.0) or 0.0),
+                "total_duration": asyncio.get_running_loop().time() - call_start,
+                "download_route": self._last_download_metrics.get("download_route", "url-download") or "url-download",
+            }
+            return result
+
+        except asyncio.TimeoutError:
+            self._last_metrics["total_duration"] = asyncio.get_running_loop().time() - call_start
+            return f"请求超时 ({timeout_val}s)，请稍后再试或检查网络。"
+        except Exception as exc:
+            import traceback
+            logger.error(f"原生协议调用异常: {traceback.format_exc()}")
+            self._last_metrics["total_duration"] = asyncio.get_running_loop().time() - call_start
+            return f"系统错误: {str(exc) or type(exc).__name__}"
+
     async def _call_api_once(self, images: List[bytes], prompt: str,
                              model: str, proxy: str = None,
                              use_text_to_image_api: bool = False,
@@ -1142,6 +1343,15 @@ class ApiManager:
 
         self._reset_metrics()
         call_start = asyncio.get_running_loop().time()
+
+        protocol = normalize_protocol(self.config.get("protocol", PROTOCOL_AUTO))
+        if is_native_protocol(protocol):
+            return await self._call_native_protocol_api(
+                protocol, images, prompt, model, proxy,
+                use_text_to_image_api=use_text_to_image_api,
+                aspect_ratio=aspect_ratio,
+                resolution=resolution,
+            )
 
         interface_mode = self._get_interface_mode()
         mode = "gemini_official" if interface_mode == "gemini_official" else "generic"
@@ -1321,6 +1531,8 @@ class ApiManager:
             logger.info(f"Generic API 候选地址: {candidate_urls}")
 
             resp_text = ""
+            resp_payload = None
+            resp_kind = ""
             last_status = None
             active_url = url
 
@@ -1328,8 +1540,17 @@ class ApiManager:
                 active_url = candidate_url
                 current_proxy = self._get_request_proxy(active_url, proxy)
                 async with session.post(active_url, json=payload, headers=headers, proxy=current_proxy, timeout=timeout) as resp:
-                    resp_text = await resp.text()
+                    resp_payload, resp_text, resp_kind = await self._read_response_body(resp)
                     last_status = resp.status
+                    if resp.status == 200 and resp_kind in ("binary", "base64"):
+                        upstream_duration = asyncio.get_running_loop().time() - call_start
+                        self._last_metrics = {
+                            "upstream_duration": upstream_duration,
+                            "download_duration": 0.0,
+                            "total_duration": upstream_duration,
+                            "download_route": "inline-binary",
+                        }
+                        return bytes(resp_payload)
 
                     # 如果返回 HTML，且后面还有候选地址，则继续尝试常见 API 前缀
                     if "<html" in resp_text.lower() and idx < len(candidate_urls) - 1:
@@ -1396,11 +1617,20 @@ class ApiManager:
                 res_data = json.loads(resp_text)
             except json.JSONDecodeError:
                 # 兼容：处理被强制流式返回的情况 (SSE format)
-                if "data: " in resp_text:
+                heartbeat_tolerant = self.config.get("stream_heartbeat_tolerant", True) is not False
+                is_stream = resp_kind == "sse" or "data: " in resp_text
+                if heartbeat_tolerant and not is_stream:
+                    is_stream = looks_like_sse(resp_text)
+                if is_stream:
                     full_content = ""
                     tool_calls_buffer = {} # {index: "arguments"}
 
-                    lines = resp_text.splitlines()
+                    if heartbeat_tolerant:
+                        # 归一化成标准 data 行，顺带跳过 event / id / 注释心跳，
+                        # 并把多行 data 拼成一条事件，下面的解析逻辑即可原样复用。
+                        lines = ["data: " + chunk for chunk in iter_sse_payloads(resp_text)]
+                    else:
+                        lines = resp_text.splitlines()
                     valid_stream = False
                     extracted_images = []
                     extracted_data_arr = []
@@ -1487,7 +1717,14 @@ class ApiManager:
                                     except:
                                         pass
                     else:
-                        return f"数据解析失败: 看起来是流式数据但无法解析. 内容: {resp_text[:100]}..."
+                        rescued = extract_mixed_image_payload(resp_text)
+                        if rescued is None:
+                            return f"数据解析失败: 看起来是流式数据但无法解析. 内容: {resp_text[:100]}..."
+                        logger.warning("流式数据无法解析，但从文本中挽救到图片负载")
+                        res_data = rescued
+                elif resp_kind == "mixed" and isinstance(resp_payload, dict):
+                    logger.warning("响应为文本夹图形态，已按混合负载解析")
+                    res_data = resp_payload
                 else:
                     b64_match = re.search(r'(data:image\/[\w\-\+\.]+(?:;base64)?,[\w\-\+\/=\s]{100,})', resp_text)
                     if b64_match:

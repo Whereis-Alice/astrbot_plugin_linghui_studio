@@ -1,3 +1,4 @@
+import os
 import re
 import asyncio
 import json
@@ -17,6 +18,8 @@ from .data_manager import DataManager
 from .image_manager import ImageManager
 from .access_control import AccessPolicy
 from .channel_router import DrawingChannelRouter
+from .session_overrides import SessionOverrideStore
+from .batch_policy import BatchFailureGuard, policy_label
 from .default_presets import ADDITIONAL_DEFAULT_PRESETS, DEFAULT_PRESET_PACK_VERSION
 from .persona_profile import PersonaProfileManager
 from .persona_dialogue import build_persona_progress_prompts, sanitize_persona_progress_reply
@@ -152,7 +155,7 @@ def _direct_command_only(handler):
     PLUGIN_NAME,
     "Whereis-Alice",
     "灵绘工坊：带参考图专用渠道回退、受控群白名单、自定义绘图反向提示词与可视化管理的文生图/图生图插件",
-    "3.6.1",
+    "3.7.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_linghui_studio",
 )
 class LinghuiStudioPlugin(Star):
@@ -274,6 +277,12 @@ class LinghuiStudioPlugin(Star):
         self.task_mgr = GenerationTaskManager(data_dir, config)
         self.persona_profile = PersonaProfileManager(data_dir, config)
         self.studio_mgr = StudioAssetManager(data_dir)
+        # 会话级模型/渠道覆盖：仅影响当前聊天，不改动全局默认配置。
+        self.session_overrides = SessionOverrideStore(
+            os.path.join(data_dir, "session_overrides.json"),
+            ttl_minutes=config.get("session_override_ttl_minutes", 720),
+        )
+        self.api_mgr.bind_session_store(self.session_overrides)
         self._generation_cache_cleanup_task: Optional[asyncio.Task] = None
 
         # 上下文管理器
@@ -1104,7 +1113,7 @@ class LinghuiStudioPlugin(Star):
 
         auto_detect_status = "已启用" if self._llm_auto_detect else "未启用"
         logger.info(
-            f"LinghuiStudio 已加载 v3.6.1 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
+            f"LinghuiStudio 已加载 v3.7.0 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
 
     def _generation_cache_retention_days(self) -> int:
         """Return a bounded retention period for output and input image cache files."""
@@ -2669,6 +2678,7 @@ class LinghuiStudioPlugin(Star):
             final_instruction: str = None,
             preferred_channel_id: str = None,
             allow_fallback: bool = True,
+            session_id: str = "",
     ) -> bytes | str:
         runtime_task = asyncio.create_task(self.api_mgr.call_api(
             images,
@@ -2683,6 +2693,7 @@ class LinghuiStudioPlugin(Star):
             final_instruction=final_instruction,
             preferred_channel_id=preferred_channel_id,
             allow_fallback=allow_fallback,
+            session_id=session_id,
         ))
         await self.task_mgr.attach_runtime_task(task_id, runtime_task)
         try:
@@ -2701,6 +2712,47 @@ class LinghuiStudioPlugin(Star):
                 await self.data_mgr.add_group_count(gid, amount)
         except Exception:
             logger.exception("LinghuiStudio: failed to refund quota after generation failure")
+
+    def _make_batch_guard(self) -> BatchFailureGuard:
+        """Build the failure guard that governs a batch run.
+
+        The guard reads ``batch_failure_policy`` / ``batch_max_skips`` so admins
+        can choose between "keep going", "stop at the first failure", and
+        "tolerate at most N failures" without touching the batch code paths.
+        """
+
+        return BatchFailureGuard(
+            self.conf.get("batch_failure_policy", "skip"),
+            self.conf.get("batch_max_skips", 3),
+        )
+
+    def _batch_policy_hint(self) -> str:
+        """Short human readable description of the current batch failure policy."""
+
+        policy = str(self.conf.get("batch_failure_policy", "skip") or "skip").strip().lower()
+        if policy == "stop":
+            return "失败即停止"
+        if policy in {"skip_limit", "skip-limit", "limit"}:
+            try:
+                limit = int(self.conf.get("batch_max_skips", 3))
+            except (TypeError, ValueError):
+                limit = 3
+            return f"最多跳过 {max(0, limit)} 张失败"
+        return policy_label(policy)
+
+    async def _finalize_batch_guard(
+        self,
+        guard: BatchFailureGuard,
+        deduction: Dict[str, Any],
+        uid: str,
+        gid: str,
+    ) -> str:
+        """Refund quota for images the policy skipped and return a summary note."""
+
+        skipped = guard.skipped
+        if skipped > 0:
+            await self._refund_quota(deduction, uid, gid, skipped)
+        return guard.summary_suffix()
 
     async def _get_active_session_task(self, session_id: str) -> Optional[Dict[str, Any]]:
         """获取当前会话中的进行中任务"""
@@ -2979,6 +3031,7 @@ class LinghuiStudioPlugin(Star):
                     use_text_to_image_api=use_text_to_image_api,
                     aspect_ratio=aspect_ratio,
                     resolution=resolution,
+                    session_id=event.unified_msg_origin,
                 )
                 if isinstance(res, bytes) or not self._is_transient_generation_error(res) or attempt == 1:
                     break
@@ -3144,12 +3197,18 @@ class LinghuiStudioPlugin(Star):
             max_retries = self.conf.get("batch_retries", 2)
 
             semaphore = asyncio.Semaphore(concurrency)
-            results = {"success": 0, "fail": 0, "errors": []}
+            results = {"success": 0, "fail": 0, "errors": [], "skipped": 0}
+            guard = self._make_batch_guard()
             results_lock = asyncio.Lock()
 
             async def process_single(index: int):
                 async with semaphore:
                     try:
+                        if guard.aborted:
+                            await guard.note_skip()
+                            async with results_lock:
+                                results["skipped"] += 1
+                            return
                         retry_count = 0
                         success = False
                         error_msg = ""
@@ -3159,7 +3218,8 @@ class LinghuiStudioPlugin(Star):
                             res = await self.api_mgr.call_api(
                                 images, prompt, model, False, self.img_mgr.proxy,
                                 use_text_to_image_api=True,
-                                aspect_ratio=aspect_ratio, resolution=resolution
+                                aspect_ratio=aspect_ratio, resolution=resolution,
+                                session_id=event.unified_msg_origin,
                             )
 
                             if isinstance(res, bytes):
@@ -3213,6 +3273,7 @@ class LinghuiStudioPlugin(Star):
                             else:
                                 results["fail"] += 1
                                 results["errors"].append(error_msg)
+                                await guard.note_failure(error_msg)
                                 if (not suppress_user_error) or self._should_show_debug_errors():
                                     await event.send(event.chain_result([
                                         Plain(f"第{index}张没弄好: {error_msg}")
@@ -3226,6 +3287,7 @@ class LinghuiStudioPlugin(Star):
                         async with results_lock:
                             results["fail"] += 1
                             results["errors"].append(error_msg)
+                            await guard.note_failure(error_msg)
                         if (not suppress_user_error) or self._should_show_debug_errors():
                             await event.send(event.chain_result([
                                 Plain(f"第{index}张出了点问题: {error_msg}")
@@ -3237,10 +3299,17 @@ class LinghuiStudioPlugin(Star):
             tasks = [process_single(i) for i in range(1, count + 1)]
             await asyncio.gather(*tasks)
 
+            guard_note = await self._finalize_batch_guard(guard, deduction, uid, gid)
+            results["skipped"] = guard.skipped
+            if guard_note and ((not suppress_user_error) or self._should_show_debug_errors()):
+                await event.send(event.chain_result([Plain(f"⏹️ {guard_note}")]))
+
             # 5. 发送完成汇总
             if not hide_text:
                 quota_str = self._get_quota_str(deduction, uid, gid)
                 summary = f"\n📊 批量生成完成: 成功 {results['success']}/{count} 张 | 剩余: {quota_str}"
+                if guard.skipped:
+                    summary += f"\n⏹️ 跳过 {guard.skipped} 张（{self._batch_policy_hint()}），已退回对应次数"
                 await event.send(event.chain_result([Plain(summary)]))
             return results
 
@@ -3298,20 +3367,29 @@ class LinghuiStudioPlugin(Star):
             max_retries = self.conf.get("batch_retries", 2)
 
             semaphore = asyncio.Semaphore(concurrency)
-            results = {"success": 0, "fail": 0, "errors": []}
+            results = {"success": 0, "fail": 0, "errors": [], "skipped": 0}
+            guard = self._make_batch_guard()
             results_lock = asyncio.Lock()
 
             # 4. 并发逐张生成（每次调用API都会产生不同的结果）
             async def process_single(index: int):
                 async with semaphore:
                     try:
+                        if guard.aborted:
+                            await guard.note_skip()
+                            async with results_lock:
+                                results["skipped"] += 1
+                            return
                         retry_count = 0
                         success = False
                         error_msg = ""
 
                         while retry_count <= max_retries:
                             start_time = datetime.now()
-                            res = await self.api_mgr.call_api(images, prompt, model, False, self.img_mgr.proxy)
+                            res = await self.api_mgr.call_api(
+                                images, prompt, model, False, self.img_mgr.proxy,
+                                session_id=event.unified_msg_origin,
+                            )
 
                             if isinstance(res, bytes):
                                 route_metrics = self._snapshot_generation_route_metrics()
@@ -3364,6 +3442,7 @@ class LinghuiStudioPlugin(Star):
                             else:
                                 results["fail"] += 1
                                 results["errors"].append(error_msg)
+                                await guard.note_failure(error_msg)
                                 if (not suppress_user_error) or self._should_show_debug_errors():
                                     await event.send(event.chain_result([
                                         Plain(f"第{index}个版本没弄好: {error_msg}")
@@ -3377,6 +3456,7 @@ class LinghuiStudioPlugin(Star):
                         async with results_lock:
                             results["fail"] += 1
                             results["errors"].append(error_msg)
+                            await guard.note_failure(error_msg)
                         if (not suppress_user_error) or self._should_show_debug_errors():
                             await event.send(event.chain_result([
                                 Plain(f"第{index}个版本出了点问题: {error_msg}")
@@ -3387,10 +3467,17 @@ class LinghuiStudioPlugin(Star):
             tasks = [process_single(i) for i in range(1, count + 1)]
             await asyncio.gather(*tasks)
 
+            guard_note = await self._finalize_batch_guard(guard, deduction, uid, gid)
+            results["skipped"] = guard.skipped
+            if guard_note and ((not suppress_user_error) or self._should_show_debug_errors()):
+                await event.send(event.chain_result([Plain(f"⏹️ {guard_note}")]))
+
             # 5. 发送完成汇总
             if not hide_text:
                 quota_str = self._get_quota_str(deduction, uid, gid)
                 summary = f"\n📊 多版本生成完成: 成功 {results['success']}/{count} 张 | 剩余: {quota_str}"
+                if guard.skipped:
+                    summary += f"\n⏹️ 跳过 {guard.skipped} 张（{self._batch_policy_hint()}），已退回对应次数"
                 await event.send(event.chain_result([Plain(summary)]))
             return results
 
@@ -4105,6 +4192,7 @@ class LinghuiStudioPlugin(Star):
                 use_text_to_image_api=is_text_to_image,
                 negative_prompt=negative_prompt,
                 final_instruction=final_instruction,
+                session_id=event.unified_msg_origin,
             )
         except asyncio.CancelledError:
             if charged:
@@ -4426,48 +4514,142 @@ class LinghuiStudioPlugin(Star):
                 "模式无效 (openai_image / openai_chat / gemini_official / custom_endpoint；旧 generic 仍兼容)"
             )])
 
+    def _session_override_scope(self, event: AstrMessageEvent) -> Tuple[str, str]:
+        """Describe the current session so overrides are readable in the Dashboard."""
+
+        user_name, group_name = self._event_identity_labels(event)
+        gid = ""
+        try:
+            gid = str(event.get_group_id() or "").strip()
+        except Exception:
+            gid = ""
+        if gid:
+            return "group", (group_name or f"群 {gid}")
+        uid = ""
+        try:
+            uid = str(event.get_sender_id() or "").strip()
+        except Exception:
+            uid = ""
+        return "private", (user_name or f"用户 {uid}")
+
+    @staticmethod
+    def _strip_scope_keyword(argument: str) -> Tuple[str, str]:
+        """Split a trailing/leading scope keyword out of a command argument.
+
+        Returns ``(scope, remaining_argument)`` where ``scope`` is ``"global"``,
+        ``"session"`` or ``""`` (caller decides the default).
+        """
+
+        text = str(argument or "").strip()
+        scope = ""
+        for token, resolved in (
+            ("全局", "global"),
+            ("global", "global"),
+            ("本群", "session"),
+            ("当前会话", "session"),
+            ("会话", "session"),
+            ("session", "session"),
+        ):
+            if not text:
+                break
+            lowered = text.lower()
+            if lowered.startswith(token):
+                scope = resolved
+                text = text[len(token):].strip()
+                break
+            if lowered.endswith(token):
+                scope = resolved
+                text = text[: len(text) - len(token)].strip()
+                break
+        return scope, text
+
+    def _session_override_enabled(self, key: str) -> bool:
+        return self._get_conf_bool(key, True)
+
     @filter.command("模型", alias={"切换模型"}, prefix_optional=True)
     @_direct_command_only
     async def on_switch_model(self, event: AstrMessageEvent, ctx=None):
+        """查看或切换绘图模型。默认只影响当前会话，加“全局”才改默认配置。"""
         if not self.is_admin(event):
             yield event.chain_result([Plain("❌ 只有管理员可以切换模型。")])
             return
 
         all_m = normalize_model_list(self.conf.get("model_list", []))
+        session_id = event.unified_msg_origin
+        session_enabled = self._session_override_enabled("enable_session_model_override")
+        session_model = ""
+        if session_enabled:
+            session_model = self.session_overrides.get_model(session_id)
+
         parts = event.message_str.strip().split(maxsplit=1)
-        if len(parts) < 2 or not parts[1].strip():
-            curr = self.conf.get("model", "nano-banana")
+        raw_argument = parts[1].strip() if len(parts) > 1 else ""
+        scope, target = self._strip_scope_keyword(raw_argument)
+
+        if not target:
+            global_model = self.conf.get("model", "nano-banana")
+            effective = session_model or global_model
             if all_m:
                 msg = "📋 可用模型:\n" + "\n".join(
-                    [f"{i + 1}. {m} {'✅' if m == curr else ''}" for i, m in enumerate(all_m)]
+                    [f"{i + 1}. {m} {'✅' if m == effective else ''}" for i, m in enumerate(all_m)]
                 )
             else:
-                msg = f"📋 当前模型: {curr}\n模型列表为空，可直接输入模型名称切换。"
+                msg = f"📋 当前生效模型: {effective}\n模型列表为空，可直接输入模型名称切换。"
+            msg += f"\n\n🌐 全局默认: {global_model}"
+            if session_enabled:
+                msg += f"\n💬 本会话: {session_model or '跟随全局'}"
             model_command = self._command_example("模型")
-            msg += f"\n\n💡 用法: {model_command} <序号>\n或直接使用 {model_command} <模型名称> 写入任意模型。"
+            msg += f"\n\n💡 用法: {model_command} <序号|模型名> —— 只改当前会话"
+            if session_enabled:
+                msg += f"\n　　　 {model_command} 全局 <序号|模型名> —— 改全局默认"
+                msg += f"\n　　　 {model_command} 取消 —— 清除本会话的模型选择"
             yield event.chain_result([Plain(msg)])
             return
 
-        target = parts[1].strip()
-        # 尝试按序号切换
+        if target.lower() in {"取消", "清除", "重置", "reset", "clear", "默认", "跟随全局"}:
+            if not session_enabled:
+                yield event.chain_result([Plain("会话级模型选择当前已关闭，无需清除。")])
+                return
+            self.session_overrides.set_model(session_id, "")
+            yield event.chain_result([Plain("✅ 已清除本会话的模型选择，重新跟随全局默认。")])
+            return
+
         if target.isdigit():
             idx = int(target) - 1
-            if 0 <= idx < len(all_m):
-                self.conf["model"] = all_m[idx]
-                self._save_config(["model"])
-                yield event.chain_result([Plain(f"✅ 已切换为预设模型: {all_m[idx]}")])
-            else:
-                yield event.chain_result([Plain(f"❌ 模型序号超出范围，请先发送 {self._command_example('模型')} 查看列表。")])
+            if not (0 <= idx < len(all_m)):
+                yield event.chain_result(
+                    [Plain(f"❌ 模型序号超出范围，请先发送 {self._command_example('模型')} 查看列表。")]
+                )
+                return
+            resolved_model = all_m[idx]
+            kind = "预设模型"
         else:
-            # 直接按名称写入任意模型
-            self.conf["model"] = target
+            resolved_model = target
+            kind = "自定义模型"
+
+        use_global = scope == "global" or not session_enabled
+        if use_global:
+            self.conf["model"] = resolved_model
             self._save_config(["model"])
-            yield event.chain_result([Plain(f"✅ 已直接切换为自定义模型: {target}")])
+            note = "" if session_enabled else "（会话级选择已关闭，本次直接写入全局）"
+            yield event.chain_result([Plain(f"✅ 已把全局默认{kind}设为: {resolved_model}{note}")])
+            return
+
+        session_scope, session_label = self._session_override_scope(event)
+        self.session_overrides.set_model(
+            session_id, resolved_model, label=session_label, scope=session_scope
+        )
+        ttl = self.session_overrides.ttl_minutes
+        ttl_text = f"，{ttl} 分钟内有效" if ttl > 0 else ""
+        yield event.chain_result([Plain(
+            f"✅ 本会话{kind}已设为: {resolved_model}{ttl_text}\n"
+            f"（全局默认仍是 {self.conf.get('model', 'nano-banana')}；"
+            f"要改全局请用 {self._command_example('模型')} 全局 {resolved_model}）"
+        )])
 
     @filter.command("通道", alias={"渠道"}, prefix_optional=True)
     @_direct_command_only
     async def on_switch_channel(self, event: AstrMessageEvent, ctx=None):
-        """查看或切换当前绘图渠道（管理员）。"""
+        """查看或切换绘图渠道。默认只影响当前会话，加“全局”才改默认配置。"""
         if not self.is_admin(event):
             yield event.chain_result([Plain("只有管理员可以切换绘图渠道。")])
             return
@@ -4478,35 +4660,91 @@ class LinghuiStudioPlugin(Star):
             yield event.chain_result([Plain("当前未配置绘图渠道，将使用兼容的单接口配置。")])
             return
 
-        if not argument:
-            active = str(self.conf.get("active_drawing_channel", "") or "").strip() or "自动"
-            rows = [f"当前渠道：{active}", "可用渠道："]
+        session_id = event.unified_msg_origin
+        session_enabled = self._session_override_enabled("enable_session_channel_override")
+        session_channel = ""
+        if session_enabled:
+            session_channel = self.session_overrides.get_channel(session_id)
+        scope, target = self._strip_scope_keyword(argument)
+
+        if not target:
+            global_active = str(self.conf.get("active_drawing_channel", "") or "").strip() or "自动"
+            effective = session_channel or global_active
+            rows = [f"当前生效渠道：{effective}"]
+            rows.append(f"全局默认：{global_active}")
+            if session_enabled:
+                rows.append(f"本会话：{session_channel or '跟随全局'}")
+            rows.append("可用渠道：")
             for index, channel in enumerate(channels, start=1):
                 channel_id = channel["id"]
                 label = str(channel.get("name", "") or channel_id)
-                marker = " <- 当前" if channel_id == active else ""
+                marker = " <- 当前" if channel_id == effective else ""
                 fallback = "可回退" if channel.get("fallback_enabled", True) is not False else "不作回退"
-                rows.append(f"{index}. {channel_id}（{label}，{fallback}）{marker}")
+                protocol = str(channel.get("protocol", "") or "auto")
+                protocol_text = "" if protocol in {"", "auto"} else f"，{protocol}"
+                rows.append(f"{index}. {channel_id}（{label}，{fallback}{protocol_text}）{marker}")
             channel_command = self._command_example("通道")
-            rows.append(f"用法：{channel_command} <渠道ID>；{channel_command} 自动")
+            rows.append(f"用法：{channel_command} <渠道ID|序号> —— 只改当前会话")
+            if session_enabled:
+                rows.append(f"　　　{channel_command} 全局 <渠道ID> —— 改全局默认")
+                rows.append(f"　　　{channel_command} 取消 —— 清除本会话的渠道选择")
+            rows.append(f"　　　{channel_command} 自动 —— 恢复配置列表的优先顺序")
             yield event.chain_result([Plain("\n".join(rows))])
             return
 
-        if argument.lower() in {"auto", "自动"}:
-            self.conf["active_drawing_channel"] = ""
-            self._save_config(["active_drawing_channel"])
-            await self.api_mgr.refresh()
-            yield event.chain_result([Plain("已恢复为配置列表的自动优先顺序。")])
+        lowered = target.lower()
+        if lowered in {"取消", "清除", "重置", "reset", "clear", "跟随全局"}:
+            if not session_enabled:
+                yield event.chain_result([Plain("会话级渠道选择当前已关闭，无需清除。")])
+                return
+            self.session_overrides.set_channel(session_id, "")
+            yield event.chain_result([Plain("已清除本会话的渠道选择，重新跟随全局默认。")])
             return
 
-        selected = argument.split()[0]
-        if selected not in {channel["id"] for channel in channels}:
-            yield event.chain_result([Plain(f"未找到该渠道，请先发送 {self._command_example('通道')} 查看列表。")])
+        if lowered in {"auto", "自动"}:
+            if scope == "global" or not session_enabled:
+                self.conf["active_drawing_channel"] = ""
+                self._save_config(["active_drawing_channel"])
+                await self.api_mgr.refresh()
+                yield event.chain_result([Plain("已把全局默认恢复为配置列表的自动优先顺序。")])
+                return
+            self.session_overrides.set_channel(session_id, "")
+            yield event.chain_result([Plain("本会话已恢复自动优先顺序（跟随全局配置）。")])
             return
-        self.conf["active_drawing_channel"] = selected
-        self._save_config(["active_drawing_channel"])
-        await self.api_mgr.refresh()
-        yield event.chain_result([Plain(f"已切换主渠道为 {selected}；失败时仍会按回退顺序尝试其他渠道。")])
+
+        selected = target.split()[0]
+        known = {channel["id"] for channel in channels}
+        if selected.isdigit():
+            idx = int(selected) - 1
+            if 0 <= idx < len(channels):
+                selected = channels[idx]["id"]
+        if selected not in known:
+            yield event.chain_result(
+                [Plain(f"未找到该渠道，请先发送 {self._command_example('通道')} 查看列表。")]
+            )
+            return
+
+        if scope == "global" or not session_enabled:
+            self.conf["active_drawing_channel"] = selected
+            self._save_config(["active_drawing_channel"])
+            await self.api_mgr.refresh()
+            note = "" if session_enabled else "（会话级选择已关闭，本次直接写入全局）"
+            yield event.chain_result([Plain(
+                f"已把全局主渠道设为 {selected}{note}；失败时仍会按回退顺序尝试其他渠道。"
+            )])
+            return
+
+        session_scope, session_label = self._session_override_scope(event)
+        self.session_overrides.set_channel(
+            session_id, selected, label=session_label, scope=session_scope
+        )
+        ttl = self.session_overrides.ttl_minutes
+        ttl_text = f"，{ttl} 分钟内有效" if ttl > 0 else ""
+        global_active = str(self.conf.get("active_drawing_channel", "") or "").strip() or "自动"
+        yield event.chain_result([Plain(
+            f"本会话主渠道已设为 {selected}{ttl_text}；失败时仍会按回退顺序尝试其他渠道。\n"
+            f"（全局默认仍是 {global_active}；要改全局请用 {self._command_example('通道')} 全局 {selected}）"
+        )])
 
     @filter.command("统计", alias={"手办化今日统计"}, prefix_optional=True)
     @_direct_command_only
@@ -5648,7 +5886,10 @@ class LinghuiStudioPlugin(Star):
             model = self.conf.get("model", "nano-banana")
             start_time = datetime.now()
 
-            res = await self.api_mgr.call_api(images, prompt, model, False, self.img_mgr.proxy)
+            res = await self.api_mgr.call_api(
+                images, prompt, model, False, self.img_mgr.proxy,
+                session_id=event.unified_msg_origin,
+            )
 
             # 处理结果
             if isinstance(res, bytes):
@@ -6008,8 +6249,10 @@ class LinghuiStudioPlugin(Star):
                                     if ref_images:
                                         images = ref_images + images
                                 model = self.conf.get("model", "nano-banana")
-                                res = await self.api_mgr.call_api(images, final_prompt, model, False,
-                                                                  self.img_mgr.proxy)
+                                res = await self.api_mgr.call_api(
+                                    images, final_prompt, model, False, self.img_mgr.proxy,
+                                    session_id=event.unified_msg_origin,
+                                )
                                 if isinstance(res, bytes):
                                     route_metrics = self._snapshot_generation_route_metrics()
                                     res = await self._prepare_send_image_bytes(res)
@@ -6274,7 +6517,8 @@ class LinghuiStudioPlugin(Star):
 
         # 7. 使用信号量控制并发
         semaphore = asyncio.Semaphore(concurrency)
-        results = {"success": 0, "fail": 0}
+        results = {"success": 0, "fail": 0, "skipped": 0}
+        guard = self._make_batch_guard()
         failed_details = []
         pdf_result_images_dict = {}  # 用于保证并发生成的图片顺序
         results_lock = asyncio.Lock()
@@ -6283,6 +6527,11 @@ class LinghuiStudioPlugin(Star):
         async def process_single(index: int, url: str):
             async with semaphore:
                 try:
+                    if guard.aborted:
+                        await guard.note_skip()
+                        async with results_lock:
+                            results["skipped"] += 1
+                        return
                     # 下载图片
                     img_bytes = await self.img_mgr.load_bytes(url)
                     if not img_bytes:
@@ -6295,6 +6544,7 @@ class LinghuiStudioPlugin(Star):
                                 "reason": error_msg,
                                 "url_preview": url[:50] + "..." if len(url) > 50 else url
                             })
+                            await guard.note_failure(error_msg)
                         await self._update_session_task_progress(
                             event.unified_msg_origin, current=index, success=results["success"], fail=results["fail"]
                         )
@@ -6318,8 +6568,10 @@ class LinghuiStudioPlugin(Star):
                                     if ref_images:
                                         images = ref_images + images
                                 model = self.conf.get("model", "nano-banana")
-                                res = await self.api_mgr.call_api(images, final_prompt, model, False,
-                                                                  self.img_mgr.proxy)
+                                res = await self.api_mgr.call_api(
+                                    images, final_prompt, model, False, self.img_mgr.proxy,
+                                    session_id=event.unified_msg_origin,
+                                )
                                 if isinstance(res, bytes):
                                     route_metrics = self._snapshot_generation_route_metrics()
                                     res = await self._prepare_send_image_bytes(res)
@@ -6383,6 +6635,7 @@ class LinghuiStudioPlugin(Star):
                                 "reason": error_msg,
                                 "url_preview": url[:50] + "..." if len(url) > 50 else url
                             })
+                            await guard.note_failure(error_msg)
                             if self._should_show_debug_errors():
                                 await event.send(event.chain_result([
                                     Plain(f"第 {index}/{total_images} 张最终没弄好: {error_msg}")
@@ -6401,6 +6654,7 @@ class LinghuiStudioPlugin(Star):
                             "reason": error_msg,
                             "url_preview": url[:50] + "..." if len(url) > 50 else url
                         })
+                        await guard.note_failure(error_msg)
                     await self._update_session_task_progress(
                         event.unified_msg_origin, current=index, success=results["success"], fail=results["fail"]
                     )
@@ -6418,6 +6672,11 @@ class LinghuiStudioPlugin(Star):
 
             # 等待所有任务完成
             await asyncio.gather(*tasks)
+
+            guard_note = await self._finalize_batch_guard(guard, deduction, uid, gid)
+            results["skipped"] = guard.skipped
+            if guard_note and self._should_show_debug_errors():
+                await event.send(event.chain_result([Plain(f"⏹️ {guard_note}")]))
 
             if output_as_pdf:
                 if pdf_result_images_dict:
@@ -6828,7 +7087,10 @@ class LinghuiStudioPlugin(Star):
         # 调用 API
         model = self.conf.get("model", "nano-banana")
         start = datetime.now()
-        res = await self.api_mgr.call_api(final_images, full_prompt, model, False, self.img_mgr.proxy)
+        res = await self.api_mgr.call_api(
+            final_images, full_prompt, model, False, self.img_mgr.proxy,
+            session_id=event.unified_msg_origin,
+        )
 
         if isinstance(res, bytes):
             route_metrics = self._snapshot_generation_route_metrics()
@@ -7097,7 +7359,8 @@ class LinghuiStudioPlugin(Star):
 
         # 使用信号量控制并发
         semaphore = asyncio.Semaphore(concurrency)
-        results = {"success": 0, "fail": 0}
+        results = {"success": 0, "fail": 0, "skipped": 0}
+        guard = self._make_batch_guard()
         failed_details = []
         results_lock = asyncio.Lock()
         max_retries = self.conf.get("batch_retries", 2)
@@ -7105,6 +7368,11 @@ class LinghuiStudioPlugin(Star):
         async def process_single(index: int, url: str):
             async with semaphore:
                 try:
+                    if guard.aborted:
+                        await guard.note_skip()
+                        async with results_lock:
+                            results["skipped"] += 1
+                        return
                     # 下载图片
                     img_bytes = await self.img_mgr.load_bytes(url)
                     if not img_bytes:
@@ -7116,6 +7384,7 @@ class LinghuiStudioPlugin(Star):
                                 "reason": error_msg,
                                 "url_preview": url[:50] + "..." if len(url) > 50 else url
                             })
+                            await guard.note_failure(error_msg)
                         await event.send(event.chain_result([
                             Plain(f"第 {index}/{total_images} 张没弄好: {error_msg}")
                         ]))
@@ -7162,6 +7431,7 @@ class LinghuiStudioPlugin(Star):
                                 "reason": error_msg,
                                 "url_preview": url[:50] + "..." if len(url) > 50 else url
                             })
+                            await guard.note_failure(error_msg)
                             await event.send(event.chain_result([
                                 Plain(f"第 {index}/{total_images} 张最终没弄好: {error_msg}")
                             ]))
@@ -7176,6 +7446,7 @@ class LinghuiStudioPlugin(Star):
                             "reason": error_msg,
                             "url_preview": url[:50] + "..." if len(url) > 50 else url
                         })
+                        await guard.note_failure(error_msg)
                     await event.send(event.chain_result([
                         Plain(f"第 {index}/{total_images} 张出了点问题: {error_msg}")
                     ]))
@@ -7184,12 +7455,17 @@ class LinghuiStudioPlugin(Star):
             tasks = [process_single(i, url) for i, url in enumerate(all_image_urls, 1)]
             await asyncio.gather(*tasks)
 
+            guard_note = await self._finalize_batch_guard(guard, deduction, uid, gid)
+            results["skipped"] = guard.skipped
+
             # 发送完成汇总
             quota_str = self._get_quota_str(deduction, uid, gid)
             summary = f"\n📊 批量处理完成\n"
             summary += f"✅ 成功: {results['success']} 张\n"
             summary += f"失败: {results['fail']} 张\n"
             summary += f"💰 剩余次数: {quota_str}"
+            if guard_note:
+                summary += f"\n⏹️ {guard_note}（策略：{self._batch_policy_hint()}），已退回对应次数"
 
             if failed_details:
                 summary += f"\n\n📋 失败图片汇总:"

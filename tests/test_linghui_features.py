@@ -421,6 +421,7 @@ class DashboardRegistrationTest(unittest.TestCase):
                 "/astrbot_plugin_linghui_studio/generation_tasks",
                 "/astrbot_plugin_linghui_studio/generation_task",
                 "/astrbot_plugin_linghui_studio/persona_state",
+                "/astrbot_plugin_linghui_studio/session_overrides",
                 "/astrbot_plugin_linghui_studio/studio",
                 "/astrbot_plugin_linghui_studio/studio_asset",
                 "/astrbot_plugin_linghui_studio/studio_generate",

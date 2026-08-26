@@ -35,6 +35,7 @@ class DrawingChannelRouter:
         )
         self._health: Dict[str, Dict[str, Any]] = {}
         self._lock = asyncio.Lock()
+        self._session_store: Any = None
 
     @staticmethod
     def _normalize_keys(value: Any) -> List[str]:
@@ -196,6 +197,7 @@ class DrawingChannelRouter:
             "use_stream",
             "generic_prefer_images_api",
             "image_edit_transport",
+            "protocol",
         ):
             value = channel.get(key)
             if value not in (None, "", []):
@@ -283,6 +285,46 @@ class DrawingChannelRouter:
                 state["consecutive_failures"],
             )
 
+    def bind_session_store(self, store: Any) -> None:
+        """Attach the per-session model/channel override store."""
+
+        self._session_store = store
+
+    def _flag(self, key: str, default: bool = True) -> bool:
+        value = self.config.get(key, default)
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on", "开", "是"}
+        return default if value is None else bool(value)
+
+    def _session_channel_override(self, session_id: str) -> str:
+        """Channel id pinned to this chat, if session overrides are enabled."""
+
+        store = self._session_store
+        if not store or not session_id or not self._flag("enable_session_channel_override", True):
+            return ""
+        try:
+            return str(store.get_channel(session_id) or "").strip()
+        except Exception:  # pragma: no cover - defensive, store is best effort
+            logger.debug("Linghui session channel override lookup failed.", exc_info=True)
+            return ""
+
+    def _session_model_override(self, session_id: str, requested: str) -> str:
+        """Model pinned to this chat; an explicit request always wins."""
+
+        store = self._session_store
+        if not store or not session_id or not self._flag("enable_session_model_override", True):
+            return ""
+        requested = str(requested or "").strip()
+        global_default = str(self.config.get("model", "") or "").strip()
+        global_t2i = str(self.config.get("text_to_image_model", "") or "").strip()
+        if requested and requested not in {global_default, global_t2i}:
+            return ""
+        try:
+            return str(store.get_model(session_id) or "").strip()
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("Linghui session model override lookup failed.", exc_info=True)
+            return ""
+
     def _set_last_metrics(self, metrics: Dict[str, Any]) -> None:
         copied = dict(metrics)
         self._last_metrics = copied
@@ -302,6 +344,7 @@ class DrawingChannelRouter:
         final_instruction: str | None = None,
         preferred_channel_id: str | None = None,
         allow_fallback: bool = True,
+        session_id: str = "",
     ) -> bytes | str:
         prepared_prompt = await self.prompt_processor.prepare(prompt)
         prepared_prompt = append_negative_prompt(prepared_prompt, negative_prompt)
@@ -310,9 +353,23 @@ class DrawingChannelRouter:
         # exact same final prompt, so mention privacy cannot disappear when a
         # route changes.
         prepared_prompt = append_final_instruction(prepared_prompt, final_instruction)
+        session_key = str(session_id or "").strip()
+        channel_override = str(preferred_channel_id or "").strip()
+        session_scoped_channel = ""
+        if not channel_override:
+            session_scoped_channel = self._session_channel_override(session_key)
+            channel_override = session_scoped_channel
+        session_scoped_model = self._session_model_override(session_key, model)
+        if session_scoped_model:
+            model = session_scoped_model
+        override_meta = {
+            "session_id": session_key,
+            "session_channel_override": session_scoped_channel,
+            "session_model_override": session_scoped_model,
+        }
         channels = self._ordered_channels(
             requires_input_image=bool(images),
-            selected_override=str(preferred_channel_id or ""),
+            selected_override=channel_override,
             allow_fallback=allow_fallback,
         )
         if images and not channels and self._raw_channels():
@@ -337,6 +394,7 @@ class DrawingChannelRouter:
                 "channel_name": "兼容单接口",
                 "model": model,
                 "fallback_count": 0,
+                **override_meta,
                 "has_input_image": bool(images),
                 "attempt_chain": [{
                     "channel_id": "legacy",
@@ -410,6 +468,7 @@ class DrawingChannelRouter:
                         "channel_name": str(channel.get("name", channel["id"]) or channel["id"]),
                         "model": resolved_model,
                         "fallback_count": channel_index,
+                        **override_meta,
                         "has_input_image": bool(images),
                         "attempt_chain": attempt_chain,
                         "route_duration": time.monotonic() - route_started,
@@ -454,6 +513,7 @@ class DrawingChannelRouter:
                 "channel_name": str(channel.get("name", channel["id"]) or channel["id"]),
                 "model": resolved_model,
                 "fallback_count": channel_index,
+                **override_meta,
                 "has_input_image": bool(images),
                 "attempt_chain": attempt_chain,
                 "route_duration": time.monotonic() - route_started,

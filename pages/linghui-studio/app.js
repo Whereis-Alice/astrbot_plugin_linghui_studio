@@ -37,15 +37,17 @@ const state = {
   studioSelections: new Set(),
   studioPreviewCache: new Map(),
   personaState: {},
+  sessionOverrides: {},
 };
 
 const THEME_STORAGE_KEY = "linghui-studio-theme";
-const THEME_VALUES = new Set(["dark", "light", "alice", "terminal"]);
+const THEME_VALUES = new Set(["dark", "light", "alice", "terminal", "nebula"]);
 const THEME_LABELS = new Map([
   ["dark", "深色"],
   ["light", "浅色"],
   ["alice", "爱丽丝"],
   ["terminal", "黑客终端"],
+  ["nebula", "星云"],
 ]);
 const HISTORY_PAGE_SIZE = 24;
 const HISTORY_CACHE_TTL_MS = 30_000;
@@ -254,6 +256,7 @@ function channelTemplate(channel = {}, index = 0) {
     fallback_enabled: channel.fallback_enabled !== false,
     reference_image_enabled: channel.reference_image_enabled !== false,
     interface_mode: channel.interface_mode || "openai_chat",
+    protocol: channel.protocol || "auto",
     image_edit_transport: channel.image_edit_transport || "auto",
     base_url: channel.base_url || "",
     model: channel.model || "",
@@ -264,6 +267,10 @@ function channelTemplate(channel = {}, index = 0) {
   };
   const masked = item.api_keys_masked ? `已配置：${item.api_keys_masked}` : "每行一个 API Key";
   const modelListId = `channel-model-list-${index}`;
+  const protocolLabels = state.config?.protocol_labels || { auto: "OpenAI 兼容（默认）" };
+  const protocolOptions = Object.entries(protocolLabels)
+    .map(([value, label]) => `<option value="${escapeHtml(value)}" ${item.protocol === value ? "selected" : ""}>${escapeHtml(label)}</option>`)
+    .join("");
   return `
     <article class="channel-row" data-index="${index}" data-original-id="${escapeHtml(channel.id || "")}">
       <div class="row-top">
@@ -276,6 +283,9 @@ function channelTemplate(channel = {}, index = 0) {
         <label class="field"><span>接口模式</span><select data-channel="interface_mode">
           ${["openai_chat", "openai_image", "gemini_official", "custom_endpoint"].map((kind) => `<option value="${kind}" ${item.interface_mode === kind ? "selected" : ""}>${kind}</option>`).join("")}
         </select><small class="field-hint">New API/OpenAI Images 请选择 openai_image；不要把地址填到 /v1/images。</small></label>
+        <label class="field"><span>原生协议</span><select data-channel="protocol">
+          ${protocolOptions}
+        </select><small class="field-hint">默认 auto 走 OpenAI 兼容协议。选择 grok / agnes / novelai / jimeng 后，会改用对应厂商的原生请求体，接口地址与模型可留空以使用官方默认值。</small></label>
         <label class="field"><span>图生图上传格式</span><select data-channel="image_edit_transport">
           ${[["auto", "自动"], ["multipart", "multipart 文件上传"], ["json", "JSON / Base64"]].map(([kind, label]) => `<option value="${kind}" ${item.image_edit_transport === kind ? "selected" : ""}>${label}</option>`).join("")}
         </select><small class="field-hint">人设拍照和参考图会使用此设置。auto 会为 gpt-image-* 选择标准 multipart，其余渠道保留兼容策略。</small></label>
@@ -303,6 +313,7 @@ function readChannels() {
       original_id: row.dataset.originalId || "",
       name: get("name").value.trim(),
       interface_mode: get("interface_mode").value,
+      protocol: get("protocol")?.value || "auto",
       image_edit_transport: get("image_edit_transport").value,
       timeout: Number(get("timeout").value) || 120,
       base_url: get("base_url").value.trim(),
@@ -931,6 +942,66 @@ async function loadRouteHealth() {
   renderRouteHealth();
 }
 
+function renderSessionOverrides() {
+  const target = byId("session-override-list");
+  if (!target) return;
+  const data = state.sessionOverrides || {};
+  const rows = Array.isArray(data.overrides) ? data.overrides : [];
+  const enabled = data.enabled || {};
+  const ttl = Number(data.ttl_minutes) || 0;
+  const notice = [];
+  if (enabled.model === false) notice.push("会话级模型切换已关闭");
+  if (enabled.channel === false) notice.push("会话级渠道切换已关闭");
+  notice.push(ttl > 0 ? `覆盖有效期 ${ttl} 分钟` : "覆盖永久保留，直到手动清除");
+  const summary = `<p class="session-override-empty">当前 ${rows.length} 条会话覆盖 · ${escapeHtml(notice.join(" · "))}</p>`;
+  if (!rows.length) {
+    target.innerHTML = `<p class="session-override-empty">暂无会话覆盖。群友在自己的会话里用 #模型 或 #通道 切换后会出现在这里。${escapeHtml(notice.join(" · "))}</p>`;
+    return;
+  }
+  const cards = rows.map((row) => {
+    const sessionId = String(row.session_id || "");
+    const label = row.label || sessionId || "未知会话";
+    const scope = row.scope === "group" ? "群聊" : (row.scope === "private" ? "私聊" : "会话");
+    const chips = [`<span>${escapeHtml(scope)}</span>`];
+    if (row.channel_id) chips.push(`<span class="channel">渠道 ${escapeHtml(row.channel_name || row.channel_id)}</span>`);
+    if (row.model) chips.push(`<span class="model">模型 ${escapeHtml(row.model)}</span>`);
+    if (!row.channel_id && !row.model) chips.push('<span>跟随全局</span>');
+    if (row.updated_at) chips.push(`<span class="expiry">更新 ${escapeHtml(row.updated_at)}</span>`);
+    chips.push(`<span class="expiry">${row.expires_at ? `到期 ${escapeHtml(row.expires_at)}` : "不过期"}</span>`);
+    return `<article class="session-override-card">
+      <div><strong title="${escapeHtml(sessionId)}">${escapeHtml(label)}</strong><div class="session-override-meta">${chips.join("")}</div></div>
+      <button class="remove-button" type="button" data-session-clear="${escapeHtml(sessionId)}" title="清除该会话覆盖" aria-label="清除该会话覆盖">×</button>
+    </article>`;
+  }).join("");
+  target.innerHTML = summary + cards;
+}
+async function loadSessionOverrides() {
+  const response = await bridge.apiGet("session_overrides");
+  if (!response?.success) throw new Error(response?.message || "会话覆盖读取失败");
+  state.sessionOverrides = response;
+  renderSessionOverrides();
+}
+
+async function clearSessionOverride(sessionId) {
+  const target = String(sessionId || "").trim();
+  if (!target) return;
+  const ok = await confirmAction({ title: "清除会话覆盖", message: "该会话会立刻回到全局默认渠道和模型。", confirmLabel: "清除" });
+  if (!ok) return;
+  const response = await bridge.apiPost("session_overrides", { action: "clear", session_id: target });
+  if (!response?.success) throw new Error(response?.message || "清除失败");
+  showToast(response.message || "已清除该会话覆盖");
+  await loadSessionOverrides();
+}
+
+async function clearAllSessionOverrides() {
+  const ok = await confirmAction({ title: "清除全部会话覆盖", message: "所有群聊和私聊都会回到全局默认渠道和模型，此操作不可撤销。", confirmLabel: "全部清除" });
+  if (!ok) return;
+  const response = await bridge.apiPost("session_overrides", { action: "clear_all" });
+  if (!response?.success) throw new Error(response?.message || "清除失败");
+  showToast(response.message || "已清除全部会话覆盖");
+  await loadSessionOverrides();
+}
+
 async function refreshChannelModels(index) {
   const row = document.querySelector(`.channel-row[data-index="${Number(index)}"]`);
   if (!row) return;
@@ -1255,6 +1326,8 @@ function hydrateFields() {
   const persona = config.persona || {};
   const settings = config.settings || {};
   const commands = config.commands || {};
+  const routePolicy = config.route_policy || {};
+  const tasks = config.tasks || {};
   byId("group-access-mode").value = permissions.group_access_mode || "whitelist";
   byId("allow-private").checked = bool(permissions.allow_private_messages);
   byId("admins-unlimited").checked = bool(permissions.admins_unlimited);
@@ -1299,6 +1372,18 @@ function hydrateFields() {
   byId("generation-cache-retention").value = settings.generation_cache_retention_days ?? 7;
   byId("show-model-info").checked = bool(settings.show_model_info);
   byId("enable-preset-refs").checked = bool(settings.enable_preset_ref_images);
+  byId("enable-binary-image-response").checked = bool(settings.enable_binary_image_response);
+  byId("enable-bare-base64-response").checked = bool(settings.enable_bare_base64_response);
+  byId("stream-heartbeat-tolerant").checked = bool(settings.stream_heartbeat_tolerant);
+  byId("route-failure-threshold").value = routePolicy.failure_threshold ?? 3;
+  byId("route-cooldown-seconds").value = routePolicy.cooldown_seconds ?? 90;
+  byId("route-key-retry-count").value = routePolicy.key_retry_count ?? 1;
+  byId("fallback-on-safety-error").checked = bool(routePolicy.fallback_on_safety_error);
+  byId("enable-session-model-override").checked = bool(routePolicy.enable_session_model_override);
+  byId("enable-session-channel-override").checked = bool(routePolicy.enable_session_channel_override);
+  byId("session-override-ttl").value = routePolicy.session_override_ttl_minutes ?? 720;
+  byId("batch-failure-policy").value = tasks.batch_failure_policy || "skip";
+  byId("batch-max-skips").value = tasks.batch_max_skips ?? 3;
   renderChannels();
   renderPresets();
   renderReferenceSelector();
@@ -1355,6 +1440,9 @@ function buildPayload() {
       show_model_info: checked("show-model-info"),
       enable_preset_ref_images: checked("enable-preset-refs"),
       enable_persona_mode: checked("enable-persona"),
+      enable_binary_image_response: checked("enable-binary-image-response"),
+      enable_bare_base64_response: checked("enable-bare-base64-response"),
+      stream_heartbeat_tolerant: checked("stream-heartbeat-tolerant"),
     },
     channels: readChannels(),
     active_drawing_channel: value("active-channel"),
@@ -1407,6 +1495,19 @@ function buildPayload() {
       daily_outfits: linesFromText(value("persona-daily-outfits")),
       daily_moods: linesFromText(value("persona-daily-moods")),
       time_period_prompts: linesFromText(value("persona-time-periods")),
+    },
+    route_policy: {
+      failure_threshold: Number(value("route-failure-threshold")) || 0,
+      cooldown_seconds: Number(value("route-cooldown-seconds")) || 0,
+      key_retry_count: Number(value("route-key-retry-count")) || 0,
+      fallback_on_safety_error: checked("fallback-on-safety-error"),
+      enable_session_model_override: checked("enable-session-model-override"),
+      enable_session_channel_override: checked("enable-session-channel-override"),
+      session_override_ttl_minutes: Number(value("session-override-ttl")) || 0,
+    },
+    tasks: {
+      batch_failure_policy: value("batch-failure-policy", "skip"),
+      batch_max_skips: Number(value("batch-max-skips")) || 0,
     },
     presets: readPresets(),
   };
@@ -1675,7 +1776,7 @@ document.addEventListener("click", async (event) => {
       if (["history", "image-to-image", "favorites"].includes(tabName)) await loadGenerationHistory(0);
       if (tabName === "tasks") await loadTasks();
       if (tabName === "studio") { await Promise.all([loadStudio(), loadTasks()]); }
-      if (tabName === "channels") await loadRouteHealth();
+      if (tabName === "channels") await Promise.all([loadRouteHealth(), loadSessionOverrides()]);
       return;
     }
     if (event.target.closest("#save-button")) { await saveConfig(); return; }
@@ -1684,6 +1785,10 @@ document.addEventListener("click", async (event) => {
     if (themeOption) { await changeTheme(themeOption.dataset.themeOption); return; }
     if (event.target.closest("#refresh-usage")) { await loadUsage(); showToast("用量已刷新"); return; }
     if (event.target.closest("#route-health-refresh")) { await loadRouteHealth(); showToast("渠道健康状态已刷新"); return; }
+    if (event.target.closest("#session-override-refresh")) { await loadSessionOverrides(); showToast("会话覆盖已刷新"); return; }
+    if (event.target.closest("#session-override-clear-all")) { await clearAllSessionOverrides(); return; }
+    const sessionClear = event.target.closest("[data-session-clear]");
+    if (sessionClear) { await clearSessionOverride(sessionClear.dataset.sessionClear); return; }
     if (event.target.closest("#task-refresh")) { await loadTasks(); showToast("任务中心已刷新"); return; }
     if (event.target.closest("#task-cleanup")) {
       if (await confirmAction({ title: "整理任务缓存", message: "会清除超出保留期限的失败请求素材，不会删除成功记录中的收藏或锁定图片。", confirmLabel: "整理缓存" })) {

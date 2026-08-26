@@ -21,7 +21,9 @@ from quart import jsonify, request, send_file
 from PIL import Image as PILImage
 from PIL import ImageOps
 
+from .batch_policy import POLICY_LABELS, normalize_policy
 from .error_classify import safe_error_summary
+from .protocol_adapters import PROTOCOL_CHOICES, PROTOCOL_LABELS, normalize_protocol
 from .utils import is_ambiguous_message_delivery_timeout, norm_id, normalize_api_root
 
 
@@ -31,7 +33,7 @@ _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _PREVIEW_MAX_BYTES = 300 * 1024
 _INTERFACE_MODES = {"openai_image", "openai_chat", "gemini_official", "custom_endpoint"}
-_DASHBOARD_THEMES = {"dark", "light", "alice", "terminal"}
+_DASHBOARD_THEMES = {"dark", "light", "alice", "terminal", "nebula"}
 
 
 class LinghuiDashboardApi:
@@ -83,6 +85,7 @@ class LinghuiDashboardApi:
             ("generation_tasks", self.generation_tasks, ["GET"], "Get Linghui Studio generation tasks"),
             ("generation_task", self.generation_task, ["POST"], "Manage one Linghui Studio generation task"),
             ("persona_state", self.persona_state, ["GET", "POST"], "Manage Linghui Studio daily persona state"),
+            ("session_overrides", self.session_overrides, ["GET", "POST"], "Manage Linghui Studio session-scoped model and channel overrides"),
             ("studio", self.studio, ["GET", "POST"], "Manage Linghui Studio server-side image workbench"),
             ("studio_asset", self.studio_asset, ["GET"], "Preview one Linghui Studio workbench asset"),
             ("studio_generate", self.studio_generate, ["POST"], "Run a real Linghui Studio Dashboard drawing request"),
@@ -185,6 +188,7 @@ class LinghuiDashboardApi:
             "fallback_enabled": self._as_bool(channel.get("fallback_enabled", True)),
             "reference_image_enabled": self._as_bool(channel.get("reference_image_enabled", True)),
             "interface_mode": str(channel.get("interface_mode", "openai_chat") or "openai_chat"),
+            "protocol": normalize_protocol(channel.get("protocol", "auto")),
             "image_edit_transport": str(channel.get("image_edit_transport", "auto") or "auto"),
             "base_url": str(channel.get("base_url", "") or ""),
             "model": str(channel.get("model", "") or ""),
@@ -376,6 +380,15 @@ class LinghuiDashboardApi:
                 "show_model_info": self._as_bool(self.plugin.conf.get("show_model_info", False)),
                 "enable_preset_ref_images": self._as_bool(self.plugin.conf.get("enable_preset_ref_images", True)),
                 "enable_persona_mode": self._as_bool(self.plugin.conf.get("enable_persona_mode", False)),
+                "enable_binary_image_response": self._as_bool(
+                    self.plugin.conf.get("enable_binary_image_response", True)
+                ),
+                "enable_bare_base64_response": self._as_bool(
+                    self.plugin.conf.get("enable_bare_base64_response", True)
+                ),
+                "stream_heartbeat_tolerant": self._as_bool(
+                    self.plugin.conf.get("stream_heartbeat_tolerant", True)
+                ),
             },
             "channels": [self._public_channel(channel, index) for index, channel in enumerate(channels) if isinstance(channel, dict)],
             "active_drawing_channel": str(self.plugin.conf.get("active_drawing_channel", "") or ""),
@@ -395,7 +408,18 @@ class LinghuiDashboardApi:
                 "fallback_on_safety_error": self._as_bool(
                     self.plugin.conf.get("fallback_on_safety_error", False)
                 ),
+                "enable_session_model_override": self._as_bool(
+                    self.plugin.conf.get("enable_session_model_override", True)
+                ),
+                "enable_session_channel_override": self._as_bool(
+                    self.plugin.conf.get("enable_session_channel_override", True)
+                ),
+                "session_override_ttl_minutes": self._as_int(
+                    self.plugin.conf.get("session_override_ttl_minutes", 720), 0, 43_200
+                ),
             },
+            "protocol_labels": dict(PROTOCOL_LABELS),
+            "batch_policy_labels": dict(POLICY_LABELS),
             "commands": {
                 "namespace": str(self.plugin.conf.get("command_namespace", "") or ""),
                 "enable_direct_commands": self._as_bool(self.plugin.conf.get("enable_direct_commands", True)),
@@ -458,6 +482,10 @@ class LinghuiDashboardApi:
                 "request_retention_days": self._as_int(
                     self.plugin.conf.get("task_request_retention_days", 7), 1, 90
                 ),
+                "batch_failure_policy": normalize_policy(
+                    self.plugin.conf.get("batch_failure_policy", "skip")
+                ),
+                "batch_max_skips": self._as_int(self.plugin.conf.get("batch_max_skips", 3), 0, 200),
             },
             "route_health": route_health,
             "studio": studio_summary,
@@ -511,6 +539,9 @@ class LinghuiDashboardApi:
             interface_mode = str(raw.get("interface_mode", "openai_chat") or "openai_chat").strip()
             if interface_mode not in _INTERFACE_MODES:
                 raise ValueError(f"渠道 {channel_id} 的接口模式无效。")
+            protocol = str(raw.get("protocol", "auto") or "auto").strip().lower()
+            if protocol not in set(PROTOCOL_CHOICES):
+                raise ValueError(f"渠道 {channel_id} 的原生协议无效。")
             image_edit_transport = str(raw.get("image_edit_transport", "auto") or "auto").strip().lower()
             if image_edit_transport not in {"auto", "multipart", "json"}:
                 raise ValueError(f"渠道 {channel_id} 的图生图上传格式无效。")
@@ -526,6 +557,7 @@ class LinghuiDashboardApi:
                 "fallback_enabled": self._as_bool(raw.get("fallback_enabled", True)),
                 "reference_image_enabled": self._as_bool(raw.get("reference_image_enabled", True)),
                 "interface_mode": interface_mode,
+                "protocol": protocol,
                 "image_edit_transport": image_edit_transport,
                 "base_url": str(raw.get("base_url", "") or "").strip()[:500],
                 "api_keys": api_keys,
@@ -618,6 +650,14 @@ class LinghuiDashboardApi:
                     for key in ("show_model_info", "enable_preset_ref_images", "enable_persona_mode"):
                         if key in settings:
                             self.plugin.conf[key] = self._as_bool(settings[key])
+                    for key in (
+                        "enable_binary_image_response",
+                        "enable_bare_base64_response",
+                        "stream_heartbeat_tolerant",
+                    ):
+                        if key in settings:
+                            self.plugin.conf[key] = self._as_bool(settings[key])
+                            changed_dynamic_keys.add(key)
 
                 if "channels" in payload:
                     self.plugin.conf["drawing_channels"] = self._normalize_channels(payload["channels"])
@@ -661,6 +701,19 @@ class LinghuiDashboardApi:
                             route_policy["fallback_on_safety_error"]
                         )
                         changed_dynamic_keys.add("fallback_on_safety_error")
+                    for key in ("enable_session_model_override", "enable_session_channel_override"):
+                        if key in route_policy:
+                            self.plugin.conf[key] = self._as_bool(route_policy[key])
+                            changed_dynamic_keys.add(key)
+                    if "session_override_ttl_minutes" in route_policy:
+                        ttl_minutes = self._as_int(
+                            route_policy["session_override_ttl_minutes"], 0, 43_200
+                        )
+                        self.plugin.conf["session_override_ttl_minutes"] = ttl_minutes
+                        changed_dynamic_keys.add("session_override_ttl_minutes")
+                        store = getattr(self.plugin, "session_overrides", None)
+                        if store is not None and callable(getattr(store, "set_ttl_minutes", None)):
+                            store.set_ttl_minutes(ttl_minutes)
 
                 commands = payload.get("commands", {})
                 if isinstance(commands, dict):
@@ -777,6 +830,14 @@ class LinghuiDashboardApi:
                         if source in tasks:
                             self.plugin.conf[target] = self._as_int(tasks[source], minimum, maximum)
                             changed_dynamic_keys.add(target)
+                    if "batch_failure_policy" in tasks:
+                        self.plugin.conf["batch_failure_policy"] = normalize_policy(
+                            tasks["batch_failure_policy"]
+                        )
+                        changed_dynamic_keys.add("batch_failure_policy")
+                    if "batch_max_skips" in tasks:
+                        self.plugin.conf["batch_max_skips"] = self._as_int(tasks["batch_max_skips"], 0, 200)
+                        changed_dynamic_keys.add("batch_max_skips")
 
                 if "presets" in payload:
                     previous_names = {row["name"] for row in self._preset_rows()}
@@ -1657,6 +1718,73 @@ class LinghuiDashboardApi:
             return jsonify({"success": False, "message": "未知人设状态操作。"}), 400
         return jsonify({"success": True, "message": "今日人设状态已更新。", "state": state})
 
+    @staticmethod
+    def _iso_epoch(value: Any) -> str:
+        try:
+            seconds = float(value or 0.0)
+        except (TypeError, ValueError):
+            return ""
+        if seconds <= 0:
+            return ""
+        try:
+            return datetime.fromtimestamp(seconds).isoformat(timespec="seconds")
+        except (OverflowError, OSError, ValueError):
+            return ""
+
+    def _channel_name_map(self) -> Dict[str, str]:
+        names: Dict[str, str] = {}
+        for index, channel in enumerate(self.plugin.conf.get("drawing_channels", []) or []):
+            if not isinstance(channel, dict):
+                continue
+            channel_id = str(channel.get("id", "") or "").strip()
+            if not channel_id:
+                continue
+            names[channel_id] = str(channel.get("name", "") or "").strip() or f"渠道 {index + 1}"
+        return names
+
+    async def session_overrides(self):
+        """List or clear the per-conversation model/channel overrides."""
+        store = getattr(self.plugin, "session_overrides", None)
+        if store is None:
+            return jsonify({"success": False, "message": "会话级覆盖尚未初始化。"}), 503
+
+        if request.method == "POST":
+            payload = await self._json_body()
+            action = str(payload.get("action", "") or "").strip().lower()
+            if action == "clear_all":
+                store.clear_all()
+            elif action == "clear":
+                session_id = str(payload.get("session_id", "") or "").strip()
+                if not session_id:
+                    return jsonify({"success": False, "message": "缺少会话 ID。"}), 400
+                store.clear(session_id)
+            else:
+                return jsonify({"success": False, "message": "未知的会话覆盖操作。"}), 400
+
+        channel_names = self._channel_name_map()
+        overrides: List[Dict[str, Any]] = []
+        for item in store.list_all():
+            channel_id = str(item.get("channel_id", "") or "")
+            overrides.append({
+                "session_id": str(item.get("session_id", "") or ""),
+                "label": str(item.get("label", "") or ""),
+                "scope": str(item.get("scope", "") or ""),
+                "channel_id": channel_id,
+                "channel_name": channel_names.get(channel_id, channel_id),
+                "model": str(item.get("model", "") or ""),
+                "updated_at": self._iso_epoch(item.get("updated_at", 0.0)),
+                "expires_at": self._iso_epoch(item.get("expires_at", 0.0)),
+            })
+        return jsonify({
+            "success": True,
+            "overrides": overrides,
+            "enabled": {
+                "model": self._as_bool(self.plugin.conf.get("enable_session_model_override", True)),
+                "channel": self._as_bool(self.plugin.conf.get("enable_session_channel_override", True)),
+            },
+            "ttl_minutes": self._as_int(self.plugin.conf.get("session_override_ttl_minutes", 720), 0, 43_200),
+        })
+
     async def studio(self):
         manager = self.plugin.studio_mgr
         if request.method == "GET":
@@ -1965,7 +2093,7 @@ class LinghuiDashboardApi:
             "format": "linghui-studio-config",
             "format_version": 1,
             "plugin": PLUGIN_NAME,
-            "plugin_version": str(getattr(self.plugin, "version", "3.6.1") or "3.6.1"),
+            "plugin_version": str(getattr(self.plugin, "version", "3.7.0") or "3.7.0"),
             "exported_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "secrets_redacted": True,
             "redacted_fields": redacted_fields,

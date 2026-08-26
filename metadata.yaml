@@ -1,6 +1,6 @@
 name: astrbot_plugin_linghui_studio
 display_name: 灵绘工坊
-desc: 带受控群白名单、独立无限额度名单、带参考图专用渠道回退、可追溯图生图输入原图与持久化玻璃霓虹 Dashboard 的 AstrBot 文生图/图生图插件。
+desc: 带受控群白名单、独立无限额度名单、多渠道自动回退与原生协议适配、会话级模型/渠道切换、可追溯图生图输入原图与五套持久化主题 Dashboard 的 AstrBot 文生图/图生图插件。
 help: |
   灵绘工坊
   #画 <提示词>：自定义绘图；带图片时为图生图，无图片时为文生图。
@@ -9,11 +9,12 @@ help: |
   #头像图生图 <提示词>：使用发送者 QQ 头像作为参考图。
   #<预设名> [追加要求]：调用预设，例如 #手办化。
   #签到 / #额度：签到与额度查询。
-  #通道 [ID/自动]：查看或切换主绘图渠道（管理员）。
+  #通道 [ID/序号/自动]：查看或切换本会话绘图渠道；加“全局”二字才改全局默认（管理员）。
+  #模型 [模型名]：查看或切换本会话绘图模型；加“全局”二字才改全局默认（管理员）。
   #帮助：查看完整命令说明。
 
   需要与其他插件共存时，在 Dashboard 设置命名空间并关闭直接命令；例如 #绘图 文生图 <提示词>、#绘图 bnn <提示词>。
-version: v3.6.1
+version: v3.7.0
 author: Whereis-Alice
 repo: https://github.com/Whereis-Alice/astrbot_plugin_linghui_studio
 astrbot_version: ">=4.16,<5"

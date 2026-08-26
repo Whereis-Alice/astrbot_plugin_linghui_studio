@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>灵绘工坊</title>
-    <link rel="stylesheet" href="./style.css?v=3.6.1" />
+    <link rel="stylesheet" href="./style.css?v=3.7.0" />
   </head>
   <body>
     <main class="shell">
@@ -54,6 +54,7 @@
               <button class="theme-option" type="button" data-theme-option="light" aria-pressed="false"><span class="theme-swatch light" aria-hidden="true"></span><span>浅色</span></button>
               <button class="theme-option" type="button" data-theme-option="alice" aria-pressed="false"><span class="theme-swatch alice" aria-hidden="true"></span><span>爱丽丝</span></button>
               <button class="theme-option" type="button" data-theme-option="terminal" aria-pressed="false"><span class="theme-swatch terminal" aria-hidden="true"></span><span>黑客终端</span></button>
+              <button class="theme-option" type="button" data-theme-option="nebula" aria-pressed="false"><span class="theme-swatch nebula" aria-hidden="true"></span><span>星云</span></button>
             </div>
           </div>
           <select id="theme-select" class="theme-select" title="选择界面皮肤" aria-label="选择界面皮肤" tabindex="-1">
@@ -61,6 +62,7 @@
             <option value="light">浅色</option>
             <option value="alice">爱丽丝</option>
             <option value="terminal">黑客终端</option>
+            <option value="nebula">星云</option>
           </select>
           <div class="sidebar-command-row">
             <button id="reload-button" class="reload-action" title="重新加载配置" aria-label="重新加载配置">↻</button>
@@ -164,6 +166,24 @@
               <label class="field"><span>带参考图优先渠道</span><select id="reference-image-channel"></select><small class="field-hint">仅用于人设拍照、QQ 头像图生图、预设参考图和普通图生图。留在“跟随主渠道”时会复用当前主渠道；请为此路径选择实际支持带图请求的渠道。</small></label>
             </div>
             <div id="channel-list" class="channel-list"></div>
+          </section>
+          <section class="section-block route-policy-block">
+            <div class="section-heading"><div><h2>回退策略与重试</h2><p>控制渠道在多少次连续失败后进入冷却、冷却多久，以及单渠道内多把 Key 的轮换次数。</p></div></div>
+            <div class="form-grid">
+              <label class="field"><span>连续失败进入冷却的次数</span><input id="route-failure-threshold" type="number" min="1" max="20" /><small class="field-hint">同一渠道连续失败达到该次数后暂时跳过，默认 3 次。设为 1 表示一失败就冷却。</small></label>
+              <label class="field"><span>冷却时长（秒）</span><input id="route-cooldown-seconds" type="number" min="0" max="86400" /><small class="field-hint">冷却期内该渠道不会被自动选中，默认 90 秒。设为 0 表示不冷却，只按顺序回退。</small></label>
+              <label class="field"><span>单渠道 Key 重试次数</span><input id="route-key-retry-count" type="number" min="1" max="10" /><small class="field-hint">同一渠道配置了多把 Key 时，鉴权失败或限流后最多额外轮换几把再切换到下一个渠道，默认 1。</small></label>
+              <label class="toggle-field"><input id="fallback-on-safety-error" type="checkbox" /><span class="toggle-copy"><span>内容审核失败也回退</span><small class="field-hint">开启后，上游因内容审核拒绝时也会尝试下一个渠道；关闭则直接返回失败，避免所有渠道被同一提示词拖垮。</small></span></label>
+            </div>
+          </section>
+          <section class="section-block session-override-block">
+            <div class="section-heading"><div><h2>会话级模型与渠道</h2><p>群聊或私聊可用 <code>#模型</code> / <code>#通道</code> 指令只改本会话，不影响全局默认值。带“全局”二字才会写入全局配置。</p></div><div class="session-override-actions"><button id="session-override-refresh" class="quiet-action" type="button">刷新</button><button id="session-override-clear-all" class="danger-action" type="button">全部清除</button></div></div>
+            <div class="form-grid">
+              <label class="toggle-field"><input id="enable-session-model-override" type="checkbox" /><span class="toggle-copy"><span>允许会话级切换模型</span><small class="field-hint">关闭后 <code>#模型</code> 只能由管理员修改全局默认模型。</small></span></label>
+              <label class="toggle-field"><input id="enable-session-channel-override" type="checkbox" /><span class="toggle-copy"><span>允许会话级切换渠道</span><small class="field-hint">关闭后 <code>#通道</code> 只能由管理员修改全局主渠道。</small></span></label>
+              <label class="field"><span>会话覆盖有效期（分钟）</span><input id="session-override-ttl" type="number" min="0" max="43200" /><small class="field-hint">默认 720 分钟（12 小时），到期自动回到全局设置。设为 0 表示永久保留，直到手动清除。</small></label>
+            </div>
+            <div id="session-override-list" class="session-override-list"></div>
           </section>
         </section>
 
@@ -301,6 +321,16 @@
               <label class="toggle-field"><input id="enable-preset-refs" type="checkbox" /><span class="toggle-copy"><span>启用预设参考图</span><small class="field-hint">开启后，调用预设会自动附带该预设在“人设与参考图”中保存的图片。</small></span></label>
             </div>
           </section>
+          <section class="section-block narrow">
+            <div class="section-heading"><div><h2>响应解析与批量策略</h2><p>兼容返回格式不标准的上游。若某个渠道总是“成功但没图”，可以在这里放宽解析条件。</p></div></div>
+            <div class="form-grid">
+              <label class="toggle-field"><input id="enable-binary-image-response" type="checkbox" /><span class="toggle-copy"><span>接受裸图片二进制响应</span><small class="field-hint">上游直接返回 PNG/JPEG/WebP 字节流（而非 JSON）时也识别为成功。建议保持开启。</small></span></label>
+              <label class="toggle-field"><input id="enable-bare-base64-response" type="checkbox" /><span class="toggle-copy"><span>接受裸 Base64 文本响应</span><small class="field-hint">上游返回纯 Base64 字符串（没有 JSON 包裹、没有 data URI 前缀）时也尝试解码。少数镜像站需要。</small></span></label>
+              <label class="toggle-field"><input id="stream-heartbeat-tolerant" type="checkbox" /><span class="toggle-copy"><span>容忍流式心跳与混合响应</span><small class="field-hint">上游以 SSE 心跳、空行或“文字 + 图片链接”混排返回时，从中提取有效图片。</small></span></label>
+              <label class="field"><span>批量任务失败策略</span><select id="batch-failure-policy"><option value="skip">跳过继续</option><option value="stop">立即停止</option><option value="skip_limit">跳过但限次</option></select><small class="field-hint">“跳过继续”会尽力画完剩下的；“立即停止”一失败就中止后续；“跳过但限次”达到下面的上限后中止。被跳过的张数会退还额度。</small></label>
+              <label class="field"><span>最多跳过张数</span><input id="batch-max-skips" type="number" min="0" max="200" /><small class="field-hint">仅在策略为“跳过但限次”时生效，默认 3 张。设为 0 表示一失败就中止。</small></label>
+            </div>
+          </section>
           <section class="section-block narrow config-transfer-block">
             <div class="section-heading"><div><h2>配置备份与迁移</h2><p>默认导出会脱敏所有 API Key。导入前先预览变更和渠道完整性，应用失败会自动回滚。</p></div><button id="config-export" class="quiet-action" type="button">导出脱敏配置</button></div>
             <label class="field full"><span>导入配置 JSON</span><textarea id="config-import-json" rows="9" placeholder="粘贴灵绘工坊导出的 JSON"></textarea></label>
@@ -322,6 +352,6 @@
       </section>
     </dialog>
     <div id="toast" class="toast" role="status"></div>
-    <script type="module" src="./app.js?v=3.6.1"></script>
+    <script type="module" src="./app.js?v=3.7.0"></script>
   </body>
 </html>

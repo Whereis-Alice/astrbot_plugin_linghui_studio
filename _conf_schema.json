@@ -80,6 +80,19 @@
             ],
             "default": "openai_chat"
           },
+          "protocol": {
+            "type": "string",
+            "description": "原生协议",
+            "hint": "auto=按上面的接口模式走 OpenAI/Gemini 兼容协议（默认）。若该渠道是 Grok、Agnes、NovelAI、即梦（Jimeng）的原生接口而非中转兼容层，在此选择对应协议，插件会改用它们各自的请求体与响应解析。",
+            "options": [
+              "auto",
+              "grok",
+              "agnes",
+              "novelai",
+              "jimeng"
+            ],
+            "default": "auto"
+          },
           "image_edit_transport": {
             "type": "string",
             "description": "图生图上传格式",
@@ -174,6 +187,26 @@
     "description": "【绘图渠道与回退】安全拦截后继续回退",
     "hint": "默认关闭，避免同一提示词被多个渠道重复拦截。只有确认不同渠道安全规则差异明显时才建议开启。",
     "default": false
+  },
+  "enable_session_model_override": {
+    "type": "bool",
+    "description": "【绘图渠道与回退】允许会话级模型选择",
+    "hint": "开启后，管理员发送“模型 <序号/名称>”只改当前群或私聊的模型，不动全局默认；加“全局”二字才写入全局配置。关闭后该指令恢复为直接改全局。",
+    "default": true
+  },
+  "enable_session_channel_override": {
+    "type": "bool",
+    "description": "【绘图渠道与回退】允许会话级渠道选择",
+    "hint": "开启后，管理员发送“通道 <渠道ID>”只改当前群或私聊使用的绘图渠道，回退顺序依旧生效；加“全局”二字才写入全局配置。关闭后该指令恢复为直接改全局。",
+    "default": true
+  },
+  "session_override_ttl_minutes": {
+    "type": "int",
+    "description": "【绘图渠道与回退】会话级选择有效时长（分钟）",
+    "hint": "会话级模型/渠道选择在多久后自动失效并回到全局默认。填 0 表示永不过期（仍可手动清除）。默认 720 分钟即 12 小时。",
+    "default": 720,
+    "min": 0,
+    "max": 43200
   },
   "interface_mode": {
     "type": "string",
@@ -290,6 +323,24 @@
     "description": "【兼容单接口】OpenAI Chat 流式请求",
     "hint": "保留主上游的 SSE 流式兼容能力，仅对 openai_chat/兼容聊天接口生效；可用于降低部分反向代理长请求超时风险。OpenAI Images 接口不使用此项。",
     "default": false
+  },
+  "enable_binary_image_response": {
+    "type": "bool",
+    "description": "【兼容单接口】接受直接返回图片二进制的接口",
+    "hint": "部分中转站不返回 JSON，而是直接把 PNG/JPEG/WebP 字节流写进响应体。开启后会自动识别这类裸图片响应（含 ZIP 打包的单图），避免误判为“接口返回异常”。",
+    "default": true
+  },
+  "enable_bare_base64_response": {
+    "type": "bool",
+    "description": "【兼容单接口】接受纯 Base64 文本响应",
+    "hint": "有些接口只回一长串 Base64（可能带 data:image/png;base64, 前缀）而没有 JSON 包装。开启后会自动解码这类响应。若你的接口会返回长文本说明，可关闭以免误判。",
+    "default": true
+  },
+  "stream_heartbeat_tolerant": {
+    "type": "bool",
+    "description": "【兼容单接口】宽松解析流式与心跳响应",
+    "hint": "开启后会兼容 SSE、NDJSON、纯 data: 行、心跳空包与“文字 + 图片”混排的响应，从其中挑出可用的图片数据。遇到流式接口频繁报“未获取到图片”时请保持开启。",
+    "default": true
   },
   "use_proxy": {
     "type": "bool",
@@ -790,8 +841,8 @@
     "description": "【人格互动】无关键词时叛逆触发概率",
     "hint": "取值 0 到 1。0 表示仅命中触发词时出现，1 表示每次都提供叛逆建议；偏爱名单用户不会触发。",
     "default": 0.3,
-    "min": 0.0,
-    "max": 1.0
+    "min": 0,
+    "max": 1
   },
   "enable_llm_auto_detect": {
     "type": "bool",
@@ -837,7 +888,7 @@
     "hint": "只有智能判断置信度达到此值才自动生图。提高可减少误触发，降低会更积极。建议保持 0.75 至 0.9。",
     "default": 0.8,
     "min": 0.1,
-    "max": 1.0
+    "max": 1
   },
   "llm_max_count": {
     "type": "int",
@@ -900,6 +951,25 @@
     "default": 1,
     "min": 0,
     "max": 5
+  },
+  "batch_failure_policy": {
+    "type": "string",
+    "description": "【智能工具与批量处理】批量任务失败策略",
+    "hint": "skip=某张失败也继续跑完剩余的（默认，与旧版行为一致）；stop=第一张失败就立刻中止剩余任务；skip_limit=失败数超过下面的上限后再中止。被策略跳过而未执行的张数会自动退还次数。",
+    "options": [
+      "skip",
+      "stop",
+      "skip_limit"
+    ],
+    "default": "skip"
+  },
+  "batch_max_skips": {
+    "type": "int",
+    "description": "【智能工具与批量处理】最多允许跳过的失败张数",
+    "hint": "仅在上面选择 skip_limit 时生效：累计失败超过这个数量后中止剩余任务，未执行的张数会退还次数。",
+    "default": 3,
+    "min": 0,
+    "max": 200
   },
   "task_dedup_seconds": {
     "type": "int",
@@ -1002,12 +1072,13 @@
   "dashboard_theme": {
     "type": "string",
     "description": "【Dashboard 与缓存】Dashboard 外观主题",
-    "hint": "深色为默认的玻璃霓虹界面；另有浅色、爱丽丝和采用独立终端布局的黑客终端主题。Dashboard 侧栏切换后会立即保存到插件配置，重新打开页面或更换浏览器仍会保持此选择。",
+    "hint": "深色为默认的玻璃霓虹界面；另有浅色、爱丽丝、采用独立终端布局的黑客终端，以及深蓝紫渐变的星云主题。Dashboard 侧栏切换后会立即保存到插件配置，重新打开页面或更换浏览器仍会保持此选择。",
     "options": [
       "dark",
       "light",
       "alice",
-      "terminal"
+      "terminal",
+      "nebula"
     ],
     "default": "dark"
   }
