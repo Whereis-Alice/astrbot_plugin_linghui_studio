@@ -117,3 +117,15 @@ class WebUiThemeAssetsTest(unittest.TestCase):
         self.assertEqual(sprite.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
         self.assertTrue(brand_logo.is_file())
         self.assertIn("<svg", brand_logo.read_text(encoding="utf-8"))
+
+    def test_plugin_market_logo_png_is_present_at_package_root(self):
+        """AstrBot 只读取插件根目录下固定文件名 logo.png 作为插件图标。"""
+        market_logo = ROOT / "logo.png"
+        self.assertTrue(market_logo.is_file())
+        raw = market_logo.read_bytes()
+        self.assertEqual(raw[:8], b"\x89PNG\r\n\x1a\n")
+        # IHDR 宽高必须是等比方图，避免市场列表里被拉伸
+        width = int.from_bytes(raw[16:20], "big")
+        height = int.from_bytes(raw[20:24], "big")
+        self.assertEqual(width, height)
+        self.assertGreaterEqual(width, 256)

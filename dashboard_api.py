@@ -2117,7 +2117,7 @@ class LinghuiDashboardApi:
             "format": "linghui-studio-config",
             "format_version": 1,
             "plugin": PLUGIN_NAME,
-            "plugin_version": str(getattr(self.plugin, "version", "3.8.0") or "3.8.0"),
+            "plugin_version": str(getattr(self.plugin, "version", "3.8.1") or "3.8.1"),
             "exported_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "secrets_redacted": True,
             "redacted_fields": redacted_fields,
