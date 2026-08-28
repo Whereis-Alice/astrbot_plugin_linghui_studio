@@ -34,6 +34,7 @@ _MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _PREVIEW_MAX_BYTES = 300 * 1024
 _INTERFACE_MODES = {"openai_image", "openai_chat", "gemini_official", "custom_endpoint"}
 _DASHBOARD_THEMES = {"dark", "light", "alice", "terminal", "nebula"}
+_DASHBOARD_DENSITIES = {"comfortable", "compact"}
 
 
 class LinghuiDashboardApi:
@@ -67,6 +68,7 @@ class LinghuiDashboardApi:
         routes = (
             ("get_config", self.get_config, ["GET"], "Get Linghui Studio configuration"),
             ("dashboard_theme", self.save_dashboard_theme, ["POST"], "Save Linghui Studio Dashboard theme"),
+            ("dashboard_density", self.save_dashboard_density, ["POST"], "Save Linghui Studio Dashboard layout density"),
             ("save_config", self.save_config, ["POST"], "Save Linghui Studio configuration"),
             ("get_usage", self.get_usage, ["GET"], "Get Linghui Studio usage and credits"),
             ("adjust_credit", self.adjust_credit, ["POST"], "Adjust Linghui Studio credits"),
@@ -129,6 +131,11 @@ class LinghuiDashboardApi:
     def _dashboard_theme(value: Any) -> str:
         theme = str(value or "").strip().lower()
         return theme if theme in _DASHBOARD_THEMES else "dark"
+
+    @staticmethod
+    def _dashboard_density(value: Any) -> str:
+        density = str(value or "").strip().lower()
+        return density if density in _DASHBOARD_DENSITIES else "comfortable"
 
     @staticmethod
     def _id_list(value: Any) -> List[str]:
@@ -350,6 +357,7 @@ class LinghuiDashboardApi:
             "success": True,
             "config_version": 1,
             "dashboard_theme": self._dashboard_theme(self.plugin.conf.get("dashboard_theme", "dark")),
+            "dashboard_density": self._dashboard_density(self.plugin.conf.get("dashboard_density", "comfortable")),
             "settings": {
                 "model": str(self.plugin.conf.get("model", "") or ""),
                 "text_to_image_model": str(self.plugin.conf.get("text_to_image_model", "") or ""),
@@ -508,6 +516,22 @@ class LinghuiDashboardApi:
             logger.exception("Linghui dashboard theme save failed")
             return jsonify({"success": False, "message": f"主题保存失败：{exc}"}), 500
         return jsonify({"success": True, "theme": theme, "message": "Dashboard 主题已保存。"})
+
+    async def save_dashboard_density(self):
+        """Persist the Dashboard layout density without applying unrelated form edits."""
+        payload = await self._json_body()
+        density = str(payload.get("density", "") or "").strip().lower()
+        if density not in _DASHBOARD_DENSITIES:
+            return jsonify({"success": False, "message": "无效的 Dashboard 界面密度。"}), 400
+
+        try:
+            async with self._lock:
+                self.plugin.conf["dashboard_density"] = density
+                self.plugin._save_config(["dashboard_density"])
+        except Exception as exc:
+            logger.exception("Linghui dashboard density save failed")
+            return jsonify({"success": False, "message": f"界面密度保存失败：{exc}"}), 500
+        return jsonify({"success": True, "density": density, "message": "Dashboard 界面密度已保存。"})
 
     def _existing_channels(self) -> Dict[str, Dict[str, Any]]:
         result: Dict[str, Dict[str, Any]] = {}
@@ -2093,7 +2117,7 @@ class LinghuiDashboardApi:
             "format": "linghui-studio-config",
             "format_version": 1,
             "plugin": PLUGIN_NAME,
-            "plugin_version": str(getattr(self.plugin, "version", "3.7.0") or "3.7.0"),
+            "plugin_version": str(getattr(self.plugin, "version", "3.8.0") or "3.8.0"),
             "exported_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "secrets_redacted": True,
             "redacted_fields": redacted_fields,

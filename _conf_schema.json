@@ -1072,7 +1072,7 @@
   "dashboard_theme": {
     "type": "string",
     "description": "【Dashboard 与缓存】Dashboard 外观主题",
-    "hint": "深色为默认的玻璃霓虹界面；另有浅色、爱丽丝、采用独立终端布局的黑客终端，以及深蓝紫渐变的星云主题。Dashboard 侧栏切换后会立即保存到插件配置，重新打开页面或更换浏览器仍会保持此选择。",
+    "hint": "深色为默认的玻璃霓虹界面；另有浅色、爱丽丝、采用独立终端布局的黑客终端，以及深蓝紫渐变的星云主题。Dashboard 顶部工具栏切换后会立即保存到插件配置，重新打开页面或更换浏览器仍会保持此选择。",
     "options": [
       "dark",
       "light",
@@ -1081,5 +1081,15 @@
       "nebula"
     ],
     "default": "dark"
+  },
+  "dashboard_density": {
+    "type": "string",
+    "description": "【Dashboard 与缓存】Dashboard 界面密度",
+    "hint": "comfortable 为默认的宽松密度，标签栏带图标、间距更舒适；compact 为紧凑密度，会隐藏标签图标并压缩页头与内边距，让小屏幕或笔记本一屏看到更多图片记录。也可以直接点击 Dashboard 右上角的“紧凑/宽松”按钮切换，切换后会立即保存到插件配置。",
+    "options": [
+      "comfortable",
+      "compact"
+    ],
+    "default": "comfortable"
   }
 }

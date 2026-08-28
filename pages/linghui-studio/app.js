@@ -159,6 +159,116 @@ async function changeTheme(theme) {
   }
 }
 
+const DENSITY_STORAGE_KEY = "linghui-studio-density";
+const DENSITY_VALUES = new Set(["comfortable", "compact"]);
+
+function storedDensity() {
+  try {
+    const density = window.localStorage.getItem(DENSITY_STORAGE_KEY);
+    return DENSITY_VALUES.has(density) ? density : "comfortable";
+  } catch {
+    return "comfortable";
+  }
+}
+
+function currentDensity() {
+  return DENSITY_VALUES.has(document.documentElement.dataset.density)
+    ? document.documentElement.dataset.density
+    : "comfortable";
+}
+
+function setDensity(density, persist = true) {
+  const nextDensity = DENSITY_VALUES.has(density) ? density : "comfortable";
+  document.documentElement.dataset.density = nextDensity;
+  const toggle = byId("density-toggle");
+  if (toggle) {
+    const compact = nextDensity === "compact";
+    toggle.setAttribute("aria-pressed", String(compact));
+    toggle.textContent = compact ? "宽松" : "紧凑";
+    toggle.title = compact ? "切换回宽松密度，恢复图标与更大的间距" : "切换紧凑密度，隐藏标签图标以腾出更多纵向空间";
+  }
+  if (persist) {
+    try { window.localStorage.setItem(DENSITY_STORAGE_KEY, nextDensity); } catch { /* 忽略隐私模式下的写入失败 */ }
+  }
+}
+
+async function toggleDensity() {
+  const previousDensity = currentDensity();
+  const nextDensity = previousDensity === "compact" ? "comfortable" : "compact";
+  const toggle = byId("density-toggle");
+  setDensity(nextDensity);
+  if (toggle) toggle.disabled = true;
+  setSaveState("正在保存界面密度...");
+  try {
+    const response = await bridge.apiPost("dashboard_density", { density: nextDensity });
+    if (!response?.success) throw new Error(response?.message || "界面密度保存失败");
+    if (state.config) state.config.dashboard_density = nextDensity;
+    setSaveState(nextDensity === "compact" ? "已切换到紧凑密度" : "已切换到宽松密度");
+  } catch (error) {
+    setDensity(previousDensity);
+    showToast(error.message || "界面密度保存失败", true);
+    setSaveState("界面密度未保存");
+  } finally {
+    if (toggle) toggle.disabled = false;
+  }
+}
+
+function setTabBadge(tab, count) {
+  const badge = byId(`badge-${tab}`);
+  if (!badge) return;
+  const total = Math.max(0, Number(count) || 0);
+  badge.hidden = total <= 0;
+  badge.title = total > 0 ? `${total} 条` : "";
+}
+
+function activeTaskCount() {
+  const tasks = Array.isArray(state.tasks?.tasks) ? state.tasks.tasks : [];
+  const fromSummary = Number(state.tasks?.summary?.active);
+  if (Number.isFinite(fromSummary) && fromSummary > 0) return fromSummary;
+  const activeStates = new Set(["queued", "running", "generated", "sending"]);
+  return tasks.filter((task) => activeStates.has(String(task.status || ""))).length;
+}
+
+function updateStatusBar() {
+  const config = state.config || {};
+  const channels = Array.isArray(config.channels) ? config.channels : [];
+  const summaryTarget = byId("status-summary");
+  if (summaryTarget) {
+    const online = channels.filter((item) => item.enabled).length;
+    const dailyStats = state.usage?.daily_stats || {};
+    const daily = dailyStats.users
+      ? Object.values(dailyStats.users).reduce((sum, count) => sum + Number(count || 0), 0)
+      : 0;
+    const historySummary = state.history?.summary || {};
+    const parts = [
+      channels.length ? `渠道 ${online}/${channels.length} 在线` : "兼容单接口模式",
+      `今日出图 ${daily} 张`,
+      `档案 ${Number(historySummary.total || 0)} 条`,
+      `缓存 ${formatBytes(historySummary.size_bytes)}`,
+    ];
+    const running = activeTaskCount();
+    if (running > 0) parts.push(`进行中 ${running} 个任务`);
+    summaryTarget.textContent = parts.join(" · ");
+  }
+  const dispatchTarget = byId("status-dispatch");
+  if (dispatchTarget) {
+    if (!channels.length) {
+      dispatchTarget.textContent = "调度 · 兼容单接口模式";
+    } else {
+      const activeId = config.active_drawing_channel || "";
+      const enabledChannels = channels.filter((item) => item.enabled);
+      const active = enabledChannels.find((item) => item.id === activeId) || enabledChannels[0];
+      if (!active) {
+        dispatchTarget.textContent = "调度 · 无可用渠道";
+      } else {
+        const fallbacks = enabledChannels.filter((item) => item.id !== active.id && item.fallback_enabled).length;
+        const model = active.model || active.name || active.interface_mode || "未填模型";
+        dispatchTarget.textContent = `调度 · ${active.id} / ${model} · 备用 ${fallbacks}`;
+      }
+    }
+  }
+}
+
 function bool(value) {
   return value === true || value === 1 || String(value).toLowerCase() === "true";
 }
@@ -380,6 +490,7 @@ function renderOverview() {
   }).join("") || '<span class="overview-dispatch-empty">未配置绘图渠道，当前使用兼容单接口模式。</span>';
   renderDailyUsage("overview-usage", dailyStats);
   renderOverviewRecent();
+  updateStatusBar();
 }
 
 function renderOverviewRecent() {
@@ -825,6 +936,11 @@ function renderGenerationHistory() {
   byId("history-today").textContent = String(viewSummary.today ?? 0);
   byId("history-protected").textContent = String(viewSummary.protected ?? 0);
   byId("history-size").textContent = formatBytes(viewSummary.size_bytes);
+  setTabBadge("favorites", Number(summary.protected || 0));
+  if (!favoriteOnly && mode !== "all") {
+    setTabBadge(mode === "image_to_image" ? "image-to-image" : "history", Number(viewSummary.today || 0));
+  }
+  updateStatusBar();
   const cleanupButton = byId("history-cleanup");
   if (cleanupButton) {
     const cleanupHint = `自动清理超过 ${retentionDays} 天且未收藏、未锁定的缓存`;
@@ -1034,6 +1150,8 @@ function renderTasks() {
   byId("task-active").textContent = String(summary.active ?? 0);
   byId("task-success").textContent = String((Number(summary.succeeded) || 0) + (Number(summary.possibly_sent) || 0));
   byId("task-failed").textContent = String((Number(summary.failed) || 0) + (Number(summary.send_failed) || 0) + (Number(summary.expired) || 0));
+  setTabBadge("tasks", activeTaskCount());
+  updateStatusBar();
   const target = byId("task-list");
   if (!tasks.length) {
     target.innerHTML = '<p class="empty">当前筛选下没有任务。</p>';
@@ -1662,6 +1780,7 @@ async function loadConfig() {
   if (!response?.success) throw new Error(response?.message || "无法读取配置");
   state.config = response;
   setTheme(THEME_VALUES.has(response.dashboard_theme) ? response.dashboard_theme : storedTheme());
+  setDensity(DENSITY_VALUES.has(response.dashboard_density) ? response.dashboard_density : storedDensity(), false);
   hydrateFields();
   await loadUsage();
   setSaveState("配置已加载");
@@ -1740,13 +1859,22 @@ function switchTab(tab) {
   const contentTab = tab === "favorites" || tab === "image-to-image" ? "history" : tab;
   if (contentTab !== "history") clearGenerationPreviewLoading();
   document.body.dataset.activeTab = tab;
-  document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.tab === tab));
+  document.querySelectorAll(".nav-item").forEach((item) => {
+    const selected = item.dataset.tab === tab;
+    item.classList.toggle("active", selected);
+    item.setAttribute("aria-selected", String(selected));
+  });
   document.querySelectorAll(".tab-pane").forEach((pane) => pane.classList.toggle("active", pane.id === `tab-${contentTab}`));
   const [title, subtitle] = titles[tab] || titles.overview;
   byId("page-title").textContent = title;
   byId("page-subtitle").textContent = subtitle;
+  const breadcrumb = byId("status-breadcrumb");
+  if (breadcrumb) breadcrumb.textContent = title;
+  const workspace = byId("workspace");
+  if (workspace) workspace.scrollTop = 0;
   if (["tasks", "studio"].includes(tab)) startTaskPolling();
   else stopTaskPolling();
+  updateStatusBar();
 }
 
 document.addEventListener("click", async (event) => {
@@ -1781,6 +1909,7 @@ document.addEventListener("click", async (event) => {
     }
     if (event.target.closest("#save-button")) { await saveConfig(); return; }
     if (event.target.closest("#reload-button")) { await loadConfig(); return; }
+    if (event.target.closest("#density-toggle")) { await toggleDensity(); return; }
     const themeOption = event.target.closest("[data-theme-option]");
     if (themeOption) { await changeTheme(themeOption.dataset.themeOption); return; }
     if (event.target.closest("#refresh-usage")) { await loadUsage(); showToast("用量已刷新"); return; }
@@ -1992,6 +2121,9 @@ byId("reference-upload").addEventListener("change", async (event) => {
 
 setTheme(storedTheme(), false);
 document.body.dataset.activeTab = "overview";
+setDensity(storedDensity(), false);
+byId("status-breadcrumb").textContent = titles.overview[0];
+updateStatusBar();
 
 try {
   await bridge.ready();

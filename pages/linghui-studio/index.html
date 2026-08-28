@@ -4,50 +4,22 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>灵绘工坊</title>
-    <link rel="stylesheet" href="./style.css?v=3.7.0" />
+    <link rel="icon" type="image/svg+xml" href="./assets/linghui-logo.svg" />
+    <link rel="stylesheet" href="./style.css?v=3.8.0" />
   </head>
   <body>
     <main class="shell">
-      <aside class="sidebar" aria-label="灵绘工坊导航">
+      <header class="appbar">
         <div class="brand">
-          <span class="brand-mark-wrap"><img class="brand-mark" src="./assets/alice-sprite.png" alt="" /><i class="brand-signal" aria-hidden="true"></i></span>
-          <span class="brand-copy"><strong>灵绘工坊</strong><small>LINGHUI / STUDIO</small></span>
+          <span class="brand-mark-wrap"><img class="brand-mark" src="./assets/linghui-logo.svg" width="40" height="40" alt="" /><i class="brand-signal" aria-hidden="true"></i></span>
+          <span class="brand-copy"><strong>灵绘工坊</strong><small>多渠道绘图 · 额度权限 · 提示词预设 · 图片档案</small></span>
         </div>
-        <nav class="nav-list">
-          <div class="nav-group">
-            <span class="nav-group-label">记录</span>
-            <div class="nav-group-items">
-              <button class="nav-item active" data-tab="overview"><span class="nav-icon" aria-hidden="true">⌂</span><span>概览</span></button>
-              <button class="nav-item" data-tab="history"><span class="nav-icon" aria-hidden="true">T</span><span>文生图</span></button>
-              <button class="nav-item" data-tab="image-to-image"><span class="nav-icon" aria-hidden="true">I</span><span>图生图</span></button>
-              <button class="nav-item" data-tab="favorites"><span class="nav-icon" aria-hidden="true">★</span><span>收藏</span></button>
-              <button class="nav-item" data-tab="tasks"><span class="nav-icon" aria-hidden="true">◴</span><span>任务中心</span></button>
-            </div>
-          </div>
-          <div class="nav-group">
-            <span class="nav-group-label">创作</span>
-            <div class="nav-group-items">
-              <button class="nav-item" data-tab="channels"><span class="nav-icon" aria-hidden="true">⇄</span><span>绘图渠道</span></button>
-              <button class="nav-item" data-tab="studio"><span class="nav-icon" aria-hidden="true">◇</span><span>图像工作台</span></button>
-              <button class="nav-item" data-tab="prompts"><span class="nav-icon" aria-hidden="true">✦</span><span>提示词与预设</span></button>
-              <button class="nav-item" data-tab="persona"><span class="nav-icon" aria-hidden="true">◎</span><span>人设与参考图</span></button>
-            </div>
-          </div>
-          <div class="nav-group">
-            <span class="nav-group-label">系统</span>
-            <div class="nav-group-items">
-              <button class="nav-item" data-tab="access"><span class="nav-icon" aria-hidden="true">◈</span><span>权限与额度</span></button>
-              <button class="nav-item" data-tab="settings"><span class="nav-icon" aria-hidden="true">⚙</span><span>运行设置</span></button>
-            </div>
-          </div>
-        </nav>
-        <footer class="sidebar-console" aria-label="工作台控制">
-          <div class="console-status-row"><span class="connection-state"><i aria-hidden="true"></i>已连接</span><span>LH / 04</span></div>
+        <div class="appbar-actions">
           <div class="theme-control">
             <button id="theme-menu-toggle" class="theme-menu-toggle" type="button" aria-expanded="false" aria-controls="theme-menu">
               <span id="current-theme-swatch" class="theme-swatch dark" aria-hidden="true"></span>
               <span class="theme-menu-copy"><small>界面主题</small><strong id="current-theme-label">深色</strong></span>
-              <span class="theme-menu-chevron" aria-hidden="true">⌃</span>
+              <span class="theme-menu-chevron" aria-hidden="true">⌄</span>
             </button>
             <div id="theme-menu" class="theme-menu" role="group" aria-label="选择界面皮肤" hidden>
               <button class="theme-option" type="button" data-theme-option="dark" aria-pressed="true"><span class="theme-swatch dark" aria-hidden="true"></span><span>深色</span></button>
@@ -64,16 +36,39 @@
             <option value="terminal">黑客终端</option>
             <option value="nebula">星云</option>
           </select>
-          <div class="sidebar-command-row">
-            <button id="reload-button" class="reload-action" title="重新加载配置" aria-label="重新加载配置">↻</button>
-            <button id="save-button" class="save-action"><span aria-hidden="true">✓</span><strong>保存更改</strong></button>
-          </div>
-        </footer>
-      </aside>
+          <button id="density-toggle" class="density-action" type="button" aria-pressed="false" title="切换紧凑密度">紧凑</button>
+          <button id="reload-button" class="reload-action" type="button" title="重新加载配置" aria-label="重新加载配置">↻</button>
+          <button id="save-button" class="save-action" type="button"><span aria-hidden="true">✓</span><strong>保存更改</strong></button>
+        </div>
+      </header>
 
-      <section class="workspace">
+      <nav class="tabstrip" aria-label="灵绘工坊导航">
+        <div class="tabstrip-track" role="tablist">
+          <div class="nav-group" aria-label="记录">
+              <button class="nav-item active" type="button" data-tab="overview" role="tab" aria-selected="true"><span class="nav-icon" aria-hidden="true">⌂</span><span class="nav-label">概览</span></button>
+              <button class="nav-item" type="button" data-tab="history" role="tab" aria-selected="false"><span class="nav-icon" aria-hidden="true">T</span><span class="nav-label">文生图</span><i class="nav-badge" id="badge-history" hidden></i></button>
+              <button class="nav-item" type="button" data-tab="image-to-image" role="tab" aria-selected="false"><span class="nav-icon" aria-hidden="true">I</span><span class="nav-label">图生图</span><i class="nav-badge" id="badge-image-to-image" hidden></i></button>
+              <button class="nav-item" type="button" data-tab="favorites" role="tab" aria-selected="false"><span class="nav-icon" aria-hidden="true">★</span><span class="nav-label">收藏</span><i class="nav-badge" id="badge-favorites" hidden></i></button>
+              <button class="nav-item" type="button" data-tab="tasks" role="tab" aria-selected="false"><span class="nav-icon" aria-hidden="true">◴</span><span class="nav-label">任务中心</span><i class="nav-badge" id="badge-tasks" hidden></i></button>
+          </div>
+          <span class="tabstrip-divider" aria-hidden="true"></span>
+          <div class="nav-group" aria-label="创作">
+              <button class="nav-item" type="button" data-tab="channels" role="tab" aria-selected="false"><span class="nav-icon" aria-hidden="true">⇄</span><span class="nav-label">绘图渠道</span></button>
+              <button class="nav-item" type="button" data-tab="studio" role="tab" aria-selected="false"><span class="nav-icon" aria-hidden="true">◇</span><span class="nav-label">图像工作台</span></button>
+              <button class="nav-item" type="button" data-tab="prompts" role="tab" aria-selected="false"><span class="nav-icon" aria-hidden="true">✦</span><span class="nav-label">提示词与预设</span></button>
+              <button class="nav-item" type="button" data-tab="persona" role="tab" aria-selected="false"><span class="nav-icon" aria-hidden="true">◎</span><span class="nav-label">人设与参考图</span></button>
+          </div>
+          <span class="tabstrip-divider" aria-hidden="true"></span>
+          <div class="nav-group" aria-label="系统">
+              <button class="nav-item" type="button" data-tab="access" role="tab" aria-selected="false"><span class="nav-icon" aria-hidden="true">◈</span><span class="nav-label">权限与额度</span></button>
+              <button class="nav-item" type="button" data-tab="settings" role="tab" aria-selected="false"><span class="nav-icon" aria-hidden="true">⚙</span><span class="nav-label">运行设置</span></button>
+          </div>
+        </div>
+      </nav>
+
+      <section class="workspace" id="workspace">
         <header class="page-header">
-          <div>
+          <div class="page-heading">
             <p class="page-kicker">LINGHUI / CONTROL</p>
             <h1 id="page-title">概览</h1>
             <p id="page-subtitle">查看当前绘图服务状态和今日用量。</p>
@@ -339,6 +334,18 @@
           </section>
         </section>
       </section>
+
+      <footer class="statusbar" aria-label="运行状态">
+        <div class="statusbar-left">
+          <span class="connection-state"><i aria-hidden="true"></i>已连接</span>
+          <span id="status-summary" class="status-summary">正在读取运行状态…</span>
+        </div>
+        <div class="statusbar-right">
+          <span id="status-dispatch" class="status-dispatch" title="当前主渠道">调度 · 读取中</span>
+          <span id="status-breadcrumb" class="status-breadcrumb">概览</span>
+          <span class="status-version">astrbot · v3.8.0</span>
+        </div>
+      </footer>
     </main>
     <dialog id="action-confirm" class="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message">
       <section class="confirm-panel">
@@ -352,6 +359,6 @@
       </section>
     </dialog>
     <div id="toast" class="toast" role="status"></div>
-    <script type="module" src="./app.js?v=3.7.0"></script>
+    <script type="module" src="./app.js?v=3.8.0"></script>
   </body>
 </html>
