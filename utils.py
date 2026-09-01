@@ -255,3 +255,57 @@ def extract_image_urls_from_text(text: str) -> List[str]:
                 image_urls.append(match)
 
     return image_urls
+
+
+def normalize_wake_prefixes(raw: Any) -> List[str]:
+    """把 AstrBot 的 ``wake_prefix`` 配置整理成「长的在前」的列表。
+
+    AstrBot 用字符串列表保存唤醒前缀，但手改过的配置里可能只剩一个字符串。
+    按长度倒序是必要的：一个前缀可能是另一个前缀的开头（例如 ``/`` 与 ``//``），
+    先匹配长的才不会截错。
+    """
+    if isinstance(raw, str):
+        candidates: List[Any] = [raw]
+    elif isinstance(raw, (list, tuple, set)):
+        candidates = list(raw)
+    else:
+        candidates = []
+
+    prefixes: List[str] = []
+    for item in candidates:
+        value = str(item or "").strip()
+        if value and value not in prefixes:
+            prefixes.append(value)
+    prefixes.sort(key=len, reverse=True)
+    return prefixes
+
+
+def pick_display_wake_prefix(raw: Any) -> str:
+    """选出用于展示示例命令的前缀。
+
+    示例必须和部署一致：唤醒前缀是 ``，`` 的机器人根本触发不了 ``#文生图``。
+    ``#`` 与 ``/`` 只要在列表里就优先，因为它们更像命令标记；否则用最短的那个。
+    唤醒前缀为空时返回空串，表示只能靠 @机器人 或私聊触发。
+    """
+    prefixes = normalize_wake_prefixes(raw)
+    if not prefixes:
+        return ""
+    for preferred in ("#", "/"):
+        if preferred in prefixes:
+            return preferred
+    return min(prefixes, key=len)
+
+
+def strip_command_marker(text: Any, wake_prefixes: Any = None) -> str:
+    """去掉开头的唤醒前缀和残留的命令标记。
+
+    普通消息触发时 AstrBot 已经把唤醒前缀从 ``message_str`` 里剥掉了，但
+    ``@机器人 <前缀><命令>`` 这条路径不会剥。这里再剥一次，唤醒前缀不是 ``#``
+    的部署才能正常用命令。
+    """
+    compact = str(text or "").strip()
+    for prefix in normalize_wake_prefixes(wake_prefixes):
+        if compact.startswith(prefix):
+            compact = compact[len(prefix):].strip()
+            break
+    return re.sub(r"^[#/！!]+", "", compact).strip()

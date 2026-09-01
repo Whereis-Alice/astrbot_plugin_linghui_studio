@@ -261,5 +261,46 @@ class BatchFailurePolicyTest(unittest.TestCase):
         self.assertIsInstance(guard.summary_suffix(), str)
 
 
+class WakePrefixHelpersTests(unittest.TestCase):
+    """唤醒前缀工具：示例命令必须跟随 AstrBot 实际配置的 wake_prefix。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = _load("utils")
+
+    def test_normalize_accepts_string_and_iterables(self):
+        self.assertEqual(self.mod.normalize_wake_prefixes("#"), ["#"])
+        self.assertEqual(self.mod.normalize_wake_prefixes(("#", "/")), ["#", "/"])
+        self.assertEqual(sorted(self.mod.normalize_wake_prefixes({"#", "/"})), ["#", "/"])
+
+    def test_normalize_sorts_longest_first_and_dedupes(self):
+        self.assertEqual(self.mod.normalize_wake_prefixes(["/", "//", "/"]), ["//", "/"])
+        self.assertEqual(self.mod.normalize_wake_prefixes(["#", "  ", "", None, "#"]), ["#"])
+
+    def test_normalize_rejects_unsupported_types(self):
+        self.assertEqual(self.mod.normalize_wake_prefixes(None), [])
+        self.assertEqual(self.mod.normalize_wake_prefixes(42), [])
+        self.assertEqual(self.mod.normalize_wake_prefixes({"wake": "#"}), [])
+
+    def test_display_prefix_prefers_hash_then_slash(self):
+        self.assertEqual(self.mod.pick_display_wake_prefix(["，", "#"]), "#")
+        self.assertEqual(self.mod.pick_display_wake_prefix(["，", "/"]), "/")
+        self.assertEqual(self.mod.pick_display_wake_prefix(["，"]), "，")
+        self.assertEqual(self.mod.pick_display_wake_prefix(["机器人", "喂"]), "喂")
+        self.assertEqual(self.mod.pick_display_wake_prefix([]), "")
+
+    def test_strip_marker_removes_configured_prefix(self):
+        self.assertEqual(self.mod.strip_command_marker("，画 猫", ["，"]), "画 猫")
+        self.assertEqual(self.mod.strip_command_marker("  ，画 猫  ", ["，"]), "画 猫")
+        self.assertEqual(self.mod.strip_command_marker("//画 猫", ["/", "//"]), "画 猫")
+
+    def test_strip_marker_keeps_unknown_prefix_and_handles_defaults(self):
+        self.assertEqual(self.mod.strip_command_marker("，画 猫"), "，画 猫")
+        self.assertEqual(self.mod.strip_command_marker("#画 猫"), "画 猫")
+        self.assertEqual(self.mod.strip_command_marker("!!画 猫"), "画 猫")
+        self.assertEqual(self.mod.strip_command_marker("画 猫", ["，"]), "画 猫")
+        self.assertEqual(self.mod.strip_command_marker(None), "")
+
+
 if __name__ == "__main__":
     unittest.main()

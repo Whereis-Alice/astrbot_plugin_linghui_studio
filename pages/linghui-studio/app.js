@@ -267,6 +267,10 @@ function updateStatusBar() {
       }
     }
   }
+  const versionTarget = byId("status-version");
+  if (versionTarget) {
+    versionTarget.textContent = `灵绘 · v${config.plugin_version || "3.8.2"}`;
+  }
 }
 
 function bool(value) {
@@ -477,6 +481,14 @@ function renderOverview() {
   byId("metric-today").textContent = String(daily);
   byId("metric-presets").textContent = String((config.presets || []).length);
   byId("metric-references").textContent = String(config.references?.stats?.total_images || 0);
+  const prefixTarget = byId("metric-prefix");
+  if (prefixTarget) {
+    const marker = String(config.command_prefix || "");
+    prefixTarget.textContent = marker || "无";
+    prefixTarget.title = marker
+      ? `AstrBot 唤醒词为 ${marker}，命令需写成 ${marker}文生图 这样`
+      : "AstrBot 未设置唤醒词，需要 @机器人 或私聊才能触发命令";
+  }
   const active = config.active_drawing_channel || "自动";
   byId("overview-channels").innerHTML = channels.map((channel) => {
     const role = channel.id === active ? "主渠道" : (channel.fallback_enabled ? "备用" : "不回退");

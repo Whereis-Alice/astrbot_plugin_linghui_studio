@@ -30,7 +30,12 @@ from .config_persistence import (
     should_restore_fallback_value,
 )
 from .context_manager import ContextManager, LLMTaskAnalyzer
-from .dashboard_api import DRAWING_CHANNEL_TEMPLATE_KEY, LinghuiDashboardApi, PLUGIN_NAME
+from .dashboard_api import (
+    DRAWING_CHANNEL_TEMPLATE_KEY,
+    LinghuiDashboardApi,
+    PLUGIN_NAME,
+    PLUGIN_VERSION,
+)
 from .utils import (
     append_final_instruction,
     append_negative_prompt,
@@ -41,6 +46,9 @@ from .utils import (
     MENTION_AVATAR_PRIVACY_INSTRUCTION,
     norm_id,
     normalize_model_list,
+    normalize_wake_prefixes,
+    pick_display_wake_prefix,
+    strip_command_marker,
 )
 
 # 内置叛逆词库 - 用于LLM判断时增加个性化回复
@@ -155,7 +163,7 @@ def _direct_command_only(handler):
     PLUGIN_NAME,
     "Whereis-Alice",
     "灵绘工坊：带参考图专用渠道回退、受控群白名单、自定义绘图反向提示词与可视化管理的文生图/图生图插件",
-    "3.8.1",
+    PLUGIN_VERSION,
     "https://github.com/Whereis-Alice/astrbot_plugin_linghui_studio",
 )
 class LinghuiStudioPlugin(Star):
@@ -361,9 +369,20 @@ class LinghuiStudioPlugin(Star):
             return value.strip().lower() not in {"0", "false", "no", "off"}
         return bool(value)
 
-    @staticmethod
-    def _strip_command_marker(text: str) -> str:
-        return re.sub(r"^[#/！!]+", "", str(text or "")).strip()
+    def _wake_prefix_candidates(self) -> List[str]:
+        """读取 AstrBot 当前配置的唤醒前缀，长的在前。"""
+        try:
+            context_config = self.context.get_config() or {}
+        except Exception:
+            context_config = {}
+        return normalize_wake_prefixes(context_config.get("wake_prefix", []))
+
+    def _wake_prefix_display(self) -> str:
+        """示例命令与用法提示里应该显示的前缀；为空表示只能 @机器人 或私聊触发。"""
+        return pick_display_wake_prefix(self._wake_prefix_candidates())
+
+    def _strip_command_marker(self, text: str) -> str:
+        return strip_command_marker(text, self._wake_prefix_candidates())
 
     def _namespaced_command_text(self, event: AstrMessageEvent, source_text: Optional[str] = None) -> Optional[str]:
         namespace = self._command_namespace()
@@ -405,8 +424,9 @@ class LinghuiStudioPlugin(Star):
         return ""
 
     def _command_example(self, command: str) -> str:
+        marker = self._wake_prefix_display()
         namespace = self._command_namespace()
-        return f"#{namespace} {command}" if namespace else f"#{command}"
+        return f"{marker}{namespace} {command}" if namespace else f"{marker}{command}"
 
     def _purge_deprecated_config_keys(self, config_obj=None) -> int:
         """清理已经废弃的旧配置字段，避免面板继续显示历史残留项。"""
@@ -1112,8 +1132,11 @@ class LinghuiStudioPlugin(Star):
             logger.warning("LinghuiStudio: 未配置可用的绘图渠道或 API Key")
 
         auto_detect_status = "已启用" if self._llm_auto_detect else "未启用"
+        wake_marker = self._wake_prefix_display()
+        prefix_status = wake_marker if wake_marker else "未设置（需 @机器人 或私聊触发）"
         logger.info(
-            f"LinghuiStudio 已加载 v3.8.1 | LLM智能判断: {auto_detect_status} | 上下文轮数: {self._context_rounds}")
+            f"LinghuiStudio 已加载 v{PLUGIN_VERSION} | LLM智能判断: {auto_detect_status}"
+            f" | 上下文轮数: {self._context_rounds} | 命令前缀: {prefix_status}")
 
     def _generation_cache_retention_days(self) -> int:
         """Return a bounded retention period for output and input image cache files."""

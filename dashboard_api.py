@@ -28,6 +28,7 @@ from .utils import is_ambiguous_message_delivery_timeout, norm_id, normalize_api
 
 
 PLUGIN_NAME = "astrbot_plugin_linghui_studio"
+PLUGIN_VERSION = "3.8.2"
 DRAWING_CHANNEL_TEMPLATE_KEY = "drawing_channel"
 _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -136,6 +137,16 @@ class LinghuiDashboardApi:
     def _dashboard_density(value: Any) -> str:
         density = str(value or "").strip().lower()
         return density if density in _DASHBOARD_DENSITIES else "comfortable"
+
+    def _command_prefix_display(self) -> str:
+        """Report the deployment's real command prefix so page hints match chat."""
+        resolver = getattr(self.plugin, "_wake_prefix_display", None)
+        if callable(resolver):
+            try:
+                return str(resolver() or "")
+            except Exception:
+                return ""
+        return ""
 
     @staticmethod
     def _id_list(value: Any) -> List[str]:
@@ -358,6 +369,8 @@ class LinghuiDashboardApi:
             "config_version": 1,
             "dashboard_theme": self._dashboard_theme(self.plugin.conf.get("dashboard_theme", "dark")),
             "dashboard_density": self._dashboard_density(self.plugin.conf.get("dashboard_density", "comfortable")),
+            "plugin_version": PLUGIN_VERSION,
+            "command_prefix": self._command_prefix_display(),
             "settings": {
                 "model": str(self.plugin.conf.get("model", "") or ""),
                 "text_to_image_model": str(self.plugin.conf.get("text_to_image_model", "") or ""),
@@ -2117,7 +2130,7 @@ class LinghuiDashboardApi:
             "format": "linghui-studio-config",
             "format_version": 1,
             "plugin": PLUGIN_NAME,
-            "plugin_version": str(getattr(self.plugin, "version", "3.8.1") or "3.8.1"),
+            "plugin_version": PLUGIN_VERSION,
             "exported_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "secrets_redacted": True,
             "redacted_fields": redacted_fields,
