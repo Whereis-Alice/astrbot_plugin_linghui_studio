@@ -1111,5 +1111,95 @@ class ReferenceImageStorageTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(image.mode, "RGBA")
 
 
+class CleanupFeedbackTest(unittest.IsolatedAsyncioTestCase):
+    """无可清项时，清理接口必须解释原因而不是只回一串 0。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.DataManager = _load_module("data_manager").DataManager
+        cls.DashboardApi = _load_module("dashboard_api", with_quart=True).LinghuiDashboardApi
+
+    @staticmethod
+    def _png_bytes() -> bytes:
+        output = io.BytesIO()
+        Image.new("RGB", (320, 200), (90, 40, 200)).save(output, "PNG")
+        return output.getvalue()
+
+    async def test_cleanup_reports_retention_state_when_nothing_expired(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.DataManager(pathlib.Path(directory), {})
+            record = await manager.save_generation_record(
+                self._png_bytes(),
+                prompt="fresh record",
+                user_id="10001",
+                group_id="20002",
+                model="image-model",
+            )
+            self.assertIsNotNone(record)
+
+            result = await manager.cleanup_generation_cache(7)
+            self.assertEqual(result["removed_records"], 0)
+            self.assertEqual(result["removed_images"], 0)
+            self.assertEqual(result["removed_orphans"], 0)
+            self.assertEqual(result["retention_days"], 7)
+            self.assertEqual(result["remaining_records"], 1)
+            self.assertEqual(result["protected_records"], 0)
+            self.assertGreater(result["remaining_bytes"], 0)
+            oldest = datetime.fromisoformat(result["oldest_created_at"])
+            expiry = datetime.fromisoformat(result["next_expiry_at"])
+            self.assertEqual((expiry - oldest).days, 7)
+            self.assertEqual(len(manager.generation_history), 1)
+
+            await manager.update_generation_record_flags(record["id"], favorite=True)
+            protected = await manager.cleanup_generation_cache(7)
+            self.assertEqual(protected["remaining_records"], 1)
+            self.assertEqual(protected["protected_records"], 1)
+            self.assertEqual(protected["oldest_created_at"], "")
+            self.assertEqual(protected["next_expiry_at"], "")
+
+    def _api(self, conf=None):
+        plugin = types.SimpleNamespace(conf=dict(conf or {}))
+        return self.DashboardApi(plugin)
+
+    def test_idle_message_explains_why_nothing_was_removed(self):
+        api = self._api({"generation_cache_retention_days": 7})
+        message = api._cleanup_idle_message({
+            "retention_days": 7,
+            "remaining_records": 10,
+            "protected_records": 0,
+            "oldest_created_at": "2026-08-27T09:15:00",
+            "next_expiry_at": "2026-09-03T09:15:00",
+        })
+        self.assertNotIn("已清理", message)
+        self.assertIn("保留期 7 天", message)
+        self.assertIn("现有 10 条记录", message)
+        self.assertIn("08-27 09:15", message)
+        self.assertIn("09-03 09:15", message)
+
+    def test_idle_message_mentions_protected_records(self):
+        api = self._api({"generation_cache_retention_days": 30})
+        message = api._cleanup_idle_message({
+            "retention_days": 30,
+            "remaining_records": 4,
+            "protected_records": 4,
+            "oldest_created_at": "",
+            "next_expiry_at": "",
+        })
+        self.assertIn("保留期 30 天", message)
+        self.assertIn("4 条已收藏或锁定", message)
+        self.assertNotIn("最早一条", message)
+
+    def test_idle_message_handles_empty_cache(self):
+        api = self._api({"generation_cache_retention_days": 7})
+        message = api._cleanup_idle_message({"retention_days": 7, "remaining_records": 0})
+        self.assertIn("空的", message)
+        self.assertNotIn("已清理", message)
+
+    def test_idle_message_falls_back_to_configured_retention(self):
+        api = self._api({"generation_cache_retention_days": 21})
+        message = api._cleanup_idle_message({"remaining_records": 2, "protected_records": 0})
+        self.assertIn("保留期 21 天", message)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -28,7 +28,7 @@ from .utils import is_ambiguous_message_delivery_timeout, norm_id, normalize_api
 
 
 PLUGIN_NAME = "astrbot_plugin_linghui_studio"
-PLUGIN_VERSION = "3.8.2"
+PLUGIN_VERSION = "3.8.3"
 DRAWING_CHANNEL_TEMPLATE_KEY = "drawing_channel"
 _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -1359,6 +1359,35 @@ class LinghuiDashboardApi:
             cache_timeout=0,
         )
 
+    @staticmethod
+    def _friendly_stamp(value: Any) -> str:
+        """Shorten an ISO timestamp to 月-日 时:分 for toast messages."""
+        text = str(value or "").strip()
+        if len(text) < 16:
+            return ""
+        return text[5:16].replace("T", " ")
+
+    def _cleanup_idle_message(self, result: Dict[str, Any]) -> str:
+        """Explain an empty sweep so "0 removed" does not look like a broken button."""
+        retention_days = self._as_int(
+            result.get("retention_days")
+            or self.plugin.conf.get("generation_cache_retention_days", 7),
+            1,
+            365,
+        )
+        remaining = self._as_int(result.get("remaining_records"), 0, 1_000_000)
+        protected = self._as_int(result.get("protected_records"), 0, 1_000_000)
+        if remaining <= 0:
+            return f"没有需要清理的内容：成功记录缓存当前是空的（保留期 {retention_days} 天）。"
+        parts = [f"没有需要清理的内容：保留期 {retention_days} 天，现有 {remaining} 条记录都还在保留期内"]
+        if protected:
+            parts.append(f"其中 {protected} 条已收藏或锁定，永久保留")
+        oldest = self._friendly_stamp(result.get("oldest_created_at"))
+        expiry = self._friendly_stamp(result.get("next_expiry_at"))
+        if oldest and expiry:
+            parts.append(f"最早一条生成于 {oldest}，要到 {expiry} 才会过期")
+        return "；".join(parts) + "。"
+
     async def generation_record(self):
         """Update protection flags, explicitly delete, or clean expired cache records."""
         payload = await self._json_body()
@@ -1415,13 +1444,21 @@ class LinghuiDashboardApi:
                 removed_source_images = self._as_int(result.get("removed_source_images"), 0, 1_000_000)
                 removed_source_previews = self._as_int(result.get("removed_source_previews"), 0, 1_000_000)
                 removed_orphans = self._as_int(result.get("removed_orphans"), 0, 1_000_000)
-                return jsonify({
-                    "success": True,
-                    "message": (
+                removed_total = (
+                    removed_records + removed_images + removed_previews
+                    + removed_source_images + removed_source_previews + removed_orphans
+                )
+                if removed_total:
+                    message = (
                         f"已清理 {removed_records} 条过期记录、{removed_images} 张结果图、"
                         f"{removed_source_images} 张输入原图、{removed_previews + removed_source_previews} 张缩略图"
                         f"和 {removed_orphans} 个遗留文件。"
-                    ),
+                    )
+                else:
+                    message = self._cleanup_idle_message(result)
+                return jsonify({
+                    "success": True,
+                    "message": message,
                     "result": {
                         "removed_records": removed_records,
                         "removed_images": removed_images,
@@ -1429,6 +1466,13 @@ class LinghuiDashboardApi:
                         "removed_source_images": removed_source_images,
                         "removed_source_previews": removed_source_previews,
                         "removed_orphans": removed_orphans,
+                        "removed_total": removed_total,
+                        "retention_days": self._as_int(result.get("retention_days"), 1, 365),
+                        "remaining_records": self._as_int(result.get("remaining_records"), 0, 1_000_000),
+                        "remaining_bytes": self._as_int(result.get("remaining_bytes"), 0, 1_000_000_000_000),
+                        "protected_records": self._as_int(result.get("protected_records"), 0, 1_000_000),
+                        "oldest_created_at": str(result.get("oldest_created_at", "") or ""),
+                        "next_expiry_at": str(result.get("next_expiry_at", "") or ""),
                     },
                 })
 
@@ -1616,7 +1660,19 @@ class LinghuiDashboardApi:
 
         if action == "cleanup":
             result = await self.plugin.task_mgr.cleanup()
-            return jsonify({"success": True, "message": "任务缓存已整理。", "result": result})
+            removed = self._as_int(result.get("removed"), 0, 1_000_000)
+            remaining = self._as_int(result.get("after"), 0, 1_000_000)
+            retention_days = self._as_int(
+                self.plugin.conf.get("task_request_retention_days", 7), 1, 365
+            )
+            if removed:
+                message = f"已整理 {removed} 条超期任务及其请求素材，剩余 {remaining} 条。"
+            else:
+                message = (
+                    f"没有需要整理的任务：保留期 {retention_days} 天，"
+                    f"现有 {remaining} 条任务都还在保留期内。"
+                )
+            return jsonify({"success": True, "message": message, "result": result})
 
         if not task_id or len(task_id) > 80:
             return jsonify({"success": False, "message": "请提供有效的任务 ID。"}), 400

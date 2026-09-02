@@ -1467,6 +1467,25 @@ class DataManager:
                 self._invalidate_generation_history_summary_locked()
                 await self._save_json(self.generation_history_file, self.generation_history)
 
+            remaining_records = len(retained)
+            protected_records = 0
+            oldest_unprotected: Optional[datetime] = None
+            for record in retained:
+                if self._history_bool(record.get("favorite", False)) or self._history_bool(
+                        record.get("locked", False)):
+                    protected_records += 1
+                    continue
+                created = self._history_created_at(record, self.get_generation_image_path(record))
+                if created is None:
+                    continue
+                if oldest_unprotected is None or created < oldest_unprotected:
+                    oldest_unprotected = created
+            oldest_iso = oldest_unprotected.isoformat(timespec="seconds") if oldest_unprotected else ""
+            next_expiry_iso = (
+                (oldest_unprotected + timedelta(days=retention_days)).isoformat(timespec="seconds")
+                if oldest_unprotected else ""
+            )
+
         return {
             "removed_records": removed_records,
             "removed_images": removed_images,
@@ -1478,6 +1497,12 @@ class DataManager:
             "capacity_before_bytes": capacity_before_bytes,
             "capacity_after_bytes": capacity_after_bytes,
             "capacity_limit_bytes": max_bytes,
+            "retention_days": retention_days,
+            "remaining_records": remaining_records,
+            "remaining_bytes": capacity_after_bytes,
+            "protected_records": protected_records,
+            "oldest_created_at": oldest_iso,
+            "next_expiry_at": next_expiry_iso,
         }
 
     # --- 预设图片管理 ---

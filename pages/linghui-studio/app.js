@@ -269,7 +269,7 @@ function updateStatusBar() {
   }
   const versionTarget = byId("status-version");
   if (versionTarget) {
-    versionTarget.textContent = `灵绘 · v${config.plugin_version || "3.8.2"}`;
+    versionTarget.textContent = `灵绘 · v${config.plugin_version || "3.8.3"}`;
   }
 }
 
@@ -300,7 +300,8 @@ function showToast(message, error = false) {
   toast.classList.toggle("error", error);
   toast.classList.add("show");
   clearTimeout(showToast.timer);
-  showToast.timer = setTimeout(() => toast.classList.remove("show"), 3200);
+  const visibleFor = message && String(message).length > 40 ? 6400 : 3200;
+  showToast.timer = setTimeout(() => toast.classList.remove("show"), visibleFor);
 }
 
 let settleConfirmation = null;
@@ -955,7 +956,7 @@ function renderGenerationHistory() {
   updateStatusBar();
   const cleanupButton = byId("history-cleanup");
   if (cleanupButton) {
-    const cleanupHint = `自动清理超过 ${retentionDays} 天且未收藏、未锁定的缓存`;
+    const cleanupHint = `清理超过 ${retentionDays} 天且未收藏、未锁定的缓存；没有到期内容时不会删除任何东西`;
     cleanupButton.title = cleanupHint;
     cleanupButton.setAttribute("aria-label", cleanupHint);
   }
@@ -1768,15 +1769,25 @@ async function deleteGenerationRecord(id) {
   await loadGenerationHistory(0);
 }
 
+function historyRetentionDays() {
+  const fromHistory = Number(state.history?.retention_days);
+  if (Number.isFinite(fromHistory) && fromHistory > 0) return Math.round(fromHistory);
+  const fromConfig = Number(state.config?.generation_cache_retention_days);
+  if (Number.isFinite(fromConfig) && fromConfig > 0) return Math.round(fromConfig);
+  return 7;
+}
+
 async function cleanupGenerationHistory() {
+  const retentionDays = historyRetentionDays();
   if (!await confirmAction({
     title: "清理过期缓存",
-    message: "确认清理已过期的成功记录吗？已收藏或锁定的图片和提示词会保留。",
+    message: `只清理生成时间超过 ${retentionDays} 天、且未收藏未锁定的记录，外加没有记录对应的遗留文件。如果暂时没有到期内容，这次点击不会删除任何东西。`,
     confirmLabel: "清理缓存",
   })) return;
   const response = await bridge.apiPost("generation_record", { action: "cleanup" });
   if (!response?.success) throw new Error(response?.message || "清理缓存失败");
   showToast(response.message || "过期缓存已清理");
+  if (!Number(response.result?.removed_total)) return;
   state.generationPreviewCache.clear();
   state.generationPromptCache.clear();
   state.generationSourceCache.clear();
