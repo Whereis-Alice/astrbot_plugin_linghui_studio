@@ -24,11 +24,12 @@ from PIL import ImageOps
 from .batch_policy import POLICY_LABELS, normalize_policy
 from .error_classify import safe_error_summary
 from .protocol_adapters import PROTOCOL_CHOICES, PROTOCOL_LABELS, normalize_protocol
+from .requester_tag import DEFAULT_TAG_MODE, normalize_tag_mode
 from .utils import is_ambiguous_message_delivery_timeout, norm_id, normalize_api_root
 
 
 PLUGIN_NAME = "astrbot_plugin_linghui_studio"
-PLUGIN_VERSION = "3.8.5"
+PLUGIN_VERSION = "3.8.6"
 DRAWING_CHANNEL_TEMPLATE_KEY = "drawing_channel"
 _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -413,6 +414,10 @@ class LinghuiDashboardApi:
                     self.plugin.conf.get("generating_msg_template", "🎨 收到请求，正在生成 [{preset}]...") or ""
                 ),
                 "show_model_info": self._as_bool(self.plugin.conf.get("show_model_info", False)),
+                "debug_mode": self._as_bool(self.plugin.conf.get("debug_mode", False)),
+                "requester_tag_mode": normalize_tag_mode(
+                    self.plugin.conf.get("requester_tag_mode", DEFAULT_TAG_MODE)
+                ),
                 "enable_preset_ref_images": self._as_bool(self.plugin.conf.get("enable_preset_ref_images", True)),
                 "enable_persona_mode": self._as_bool(self.plugin.conf.get("enable_persona_mode", False)),
                 "enable_binary_image_response": self._as_bool(
@@ -698,9 +703,11 @@ class LinghuiDashboardApi:
                     if "generating_msg_template" in settings:
                         template = str(settings["generating_msg_template"] or "").strip()[:500]
                         self.plugin.conf["generating_msg_template"] = template or "🎨 收到请求，正在生成 [{preset}]..."
-                    for key in ("show_model_info", "enable_preset_ref_images", "enable_persona_mode"):
+                    for key in ("show_model_info", "enable_preset_ref_images", "enable_persona_mode", "debug_mode"):
                         if key in settings:
                             self.plugin.conf[key] = self._as_bool(settings[key])
+                    if "requester_tag_mode" in settings:
+                        self.plugin.conf["requester_tag_mode"] = normalize_tag_mode(settings["requester_tag_mode"])
                     for key in (
                         "enable_binary_image_response",
                         "enable_bare_base64_response",

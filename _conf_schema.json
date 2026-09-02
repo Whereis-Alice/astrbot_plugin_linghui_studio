@@ -363,8 +363,16 @@
   "debug_mode": {
     "type": "bool",
     "description": "【绘图运行与排障】向用户显示上游错误详情",
-    "hint": "仅排障时使用，可能包含服务端返回的信息。",
+    "hint": "开启后，生成失败的提示会附带上游返回的状态码与报错正文，便于自己排查是渠道问题还是提示词问题。接口地址、主机名和密钥会自动隐去，不会暴露你用的是哪家服务。",
     "default": false
+  },
+  "requester_tag_mode": {
+    "type": "string",
+    "description": "【绘图运行与排障】群聊结果标注请求者",
+    "hint": "群里多人同时抢着生图时，用来分清每条结果和报错分别属于谁。off=不标注（和旧版本一样）；name=在结果与报错前标注「昵称(QQ号)」，推荐；at=在标注的同时 @ 提醒本人，每张结果图前也会带上 @。私聊只有一个人，任何模式下都不标注；昵称只用于显示，识别始终按 QQ 号。",
+    "obvious_hint": true,
+    "options": ["off", "name", "at"],
+    "default": "name"
   },
   "enable_luxury_mode": {
     "type": "bool",

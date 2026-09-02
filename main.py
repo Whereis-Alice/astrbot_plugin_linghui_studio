@@ -50,6 +50,14 @@ from .utils import (
     pick_display_wake_prefix,
     strip_command_marker,
 )
+from .error_classify import debug_error_detail
+from .requester_tag import (
+    apply_prefix,
+    build_prefix_text,
+    DEFAULT_TAG_MODE,
+    normalize_tag_mode,
+    should_mention_requester,
+)
 
 # 内置叛逆词库 - 用于LLM判断时增加个性化回复
 # 注意：避免使用"画"字，因为人设拍照等场景不适合
@@ -1262,6 +1270,84 @@ class LinghuiStudioPlugin(Star):
             pass
         return user_name, group_name
 
+    # ---- 群聊结果归属标注：多人同时生图时，标出每条结果/报错属于谁 ----
+    def _requester_tag_mode(self) -> str:
+        """Return the configured requester tag mode: ``off`` / ``name`` / ``at``."""
+        return normalize_tag_mode(self.conf.get("requester_tag_mode", DEFAULT_TAG_MODE))
+
+    def _requester_ids(self, event: Optional[AstrMessageEvent]) -> Tuple[str, str]:
+        """Return ``(user_id, group_id)`` without raising on unusual platforms."""
+        if event is None:
+            return "", ""
+        try:
+            user_id = norm_id(event.get_sender_id())
+        except Exception:
+            user_id = ""
+        try:
+            group_id = norm_id(event.get_group_id())
+        except Exception:
+            group_id = ""
+        return user_id, group_id
+
+    def _requester_prefix_text(self, event: Optional[AstrMessageEvent]) -> str:
+        """Text prefix for visible notices; private chats stay unlabeled."""
+        user_id, group_id = self._requester_ids(event)
+        if not group_id:
+            return ""
+        nickname, _ = self._event_identity_labels(event)
+        return build_prefix_text(self._requester_tag_mode(), nickname, user_id, group_id)
+
+    def _requester_prefix_nodes(self, event: Optional[AstrMessageEvent]) -> List[Any]:
+        """At-mention nodes, only used when the tag mode is ``at``."""
+        user_id, group_id = self._requester_ids(event)
+        if not should_mention_requester(self._requester_tag_mode(), user_id, group_id):
+            return []
+        return [At(qq=user_id), Plain(" ")]
+
+    def _notice_nodes(self, event: Optional[AstrMessageEvent], text: Any) -> List[Any]:
+        """Compose one requester-tagged notice chain."""
+        body = apply_prefix(text, self._requester_prefix_text(event))
+        return self._requester_prefix_nodes(event) + [Plain(body)]
+
+    async def _send_task_notice(self, event: AstrMessageEvent, text: Any) -> None:
+        """Send one progress/result/failure notice tagged with its requester.
+
+        Notices are informational, so a delivery hiccup here must never abort the
+        generation task or turn into a second error message for the group.
+        """
+        try:
+            await event.send(event.chain_result(self._notice_nodes(event, text)))
+        except Exception as exc:
+            if is_ambiguous_message_delivery_timeout(exc):
+                logger.warning(
+                    "Linghui task notice got a late send receipt; treating it as delivered: %s",
+                    exc,
+                )
+            else:
+                logger.warning(f"LinghuiStudio: failed to deliver a task notice: {exc}")
+
+    def _decorate_requester(self, event: AstrMessageEvent, chain: Any) -> Any:
+        """Prepend the requester mention to an outgoing image chain when enabled."""
+        prefix = self._requester_prefix_nodes(event)
+        if not prefix:
+            return chain
+        try:
+            nodes = getattr(chain, "chain", None)
+            if isinstance(nodes, list):
+                nodes[:0] = prefix
+        except Exception as exc:
+            logger.debug(f"LinghuiStudio: failed to tag an image chain: {exc}")
+        return chain
+
+    def _public_error_message(self, error: Any, default_msg: str) -> str:
+        """Verbose but endpoint-free error text for administrators.
+
+        ``debug_error_detail`` keeps the upstream status code and response body
+        while hiding hosts and credentials, so turning on debug mode no longer
+        leaks which provider the bot is wired to.
+        """
+        return debug_error_detail(error, 480) or default_msg
+
     async def _remember_event_identity_labels(self, event: AstrMessageEvent) -> Tuple[str, str]:
         """Refresh display-only labels when a normal inbound event provides them."""
         user_name, group_name = self._event_identity_labels(event)
@@ -2390,13 +2476,9 @@ class LinghuiStudioPlugin(Star):
         return self._get_conf_bool("debug_mode", False)
 
     def _resolve_debug_error_message(self, error: Any, default_msg: str = "这边刚才有点小问题，我先缓一下，稍后再试试。") -> str:
-        """调试模式下保留原始上游错误，普通模式下做脱敏。"""
+        """调试模式下显示上游报错正文（已隐去接口地址与密钥），普通模式下继续脱敏。"""
         if self._should_show_debug_errors():
-            try:
-                raw = str(error).strip() if error is not None else ""
-            except Exception:
-                raw = ""
-            return raw or default_msg
+            return self._public_error_message(error, default_msg)
 
         return self._mask_llm_error(error, default_msg)
 
@@ -2630,6 +2712,7 @@ class LinghuiStudioPlugin(Star):
     async def _send_generated_result(self, event: AstrMessageEvent, chain: Any) -> str:
         """Send one completed image result without duplicating QQ late-ACK sends."""
         try:
+            chain = self._decorate_requester(event, chain)
             await event.send(chain)
             return "sent"
         except Exception as exc:
@@ -3103,7 +3186,7 @@ class LinghuiStudioPlugin(Star):
                 if not hide_text:
                     quota_str = self._get_quota_str(deduction, uid, gid)
                     timing_text = self._format_success_timing(elapsed)
-                    info_text = f"\n✅ 生成成功 ({timing_text}) | 预设: {preset_name}"
+                    info_text = f"\n{self._requester_prefix_text(event)}✅ 生成成功 ({timing_text}) | 预设: {preset_name}"
                     if extra_rules:
                         info_text += f" | 规则: {extra_rules[:20]}{'...' if len(extra_rules) > 20 else ''}"
                     info_text += f" | 剩余: {quota_str}"
@@ -3130,14 +3213,14 @@ class LinghuiStudioPlugin(Star):
             await self.task_mgr.finish_failure(task_id, res, metrics=route_metrics)
             error_msg = self._resolve_debug_error_message(
                 res, "这次没弄好，请稍后再试。"
-            ) if suppress_user_error else str(res)
+            ) if suppress_user_error else self._public_error_message(res, "这次没弄好，请稍后再试。")
             if (not suppress_user_error) or self._should_show_debug_errors():
                 display_msg = error_msg
                 if not str(display_msg).startswith("❌"):
                     display_msg = f"没搞好: {display_msg}"
                 else:
                     display_msg = str(display_msg).removeprefix("❌").strip()
-                await event.send(event.chain_result([Plain(display_msg)]))
+                await self._send_task_notice(event, display_msg)
             return False, str(error_msg).removeprefix("❌").strip()
 
         except asyncio.CancelledError:
@@ -3168,10 +3251,10 @@ class LinghuiStudioPlugin(Star):
                 )
             error_msg = self._resolve_debug_error_message(
                 e, "这次没弄好，请稍后再试。"
-            ) if suppress_user_error else f"系统错误: {e}"
+            ) if suppress_user_error else f"系统错误: {self._public_error_message(e, '这次没弄好，请稍后再试。')}"
             if (not suppress_user_error) or self._should_show_debug_errors():
                 _display = str(error_msg).removeprefix("❌").strip()
-                await event.send(event.chain_result([Plain(f"出了点状况: {_display}")]))
+                await self._send_task_notice(event, f"出了点状况: {_display}")
             return False, str(error_msg).removeprefix("❌").strip()
         finally:
             await self._complete_pending_generation(event.unified_msg_origin, 1)
@@ -3271,7 +3354,7 @@ class LinghuiStudioPlugin(Star):
                                 chain_nodes = [Image.fromBytes(res)]
                                 if not hide_text:
                                     timing_text = self._format_success_timing(elapsed)
-                                    info_text = f"\n✅ [{index}/{count}] 生成成功 ({timing_text}) | 预设: {preset_name}"
+                                    info_text = f"\n{self._requester_prefix_text(event)}✅ [{index}/{count}] 生成成功 ({timing_text}) | 预设: {preset_name}"
                                     if extra_rules:
                                         info_text += f" | 规则: {extra_rules[:15]}..."
                                     chain_nodes.append(Plain(info_text))
@@ -3285,9 +3368,7 @@ class LinghuiStudioPlugin(Star):
                             retry_count += 1
                             if retry_count <= max_retries:
                                 if (not suppress_user_error) or self._should_show_debug_errors():
-                                    await event.send(event.chain_result([
-                                        Plain(f"⚠️ 第 {index}/{count} 张生成失败 ({error_msg})\n⏳ 正在重试...")
-                                    ]))
+                                    await self._send_task_notice(event, f"⚠️ 第 {index}/{count} 张生成失败 ({error_msg})\n⏳ 正在重试...")
                                 await asyncio.sleep(1.5)
 
                         async with results_lock:
@@ -3298,9 +3379,7 @@ class LinghuiStudioPlugin(Star):
                                 results["errors"].append(error_msg)
                                 await guard.note_failure(error_msg)
                                 if (not suppress_user_error) or self._should_show_debug_errors():
-                                    await event.send(event.chain_result([
-                                        Plain(f"第{index}张没弄好: {error_msg}")
-                                    ]))
+                                    await self._send_task_notice(event, f"第{index}张没弄好: {error_msg}")
 
                     except Exception as e:
                         error_msg = self._resolve_debug_error_message(e,
@@ -3312,9 +3391,7 @@ class LinghuiStudioPlugin(Star):
                             results["errors"].append(error_msg)
                             await guard.note_failure(error_msg)
                         if (not suppress_user_error) or self._should_show_debug_errors():
-                            await event.send(event.chain_result([
-                                Plain(f"第{index}张出了点问题: {error_msg}")
-                            ]))
+                            await self._send_task_notice(event, f"第{index}张出了点问题: {error_msg}")
                     finally:
                         await self._complete_pending_generation(event.unified_msg_origin, 1)
 
@@ -3325,7 +3402,7 @@ class LinghuiStudioPlugin(Star):
             guard_note = await self._finalize_batch_guard(guard, deduction, uid, gid)
             results["skipped"] = guard.skipped
             if guard_note and ((not suppress_user_error) or self._should_show_debug_errors()):
-                await event.send(event.chain_result([Plain(f"⏹️ {guard_note}")]))
+                await self._send_task_notice(event, f"⏹️ {guard_note}")
 
             # 5. 发送完成汇总
             if not hide_text:
@@ -3333,14 +3410,14 @@ class LinghuiStudioPlugin(Star):
                 summary = f"\n📊 批量生成完成: 成功 {results['success']}/{count} 张 | 剩余: {quota_str}"
                 if guard.skipped:
                     summary += f"\n⏹️ 跳过 {guard.skipped} 张（{self._batch_policy_hint()}），已退回对应次数"
-                await event.send(event.chain_result([Plain(summary)]))
+                await self._send_task_notice(event, summary)
             return results
 
         except Exception as e:
             logger.error(f"Batch text-to-image task error: {e}")
             final_error = self._resolve_debug_error_message(e, "这次没弄好，请稍后再试。")
             if (not suppress_user_error) or self._should_show_debug_errors():
-                await event.send(event.chain_result([Plain(f"这批出了点状况: {final_error}")]))
+                await self._send_task_notice(event, f"这批出了点状况: {final_error}")
             return {"success": 0, "fail": count, "errors": [final_error]}
 
     # ================= 批量图生图功能（同一张图片生成多个版本） =================
@@ -3440,7 +3517,7 @@ class LinghuiStudioPlugin(Star):
                                 chain_nodes = [Image.fromBytes(res)]
                                 if not hide_text:
                                     timing_text = self._format_success_timing(elapsed)
-                                    info_text = f"\n✅ [{index}/{count}] 版本生成成功 ({timing_text}) | 预设: {preset_name}"
+                                    info_text = f"\n{self._requester_prefix_text(event)}✅ [{index}/{count}] 版本生成成功 ({timing_text}) | 预设: {preset_name}"
                                     if extra_rules:
                                         info_text += f" | 规则: {extra_rules[:15]}..."
                                     chain_nodes.append(Plain(info_text))
@@ -3454,9 +3531,7 @@ class LinghuiStudioPlugin(Star):
                             retry_count += 1
                             if retry_count <= max_retries:
                                 if (not suppress_user_error) or self._should_show_debug_errors():
-                                    await event.send(event.chain_result([
-                                        Plain(f"⚠️ 第 {index}/{count} 个版本生成失败 ({error_msg})\n⏳ 正在重试...")
-                                    ]))
+                                    await self._send_task_notice(event, f"⚠️ 第 {index}/{count} 个版本生成失败 ({error_msg})\n⏳ 正在重试...")
                                 await asyncio.sleep(1.5)
 
                         async with results_lock:
@@ -3467,9 +3542,7 @@ class LinghuiStudioPlugin(Star):
                                 results["errors"].append(error_msg)
                                 await guard.note_failure(error_msg)
                                 if (not suppress_user_error) or self._should_show_debug_errors():
-                                    await event.send(event.chain_result([
-                                        Plain(f"第{index}个版本没弄好: {error_msg}")
-                                    ]))
+                                    await self._send_task_notice(event, f"第{index}个版本没弄好: {error_msg}")
 
                     except Exception as e:
                         error_msg = self._resolve_debug_error_message(e,
@@ -3481,9 +3554,7 @@ class LinghuiStudioPlugin(Star):
                             results["errors"].append(error_msg)
                             await guard.note_failure(error_msg)
                         if (not suppress_user_error) or self._should_show_debug_errors():
-                            await event.send(event.chain_result([
-                                Plain(f"第{index}个版本出了点问题: {error_msg}")
-                            ]))
+                            await self._send_task_notice(event, f"第{index}个版本出了点问题: {error_msg}")
                     finally:
                         await self._complete_pending_generation(event.unified_msg_origin, 1)
 
@@ -3493,7 +3564,7 @@ class LinghuiStudioPlugin(Star):
             guard_note = await self._finalize_batch_guard(guard, deduction, uid, gid)
             results["skipped"] = guard.skipped
             if guard_note and ((not suppress_user_error) or self._should_show_debug_errors()):
-                await event.send(event.chain_result([Plain(f"⏹️ {guard_note}")]))
+                await self._send_task_notice(event, f"⏹️ {guard_note}")
 
             # 5. 发送完成汇总
             if not hide_text:
@@ -3501,14 +3572,14 @@ class LinghuiStudioPlugin(Star):
                 summary = f"\n📊 多版本生成完成: 成功 {results['success']}/{count} 张 | 剩余: {quota_str}"
                 if guard.skipped:
                     summary += f"\n⏹️ 跳过 {guard.skipped} 张（{self._batch_policy_hint()}），已退回对应次数"
-                await event.send(event.chain_result([Plain(summary)]))
+                await self._send_task_notice(event, summary)
             return results
 
         except Exception as e:
             logger.error(f"Batch image-to-image task error: {e}")
             final_error = self._resolve_debug_error_message(e, "这次没弄好，请稍后再试。")
             if (not suppress_user_error) or self._should_show_debug_errors():
-                await event.send(event.chain_result([Plain(f"多版本处理出了点状况: {final_error}")]))
+                await self._send_task_notice(event, f"多版本处理出了点状况: {final_error}")
             return {"success": 0, "fail": count, "errors": [final_error]}
 
     # ================= LLM 工具调用 (Tool Calling) =================
@@ -4249,7 +4320,7 @@ class LinghuiStudioPlugin(Star):
 
             quota_str = self._get_quota_str(deduction, uid, gid)
             timing_text = self._format_success_timing(elapsed)
-            info = f"\n✅ 生成成功 ({timing_text}) | 预设: {preset_name} | 剩余: {quota_str}"
+            info = f"\n{self._requester_prefix_text(event)}✅ 生成成功 ({timing_text}) | 预设: {preset_name} | 剩余: {quota_str}"
             if self.conf.get("show_model_info", False):
                 info += f" | {model}"
             record_id = str(record.get("id", "") or "") if record else ""
@@ -4274,14 +4345,14 @@ class LinghuiStudioPlugin(Star):
                     status="send_failed",
                     delivery_status="failed",
                 )
-                yield event.chain_result([Plain("图片已经做好并缓存，但这次发送失败了，可以到 Dashboard 任务中心重发。")])
+                yield event.chain_result(self._notice_nodes(event, "图片已经做好并缓存，但这次发送失败了，可以到 Dashboard 任务中心重发。"))
         else:
             if charged:
                 await self._refund_quota(deduction, uid, gid, cost)
             await self.task_mgr.finish_failure(
                 task_id, res, metrics=self._snapshot_generation_route_metrics()
             )
-            yield event.chain_result([Plain(f"没弄好: {self._resolve_debug_error_message(res, '这次没弄好，请稍后再试。')}")])
+            yield event.chain_result(self._notice_nodes(event, f"没弄好: {self._resolve_debug_error_message(res, '这次没弄好，请稍后再试。')}"))
 
     @filter.command("文生图", prefix_optional=True)
     @_direct_command_only
@@ -5856,7 +5927,7 @@ class LinghuiStudioPlugin(Star):
         if not err_text:
             return default_msg
 
-        translated = self._translate_error_to_chinese(err_text, default_msg=default_msg)
+        translated = self._translate_error_reason(err_text, default_msg=default_msg)
 
         unsafe_keywords = [
             "traceback", "exception", "stack", "context", "attributeerror",
@@ -5910,6 +5981,16 @@ class LinghuiStudioPlugin(Star):
             await self._cleanup_temp_file(tmp_path)
 
     def _translate_error_to_chinese(self, error: str, default_msg: str = "这边刚才有点小问题，稍后再试试。") -> str:
+        """把错误翻译成人话；调试模式下再追加一段已脱敏的上游细节。"""
+        translated = self._translate_error_reason(error, default_msg=default_msg)
+        if not self._should_show_debug_errors():
+            return translated
+        detail = debug_error_detail(error, 240)
+        if not detail or detail == translated:
+            return translated
+        return f"{translated}（{detail}）"
+
+    def _translate_error_reason(self, error: str, default_msg: str = "这边刚才有点小问题，稍后再试试。") -> str:
         """将错误信息翻译为中文"""
         error_lower = str(error).lower()
 
@@ -6021,7 +6102,7 @@ class LinghuiStudioPlugin(Star):
                 if not hide_text:
                     # 构建成功文案
                     timing_text = self._format_success_timing(elapsed)
-                    info_text = f"\n✅ [{task_index}/{total_tasks}] 生成成功 ({timing_text}) | 预设: {preset_name}"
+                    info_text = f"\n{self._requester_prefix_text(event)}✅ [{task_index}/{total_tasks}] 生成成功 ({timing_text}) | 预设: {preset_name}"
                     if extra_rules:
                         info_text += f" | 规则: {extra_rules[:15]}..."
                     chain_nodes.append(Plain(info_text))
@@ -6330,9 +6411,7 @@ class LinghuiStudioPlugin(Star):
                         )
                         # 发送单条失败提示（仅调试模式显示）
                         if self._should_show_debug_errors():
-                            await event.send(event.chain_result([
-                                Plain(f"第 {i}/{total_images} 张没弄好: {error_msg}")
-                            ]))
+                            await self._send_task_notice(event, f"第 {i}/{total_images} 张没弄好: {error_msg}")
                         continue
 
                     # 处理单张图片（带重试机制）
@@ -6402,10 +6481,9 @@ class LinghuiStudioPlugin(Star):
                         retry_count += 1
                         if retry_count <= max_retries:
                             if self._should_show_debug_errors():
-                                await event.send(event.chain_result([
-                                    Plain(
-                                        f"⚠️ 第 {i}/{total_images} 张图片生成失败 ({error_msg})\n⏳ 正在进行第 {retry_count} 次重试...")
-                                ]))
+                                await self._send_task_notice(
+                                    event,
+                                    f"⚠️ 第 {i}/{total_images} 张图片生成失败 ({error_msg})\n⏳ 正在进行第 {retry_count} 次重试...")
                             await asyncio.sleep(1.5)
 
                     if success:
@@ -6419,9 +6497,7 @@ class LinghuiStudioPlugin(Star):
                         })
                         # 发送单条失败提示（仅调试模式显示）
                         if self._should_show_debug_errors():
-                            await event.send(event.chain_result([
-                                Plain(f"第 {i}/{total_images} 张最终没弄好: {error_msg}")
-                            ]))
+                            await self._send_task_notice(event, f"第 {i}/{total_images} 张最终没弄好: {error_msg}")
 
                     await self._update_session_task_progress(
                         event.unified_msg_origin, current=i, success=success_count, fail=fail_count
@@ -6444,9 +6520,7 @@ class LinghuiStudioPlugin(Star):
                         event.unified_msg_origin, current=i, success=success_count, fail=fail_count
                     )
                     if self._should_show_debug_errors():
-                        await event.send(event.chain_result([
-                            Plain(f"第 {i}/{total_images} 张出了点问题: {error_msg}")
-                        ]))
+                        await self._send_task_notice(event, f"第 {i}/{total_images} 张出了点问题: {error_msg}")
 
             if output_as_pdf:
                 if pdf_result_images:
@@ -6463,16 +6537,16 @@ class LinghuiStudioPlugin(Star):
                             with open(tmp_path, "wb") as f:
                                 f.write(pdf_bytes_result)
                             await event.send(event.chain_result([File(name=filename, file=tmp_path)]))
-                            await event.send(event.chain_result([Plain("这批图我已经先整理成册发你了。")]))
+                            await self._send_task_notice(event, "这批图我已经先整理成册发你了。")
                             # 打包成功后清除缓存，防止旧图污染下次打包
                             await self._clear_session_image_cache(event.unified_msg_origin)
                     except Exception as e:
                         logger.error(f"打包 PDF 失败: {e}")
                         if self._should_show_debug_errors():
-                            await event.send(event.chain_result([Plain(f"PDF 打包出了点问题: {e}")]))
+                            await self._send_task_notice(event, f"PDF 打包出了点问题: {self._public_error_message(e, '打包失败了，请稍后再试。')}")
                 else:
                     if self._should_show_debug_errors():
-                        await event.send(event.chain_result([Plain("抱歉，这批图都没弄好，打包不了 PDF。")]))
+                        await self._send_task_notice(event, "抱歉，这批图都没弄好，打包不了 PDF。")
             elif self._get_conf_bool("llm_show_progress", True):
                 summary = "这批图我先整理完了，能发出来的都已经给你了。"
                 await event.send(event.chain_result([Plain(summary)]))
@@ -6652,9 +6726,7 @@ class LinghuiStudioPlugin(Star):
                             event.unified_msg_origin, current=index, success=results["success"], fail=results["fail"]
                         )
                         if self._should_show_debug_errors():
-                            await event.send(event.chain_result([
-                                Plain(f"第 {index}/{total_images} 张没弄好: {error_msg}")
-                            ]))
+                            await self._send_task_notice(event, f"第 {index}/{total_images} 张没弄好: {error_msg}")
                         return
 
                     # 处理单张图片（带重试机制）
@@ -6722,10 +6794,9 @@ class LinghuiStudioPlugin(Star):
                         retry_count += 1
                         if retry_count <= max_retries:
                             if self._should_show_debug_errors():
-                                await event.send(event.chain_result([
-                                    Plain(
-                                        f"⚠️ 第 {index}/{total_images} 张图片生成失败 ({error_msg})\n⏳ 正在进行第 {retry_count} 次重试...")
-                                ]))
+                                await self._send_task_notice(
+                                    event,
+                                    f"⚠️ 第 {index}/{total_images} 张图片生成失败 ({error_msg})\n⏳ 正在进行第 {retry_count} 次重试...")
                             await asyncio.sleep(1.5)
 
                     async with results_lock:
@@ -6740,9 +6811,7 @@ class LinghuiStudioPlugin(Star):
                             })
                             await guard.note_failure(error_msg)
                             if self._should_show_debug_errors():
-                                await event.send(event.chain_result([
-                                    Plain(f"第 {index}/{total_images} 张最终没弄好: {error_msg}")
-                                ]))
+                                await self._send_task_notice(event, f"第 {index}/{total_images} 张最终没弄好: {error_msg}")
                         await self._update_session_task_progress(
                             event.unified_msg_origin, current=index, success=results["success"], fail=results["fail"]
                         )
@@ -6762,9 +6831,7 @@ class LinghuiStudioPlugin(Star):
                         event.unified_msg_origin, current=index, success=results["success"], fail=results["fail"]
                     )
                     if self._should_show_debug_errors():
-                        await event.send(event.chain_result([
-                            Plain(f"第 {index}/{total_images} 张出了点问题: {error_msg}")
-                        ]))
+                        await self._send_task_notice(event, f"第 {index}/{total_images} 张出了点问题: {error_msg}")
 
         async def process_all():
             # 创建所有任务
@@ -6779,7 +6846,7 @@ class LinghuiStudioPlugin(Star):
             guard_note = await self._finalize_batch_guard(guard, deduction, uid, gid)
             results["skipped"] = guard.skipped
             if guard_note and self._should_show_debug_errors():
-                await event.send(event.chain_result([Plain(f"⏹️ {guard_note}")]))
+                await self._send_task_notice(event, f"⏹️ {guard_note}")
 
             if output_as_pdf:
                 if pdf_result_images_dict:
@@ -6800,18 +6867,16 @@ class LinghuiStudioPlugin(Star):
                                 f.write(pdf_bytes_result)
                             await event.send(event.chain_result([File(name=filename, file=tmp_path)]))
 
-                            await event.send(event.chain_result([
-                                Plain(f"这批图我已经整理成册发你了，共 {results['success']} 张。")
-                            ]))
+                            await self._send_task_notice(event, f"这批图我已经整理成册发你了，共 {results['success']} 张。")
                             # 打包成功后清除缓存，防止旧图污染下次打包
                             await self._clear_session_image_cache(event.unified_msg_origin)
                     except Exception as e:
                         logger.error(f"打包 PDF 失败: {e}")
                         if self._should_show_debug_errors():
-                            await event.send(event.chain_result([Plain(f"PDF 打包出了点问题: {e}")]))
+                            await self._send_task_notice(event, f"PDF 打包出了点问题: {self._public_error_message(e, '打包失败了，请稍后再试。')}")
                 else:
                     if self._should_show_debug_errors():
-                        await event.send(event.chain_result([Plain("抱歉，这批图都没弄好，打包不了 PDF。")]))
+                        await self._send_task_notice(event, "抱歉，这批图都没弄好，打包不了 PDF。")
             elif self._get_conf_bool("llm_show_progress", True):
                 # 发送完成汇总
                 summary = "这批图我先整理完了，能发出来的都已经给你了。"
@@ -7215,13 +7280,13 @@ class LinghuiStudioPlugin(Star):
 
             quota_str = self._get_quota_str(deduction, uid, gid)
             timing_text = self._format_success_timing(elapsed)
-            info = f"\n✅ 生成成功 ({timing_text})"
+            info = f"\n{self._requester_prefix_text(event)}✅ 生成成功 ({timing_text})"
             if scene_name:
                 info += f" | 场景: {scene_name}"
             info += f" | 剩余: {quota_str}"
-            yield event.chain_result([Image.fromBytes(res), Plain(info)])
+            yield event.chain_result(self._requester_prefix_nodes(event) + [Image.fromBytes(res), Plain(info)])
         else:
-            yield event.chain_result([Plain(f"没弄好: {self._resolve_debug_error_message(res, '这次没弄好，请稍后再试。')}")])
+            yield event.chain_result(self._notice_nodes(event, f"没弄好: {self._resolve_debug_error_message(res, '这次没弄好，请稍后再试。')}"))
 
     @filter.command("人设参考图添加", alias={"添加人设图"}, prefix_optional=True)
     @_direct_command_only
@@ -7488,9 +7553,7 @@ class LinghuiStudioPlugin(Star):
                                 "url_preview": url[:50] + "..." if len(url) > 50 else url
                             })
                             await guard.note_failure(error_msg)
-                        await event.send(event.chain_result([
-                            Plain(f"第 {index}/{total_images} 张没弄好: {error_msg}")
-                        ]))
+                        await self._send_task_notice(event, f"第 {index}/{total_images} 张没弄好: {error_msg}")
                         return
 
                     # 处理单张图片（带重试机制）
@@ -7518,10 +7581,9 @@ class LinghuiStudioPlugin(Star):
 
                         retry_count += 1
                         if retry_count <= max_retries:
-                            await event.send(event.chain_result([
-                                Plain(
-                                    f"⚠️ 第 {index}/{total_images} 张图片生成失败 ({error_msg})\n⏳ 正在进行第 {retry_count} 次重试...")
-                            ]))
+                            await self._send_task_notice(
+                                event,
+                                f"⚠️ 第 {index}/{total_images} 张图片生成失败 ({error_msg})\n⏳ 正在进行第 {retry_count} 次重试...")
                             await asyncio.sleep(1.5)
 
                     async with results_lock:
@@ -7535,9 +7597,7 @@ class LinghuiStudioPlugin(Star):
                                 "url_preview": url[:50] + "..." if len(url) > 50 else url
                             })
                             await guard.note_failure(error_msg)
-                            await event.send(event.chain_result([
-                                Plain(f"第 {index}/{total_images} 张最终没弄好: {error_msg}")
-                            ]))
+                            await self._send_task_notice(event, f"第 {index}/{total_images} 张最终没弄好: {error_msg}")
 
                 except Exception as e:
                     error_msg = self._resolve_debug_error_message(e, "这次没弄好，请稍后再试。")
@@ -7550,9 +7610,7 @@ class LinghuiStudioPlugin(Star):
                             "url_preview": url[:50] + "..." if len(url) > 50 else url
                         })
                         await guard.note_failure(error_msg)
-                    await event.send(event.chain_result([
-                        Plain(f"第 {index}/{total_images} 张出了点问题: {error_msg}")
-                    ]))
+                    await self._send_task_notice(event, f"第 {index}/{total_images} 张出了点问题: {error_msg}")
 
         async def process_all():
             tasks = [process_single(i, url) for i, url in enumerate(all_image_urls, 1)]
@@ -7577,7 +7635,7 @@ class LinghuiStudioPlugin(Star):
                 if len(failed_details) > 5:
                     summary += f"\n  ... 还有 {len(failed_details) - 5} 张失败"
 
-            await event.send(event.chain_result([Plain(summary)]))
+            await self._send_task_notice(event, summary)
 
         # 启动异步任务
         asyncio.create_task(process_all())

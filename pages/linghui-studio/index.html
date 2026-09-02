@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>灵绘工坊</title>
     <link rel="icon" type="image/svg+xml" href="./assets/linghui-logo.svg" />
-    <link rel="stylesheet" href="./style.css?v=3.8.5" />
+    <link rel="stylesheet" href="./style.css?v=3.8.6" />
   </head>
   <body>
     <main class="shell">
@@ -329,6 +329,13 @@
             </div>
           </section>
           <section class="section-block narrow">
+            <div class="section-heading"><div><h2>报错提示与请求者标注</h2><p>人多的群里用来看清上游到底报了什么，以及每条结果和报错分别属于谁。</p></div></div>
+            <div class="form-grid">
+              <label class="toggle-field"><input id="debug-mode" type="checkbox" /><span class="toggle-copy"><span>向用户显示上游错误详情</span><small class="field-hint">失败提示会附带上游状态码与报错正文；接口地址、主机名和 API Key 会自动替换成 ***，不会暴露你接的是哪家服务。</small></span></label>
+              <label class="field"><span>群聊结果标注请求者</span><select id="requester-tag-mode"><option value="off">不标注</option><option value="name">标注昵称与 QQ 号</option><option value="at">标注并 @ 请求者</option></select><small class="field-hint">多人抢着生图时用来分清归属：结果图、成功信息、排队进度和各类报错都会带上标注。私聊不标注；昵称只用于显示，识别始终按 QQ 号。</small></label>
+            </div>
+          </section>
+          <section class="section-block narrow">
             <div class="section-heading"><div><h2>响应解析与批量策略</h2><p>兼容返回格式不标准的上游。若某个渠道总是“成功但没图”，可以在这里放宽解析条件。</p></div></div>
             <div class="form-grid">
               <label class="toggle-field"><input id="enable-binary-image-response" type="checkbox" /><span class="toggle-copy"><span>接受裸图片二进制响应</span><small class="field-hint">上游直接返回 PNG/JPEG/WebP 字节流（而非 JSON）时也识别为成功。建议保持开启。</small></span></label>
@@ -355,7 +362,7 @@
         <div class="statusbar-right">
           <span id="status-dispatch" class="status-dispatch" title="当前主渠道">调度 · 读取中</span>
           <span id="status-breadcrumb" class="status-breadcrumb">概览</span>
-          <span id="status-version" class="status-version" title="灵绘工坊插件版本">灵绘 · v3.8.5</span>
+          <span id="status-version" class="status-version" title="灵绘工坊插件版本">灵绘 · v3.8.6</span>
         </div>
       </footer>
     </main>
@@ -371,6 +378,6 @@
       </section>
     </dialog>
     <div id="toast" class="toast" role="status"></div>
-    <script type="module" src="./app.js?v=3.8.5"></script>
+    <script type="module" src="./app.js?v=3.8.6"></script>
   </body>
 </html>

@@ -271,7 +271,7 @@ function updateStatusBar() {
   }
   const versionTarget = byId("status-version");
   if (versionTarget) {
-    versionTarget.textContent = `灵绘 · v${config.plugin_version || "3.8.5"}`;
+    versionTarget.textContent = `灵绘 · v${config.plugin_version || "3.8.6"}`;
   }
 }
 
@@ -1559,6 +1559,8 @@ function hydrateFields() {
   byId("default-timeout").value = settings.timeout ?? 120;
   byId("generation-cache-retention").value = settings.generation_cache_retention_days ?? 7;
   byId("show-model-info").checked = bool(settings.show_model_info);
+  byId("debug-mode").checked = bool(settings.debug_mode);
+  byId("requester-tag-mode").value = settings.requester_tag_mode || "name";
   byId("enable-preset-refs").checked = bool(settings.enable_preset_ref_images);
   byId("enable-binary-image-response").checked = bool(settings.enable_binary_image_response);
   byId("enable-bare-base64-response").checked = bool(settings.enable_bare_base64_response);
@@ -1626,6 +1628,8 @@ function buildPayload() {
       timeout: Number(value("default-timeout")) || 120,
       generation_cache_retention_days: Number(value("generation-cache-retention")) || 7,
       show_model_info: checked("show-model-info"),
+      debug_mode: checked("debug-mode"),
+      requester_tag_mode: value("requester-tag-mode"),
       enable_preset_ref_images: checked("enable-preset-refs"),
       enable_persona_mode: checked("enable-persona"),
       enable_binary_image_response: checked("enable-binary-image-response"),

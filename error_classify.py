@@ -12,6 +12,48 @@ _STATUS_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Upstream endpoints must never reach a chat window, even when administrators
+# turn on verbose error reporting.  Only the host part is hidden so that the
+# status code, provider payload and request path stay readable for triage.
+_SCHEME_HOST_RE = re.compile(r"(?i)\b(https?://)[^/\s\"'`)\]}>,;|]*")
+_CONNECT_HOST_RE = re.compile(r"(?i)(cannot connect to host\s+)([A-Za-z0-9._-]+)")
+_IPV4_PORT_RE = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}:\d{2,5}(?![\w.])")
+_ENDPOINT_MARKER_RE = re.compile(
+    r"(?i)\b((?:base[_-]?url|endpoints?|hostnames?|hosts?|urls?)\s*[:=]\s*[\"']?)"
+    r"(?!\*\*\*|https?://)"
+    r"([A-Za-z0-9._~-]*[A-Za-z0-9]\.[A-Za-z0-9._~-]*[A-Za-z0-9](?::\d{2,5})?)"
+)
+_BARE_HOST_RE = re.compile(
+    r"(?<![\w.@/-])((?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+([A-Za-z]{2,24}))\b"
+)
+
+# Only well-known public suffixes are masked as bare hostnames.  Python module
+# and file suffixes (py, sh, so, md, pl, js, ...) are deliberately excluded so
+# that tracebacks such as "api_manager.py" stay intact.
+_KNOWN_TLDS = frozenset(
+    """
+    com net org io ai co dev app cloud xyz top cn jp us uk de fr ru info biz
+    site online store shop tech space fun live vip pro link host art club wiki
+    one run tv cc gg moe love lol fyi work life world today news blog page zone
+    email chat hk tw sg kr au ca ch nl se no fi dk br mx za tr ua pt ro cz gr
+    hu il ie nz es at be sk
+    """.split()
+)
+
+
+def _mask_bare_host(match: "re.Match[str]") -> str:
+    return "***" if match.group(2).lower() in _KNOWN_TLDS else match.group(0)
+
+
+def redact_endpoints(text: str) -> str:
+    """Hide upstream hosts while keeping the rest of a provider error readable."""
+
+    text = _SCHEME_HOST_RE.sub(r"\1***", text)
+    text = _CONNECT_HOST_RE.sub(r"\1***", text)
+    text = _IPV4_PORT_RE.sub("***", text)
+    text = _ENDPOINT_MARKER_RE.sub(r"\1***", text)
+    return _BARE_HOST_RE.sub(_mask_bare_host, text)
+
 
 @dataclass(frozen=True)
 class GenerationError:
@@ -176,5 +218,29 @@ def safe_error_summary(error: Any, limit: int = 240) -> str:
         r"\1***",
         text,
     )
+    text = redact_endpoints(text)
     text = re.sub(r"\s+", " ", text).strip()
     return text[: max(40, int(limit or 240))]
+
+
+def debug_error_detail(error: Any, limit: int = 480) -> str:
+    """Build the verbose, endpoint-free error text shown when debug mode is on.
+
+    The result keeps the provider's own wording plus the classification label
+    and HTTP status, which is what administrators actually need in order to
+    tell an upstream outage apart from a local misconfiguration.
+    """
+
+    detail = safe_error_summary(error, limit)
+    if not detail:
+        return ""
+
+    classification = classify_generation_error(error)
+    parts = []
+    if classification.label and classification.label not in detail:
+        parts.append(classification.label)
+    if classification.status_code and str(classification.status_code) not in detail:
+        parts.append(f"HTTP {classification.status_code}")
+    if not parts:
+        return detail
+    return f"[{' · '.join(parts)}] {detail}"
