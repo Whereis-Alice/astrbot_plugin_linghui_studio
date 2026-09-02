@@ -28,7 +28,7 @@ from .utils import is_ambiguous_message_delivery_timeout, norm_id, normalize_api
 
 
 PLUGIN_NAME = "astrbot_plugin_linghui_studio"
-PLUGIN_VERSION = "3.8.3"
+PLUGIN_VERSION = "3.8.4"
 DRAWING_CHANNEL_TEMPLATE_KEY = "drawing_channel"
 _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -1367,6 +1367,50 @@ class LinghuiDashboardApi:
             return ""
         return text[5:16].replace("T", " ")
 
+    @staticmethod
+    def _friendly_size(value: Any) -> str:
+        """Render a byte count as a short human-readable size."""
+        try:
+            size = max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return "0 B"
+        units = ("B", "KB", "MB", "GB", "TB")
+        index = 0
+        amount = float(size)
+        while amount >= 1024 and index < len(units) - 1:
+            amount /= 1024
+            index += 1
+        if index == 0:
+            return f"{int(amount)} {units[index]}"
+        return f"{amount:.1f} {units[index]}"
+
+    def _purge_result_message(self, result: Dict[str, Any]) -> str:
+        """Describe one purge run, including the "nothing to purge" case."""
+        removed_records = self._as_int(result.get("removed_records"), 0, 1_000_000)
+        removed_images = self._as_int(result.get("removed_images"), 0, 1_000_000)
+        removed_source_images = self._as_int(result.get("removed_source_images"), 0, 1_000_000)
+        removed_orphans = self._as_int(result.get("removed_orphans"), 0, 1_000_000)
+        failed_records = self._as_int(result.get("failed_records"), 0, 1_000_000)
+        protected_records = self._as_int(result.get("protected_records"), 0, 1_000_000)
+        if not removed_records:
+            if removed_orphans:
+                return f"没有未收藏记录需要清空，顺手删掉了 {removed_orphans} 个没有记录对应的遗留文件。"
+            if protected_records:
+                return f"没有可清空的内容：现有 {protected_records} 条记录都已收藏或锁定，会一直保留。"
+            return "没有可清空的内容：成功记录缓存当前是空的。"
+        parts = [
+            f"已清空 {removed_records} 条未收藏记录（{removed_images} 张结果图、"
+            f"{removed_source_images} 张输入原图），释放 {self._friendly_size(result.get('freed_bytes'))}"
+        ]
+        if removed_orphans:
+            parts.append(f"另清掉 {removed_orphans} 个遗留文件")
+        parts.append(
+            f"保留 {protected_records} 条已收藏或锁定的记录" if protected_records else "当前已没有其他记录"
+        )
+        if failed_records:
+            parts.append(f"{failed_records} 条因文件被占用暂未删除，可稍后重试")
+        return "；".join(parts) + "。"
+
     def _cleanup_idle_message(self, result: Dict[str, Any]) -> str:
         """Explain an empty sweep so "0 removed" does not look like a broken button."""
         retention_days = self._as_int(
@@ -1389,7 +1433,7 @@ class LinghuiDashboardApi:
         return "；".join(parts) + "。"
 
     async def generation_record(self):
-        """Update protection flags, explicitly delete, or clean expired cache records."""
+        """Update protection flags, delete one record, clean expired cache, or purge unprotected records."""
         payload = await self._json_body()
         action = str(payload.get("action", "") or "").strip().lower()
         manager = self.plugin.data_mgr
@@ -1473,6 +1517,36 @@ class LinghuiDashboardApi:
                         "protected_records": self._as_int(result.get("protected_records"), 0, 1_000_000),
                         "oldest_created_at": str(result.get("oldest_created_at", "") or ""),
                         "next_expiry_at": str(result.get("next_expiry_at", "") or ""),
+                    },
+                })
+
+            if action in {"purge", "purge_unprotected"}:
+                if not self._as_bool(payload.get("confirm", False)):
+                    return jsonify({
+                        "success": False,
+                        "message": "需要确认后才会清空未收藏记录。",
+                    }), 400
+                result = await manager.purge_unprotected_generation_history()
+                removed_records = self._as_int(result.get("removed_records"), 0, 1_000_000)
+                removed_orphans = self._as_int(result.get("removed_orphans"), 0, 1_000_000)
+                return jsonify({
+                    "success": True,
+                    "message": self._purge_result_message(result),
+                    "result": {
+                        "removed_records": removed_records,
+                        "removed_images": self._as_int(result.get("removed_images"), 0, 1_000_000),
+                        "removed_previews": self._as_int(result.get("removed_previews"), 0, 1_000_000),
+                        "removed_source_images": self._as_int(result.get("removed_source_images"), 0, 1_000_000),
+                        "removed_source_previews": self._as_int(
+                            result.get("removed_source_previews"), 0, 1_000_000
+                        ),
+                        "removed_orphans": removed_orphans,
+                        "removed_total": removed_records + removed_orphans,
+                        "failed_records": self._as_int(result.get("failed_records"), 0, 1_000_000),
+                        "freed_bytes": self._as_int(result.get("freed_bytes"), 0, 1_000_000_000_000),
+                        "remaining_records": self._as_int(result.get("remaining_records"), 0, 1_000_000),
+                        "remaining_bytes": self._as_int(result.get("remaining_bytes"), 0, 1_000_000_000_000),
+                        "protected_records": self._as_int(result.get("protected_records"), 0, 1_000_000),
                     },
                 })
 

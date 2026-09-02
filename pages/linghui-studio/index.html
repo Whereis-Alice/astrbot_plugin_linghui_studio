@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>灵绘工坊</title>
     <link rel="icon" type="image/svg+xml" href="./assets/linghui-logo.svg" />
-    <link rel="stylesheet" href="./style.css?v=3.8.3" />
+    <link rel="stylesheet" href="./style.css?v=3.8.4" />
   </head>
   <body>
     <main class="shell">
@@ -123,6 +123,7 @@
               </div>
               <button id="history-refresh" class="quiet-action">刷新</button>
               <button id="history-cleanup" class="danger-action">清理过期</button>
+              <button id="history-purge" class="danger-action" type="button">清空未收藏</button>
             </div>
           </div>
           <div id="generation-history-list" class="generation-history-list"></div>
@@ -344,7 +345,7 @@
         <div class="statusbar-right">
           <span id="status-dispatch" class="status-dispatch" title="当前主渠道">调度 · 读取中</span>
           <span id="status-breadcrumb" class="status-breadcrumb">概览</span>
-          <span id="status-version" class="status-version" title="灵绘工坊插件版本">灵绘 · v3.8.3</span>
+          <span id="status-version" class="status-version" title="灵绘工坊插件版本">灵绘 · v3.8.4</span>
         </div>
       </footer>
     </main>
@@ -360,6 +361,6 @@
       </section>
     </dialog>
     <div id="toast" class="toast" role="status"></div>
-    <script type="module" src="./app.js?v=3.8.3"></script>
+    <script type="module" src="./app.js?v=3.8.4"></script>
   </body>
 </html>

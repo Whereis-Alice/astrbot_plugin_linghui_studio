@@ -269,7 +269,7 @@ function updateStatusBar() {
   }
   const versionTarget = byId("status-version");
   if (versionTarget) {
-    versionTarget.textContent = `灵绘 · v${config.plugin_version || "3.8.3"}`;
+    versionTarget.textContent = `灵绘 · v${config.plugin_version || "3.8.4"}`;
   }
 }
 
@@ -959,6 +959,18 @@ function renderGenerationHistory() {
     const cleanupHint = `清理超过 ${retentionDays} 天且未收藏、未锁定的缓存；没有到期内容时不会删除任何东西`;
     cleanupButton.title = cleanupHint;
     cleanupButton.setAttribute("aria-label", cleanupHint);
+  }
+  const purgeButton = byId("history-purge");
+  if (purgeButton) {
+    const protectedRecords = Math.max(0, Number(summary.protected) || 0);
+    const removable = Math.max(0, (Number(summary.total) || 0) - protectedRecords);
+    purgeButton.hidden = favoriteOnly;
+    purgeButton.disabled = removable <= 0;
+    const purgeHint = removable > 0
+      ? `删除全部 ${removable} 条未收藏、未锁定的记录及其图片，已收藏或锁定的 ${protectedRecords} 条保留；不受当前筛选影响`
+      : "现在没有可清空的未收藏记录";
+    purgeButton.title = purgeHint;
+    purgeButton.setAttribute("aria-label", purgeHint);
   }
   document.querySelectorAll("[data-history-mode]").forEach((button) => {
     const selected = button.dataset.historyMode === mode;
@@ -1796,6 +1808,37 @@ async function cleanupGenerationHistory() {
   await loadGenerationHistory(0);
 }
 
+async function purgeGenerationHistory() {
+  const summary = state.history?.summary || {};
+  const protectedRecords = Math.max(0, Number(summary.protected) || 0);
+  const removable = Math.max(0, (Number(summary.total) || 0) - protectedRecords);
+  if (removable <= 0) {
+    showToast(protectedRecords > 0 ? "现有记录都已收藏或锁定，没有可清空的内容" : "现在没有成功记录，无需清空");
+    return;
+  }
+  const filtered = Boolean(state.historyGroupId || state.historyUserId || (state.historyMode && state.historyMode !== "all"));
+  const message = [
+    `会删除全部 ${removable} 条未收藏、未锁定的记录，连同它们的结果图和输入原图。`,
+    protectedRecords > 0 ? `已收藏或锁定的 ${protectedRecords} 条会完整保留。` : "",
+    filtered ? "当前筛选不影响清空范围，所有会话的未收藏记录都会被删除。" : "",
+    "该操作不可撤销。",
+  ].filter(Boolean).join("");
+  if (!await confirmAction({
+    title: "清空未收藏记录",
+    message,
+    confirmLabel: `清空 ${removable} 条`,
+  })) return;
+  const response = await bridge.apiPost("generation_record", { action: "purge_unprotected", confirm: true });
+  if (!response?.success) throw new Error(response?.message || "清空未收藏记录失败");
+  showToast(response.message || "未收藏记录已清空");
+  state.generationPreviewCache.clear();
+  state.generationPromptCache.clear();
+  state.generationSourceCache.clear();
+  state.generationSourcePreviewCache.clear();
+  invalidateGenerationHistoryCache();
+  await loadGenerationHistory(0);
+}
+
 async function loadConfig() {
   setSaveState("正在加载...");
   invalidateGenerationHistoryCache();
@@ -1962,6 +2005,7 @@ document.addEventListener("click", async (event) => {
       return;
     }
     if (event.target.closest("#history-cleanup")) { await cleanupGenerationHistory(); return; }
+    if (event.target.closest("#history-purge")) { await purgeGenerationHistory(); return; }
     if (event.target.closest("#history-prev")) {
       const offset = Math.max(0, Number(state.history?.pagination?.offset) || 0);
       await loadGenerationHistory(Math.max(0, offset - HISTORY_PAGE_SIZE));

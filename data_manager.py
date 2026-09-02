@@ -1259,6 +1259,76 @@ class DataManager:
                 continue
         return total
 
+    def _known_generation_cache_names(self, records: List[Dict[str, Any]]) -> Dict[str, set]:
+        """Collect every cache filename that the given records still reference."""
+        outputs: set = set()
+        previews: set = set()
+        sources: set = set()
+        source_previews: set = set()
+        for record in records:
+            filename = str(record.get("filename", "") or "")
+            if filename:
+                outputs.add(filename)
+            entries = self._generation_source_entries(record)
+            for source in entries:
+                source_name = str(source.get("filename", "") or "")
+                if source_name:
+                    sources.add(source_name)
+            record_id = str(record.get("id", "") or "").strip()
+            if not record_id or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", record_id):
+                continue
+            previews.add(f"{record_id}.jpg")
+            for source_index in range(1, len(entries) + 1):
+                source_previews.add(f"{record_id}_{source_index:03d}.jpg")
+        return {
+            "outputs": outputs,
+            "previews": previews,
+            "sources": sources,
+            "source_previews": source_previews,
+        }
+
+    async def _sweep_unreferenced_cache_files(
+            self,
+            known: Dict[str, set],
+            cutoff: Optional[datetime] = None,
+    ) -> Dict[str, int]:
+        """Delete cache files no record points at; cutoff=None ignores file age."""
+        counters = {"orphans": 0, "previews": 0, "source_previews": 0}
+        targets = (
+            (self.generation_cache_dir, known.get("outputs", set()), "orphans", "orphaned cache file"),
+            (
+                self.generation_preview_cache_dir,
+                known.get("previews", set()),
+                "previews",
+                "orphaned generation preview",
+            ),
+            (self.generation_source_cache_dir, known.get("sources", set()), "orphans", "orphaned input cache"),
+            (
+                self.generation_source_preview_cache_dir,
+                known.get("source_previews", set()),
+                "source_previews",
+                "orphaned input preview",
+            ),
+        )
+        for directory, keep_names, counter_key, label in targets:
+            try:
+                cache_entries = list(directory.iterdir())
+            except OSError:
+                continue
+            for path in cache_entries:
+                if not path.is_file() or path.name in keep_names:
+                    continue
+                try:
+                    if cutoff is not None and datetime.fromtimestamp(path.stat().st_mtime) >= cutoff:
+                        continue
+                    await asyncio.to_thread(path.unlink)
+                    counters[counter_key] += 1
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    logger.warning("Linghui could not clean %s %s: %s", label, path.name, exc)
+        return counters
+
     async def cleanup_generation_cache(
             self,
             retention_days: int = 7,
@@ -1378,90 +1448,11 @@ class DataManager:
 
             history_changed = len(retained) != len(self.generation_history)
             self.generation_history = retained
-            known_files = {str(record.get("filename", "")) for record in retained}
-            known_preview_files = {
-                f"{record_id}.jpg"
-                for record in retained
-                if (record_id := str(record.get("id", "") or "").strip())
-                and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", record_id)
-            }
-            known_source_files = {
-                str(source.get("filename", ""))
-                for record in retained
-                for source in self._generation_source_entries(record)
-                if str(source.get("filename", ""))
-            }
-            known_source_preview_files = {
-                f"{record_id}_{source_index:03d}.jpg"
-                for record in retained
-                if (record_id := str(record.get("id", "") or "").strip())
-                and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", record_id)
-                for source_index in range(1, len(self._generation_source_entries(record)) + 1)
-            }
-
-            try:
-                cache_files = list(self.generation_cache_dir.iterdir())
-            except OSError:
-                cache_files = []
-            for path in cache_files:
-                if not path.is_file() or path.name in known_files:
-                    continue
-                try:
-                    if datetime.fromtimestamp(path.stat().st_mtime) < cutoff:
-                        await asyncio.to_thread(path.unlink)
-                        removed_orphans += 1
-                except FileNotFoundError:
-                    continue
-                except OSError as exc:
-                    logger.warning("Linghui could not clean orphaned cache file %s: %s", path.name, exc)
-
-            try:
-                preview_files = list(self.generation_preview_cache_dir.iterdir())
-            except OSError:
-                preview_files = []
-            for path in preview_files:
-                if not path.is_file() or path.name in known_preview_files:
-                    continue
-                try:
-                    if datetime.fromtimestamp(path.stat().st_mtime) < cutoff:
-                        await asyncio.to_thread(path.unlink)
-                        removed_previews += 1
-                except FileNotFoundError:
-                    continue
-                except OSError as exc:
-                    logger.warning("Linghui could not clean orphaned generation preview %s: %s", path.name, exc)
-
-            try:
-                source_files = list(self.generation_source_cache_dir.iterdir())
-            except OSError:
-                source_files = []
-            for path in source_files:
-                if not path.is_file() or path.name in known_source_files:
-                    continue
-                try:
-                    if datetime.fromtimestamp(path.stat().st_mtime) < cutoff:
-                        await asyncio.to_thread(path.unlink)
-                        removed_orphans += 1
-                except FileNotFoundError:
-                    continue
-                except OSError as exc:
-                    logger.warning("Linghui could not clean orphaned input cache %s: %s", path.name, exc)
-
-            try:
-                source_preview_files = list(self.generation_source_preview_cache_dir.iterdir())
-            except OSError:
-                source_preview_files = []
-            for path in source_preview_files:
-                if not path.is_file() or path.name in known_source_preview_files:
-                    continue
-                try:
-                    if datetime.fromtimestamp(path.stat().st_mtime) < cutoff:
-                        await asyncio.to_thread(path.unlink)
-                        removed_source_previews += 1
-                except FileNotFoundError:
-                    continue
-                except OSError as exc:
-                    logger.warning("Linghui could not clean orphaned input preview %s: %s", path.name, exc)
+            known_cache_names = self._known_generation_cache_names(retained)
+            sweep = await self._sweep_unreferenced_cache_files(known_cache_names, cutoff)
+            removed_orphans += sweep["orphans"]
+            removed_previews += sweep["previews"]
+            removed_source_previews += sweep["source_previews"]
 
             if history_changed:
                 self._invalidate_generation_history_summary_locked()
@@ -1503,6 +1494,91 @@ class DataManager:
             "protected_records": protected_records,
             "oldest_created_at": oldest_iso,
             "next_expiry_at": next_expiry_iso,
+        }
+
+    async def purge_unprotected_generation_history(self) -> Dict[str, int]:
+        """Drop every record that is neither favorited nor locked, ignoring the retention window."""
+        removed_records = 0
+        removed_images = 0
+        removed_previews = 0
+        removed_source_images = 0
+        removed_source_previews = 0
+        removed_orphans = 0
+        failed_records = 0
+        freed_bytes = 0
+        async with self._state_lock:
+            total_before = len(self.generation_history)
+            retained: List[Dict[str, Any]] = []
+            for record in self.generation_history:
+                if self._history_bool(record.get("favorite", False)) or self._history_bool(
+                        record.get("locked", False)):
+                    retained.append(record)
+                    continue
+                artifact_bytes = self._generation_record_artifact_size(record)
+                path = self.get_generation_image_path(record)
+                if path is not None:
+                    try:
+                        await asyncio.to_thread(path.unlink)
+                        removed_images += 1
+                    except FileNotFoundError:
+                        pass
+                    except Exception as exc:
+                        logger.warning("Linghui could not purge cached image %s: %s", path.name, exc)
+                        retained.append(record)
+                        failed_records += 1
+                        continue
+                preview_path = self.get_generation_preview_path(record)
+                if preview_path is not None:
+                    try:
+                        await asyncio.to_thread(preview_path.unlink)
+                        removed_previews += 1
+                    except FileNotFoundError:
+                        pass
+                    except Exception as exc:
+                        logger.warning(
+                            "Linghui could not purge generation preview %s: %s", preview_path.name, exc
+                        )
+                source_removed, source_preview_removed = await self._remove_generation_source_artifacts(record)
+                removed_source_images += source_removed
+                removed_source_previews += source_preview_removed
+                removed_records += 1
+                freed_bytes += artifact_bytes
+
+            history_changed = len(retained) != total_before
+            self.generation_history = retained
+            known_cache_names = self._known_generation_cache_names(retained)
+            sweep = await self._sweep_unreferenced_cache_files(known_cache_names)
+            removed_orphans += sweep["orphans"]
+            removed_previews += sweep["previews"]
+            removed_source_previews += sweep["source_previews"]
+
+            if history_changed:
+                self._invalidate_generation_history_summary_locked()
+                await self._save_json(self.generation_history_file, self.generation_history)
+
+            remaining_records = len(retained)
+            remaining_bytes = sum(self._generation_record_artifact_size(record) for record in retained)
+
+        if removed_records or removed_orphans:
+            logger.info(
+                "Linghui purged %s unprotected generation records, kept %s protected ones, freed %.1f MB.",
+                removed_records,
+                remaining_records - failed_records,
+                freed_bytes / 1024 / 1024,
+            )
+        return {
+            "removed_records": removed_records,
+            "removed_images": removed_images,
+            "removed_previews": removed_previews,
+            "removed_source_images": removed_source_images,
+            "removed_source_previews": removed_source_previews,
+            "removed_orphans": removed_orphans,
+            "failed_records": failed_records,
+            "freed_bytes": freed_bytes,
+            "total_before": total_before,
+            "remaining_records": remaining_records,
+            "remaining_bytes": remaining_bytes,
+            "protected_records": max(0, remaining_records - failed_records),
         }
 
     # --- 预设图片管理 ---

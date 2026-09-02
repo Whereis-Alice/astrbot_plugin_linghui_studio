@@ -1201,5 +1201,241 @@ class CleanupFeedbackTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("保留期 21 天", message)
 
 
+class PurgeUnprotectedHistoryTest(unittest.IsolatedAsyncioTestCase):
+    """一键清空未收藏记录：未保护的内容连文件一起删掉，收藏与锁定必须留住。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.DataManager = _load_module("data_manager").DataManager
+        cls.dashboard_module = _load_module("dashboard_api", with_quart=True)
+        cls.DashboardApi = cls.dashboard_module.LinghuiDashboardApi
+
+    @staticmethod
+    def _png_bytes(color=(90, 40, 200)) -> bytes:
+        output = io.BytesIO()
+        Image.new("RGB", (320, 200), color).save(output, "PNG")
+        return output.getvalue()
+
+    @staticmethod
+    def _stored(manager, record_id):
+        return next(item for item in manager.generation_history if item["id"] == record_id)
+
+    async def test_purge_drops_unprotected_records_and_keeps_protected_ones(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.DataManager(pathlib.Path(directory), {})
+            keeper = await manager.save_generation_record(
+                self._png_bytes(),
+                prompt="keep me",
+                user_id="10001",
+                group_id="20002",
+                model="image-model",
+            )
+            locked = await manager.save_generation_record(
+                self._png_bytes((20, 220, 160)),
+                prompt="lock me",
+                user_id="10001",
+                group_id="20002",
+                model="image-model",
+            )
+            doomed = await manager.save_generation_record(
+                self._png_bytes((240, 90, 30)),
+                prompt="drop me",
+                user_id="10002",
+                group_id="20002",
+                model="image-model",
+                task_type="image_to_image",
+                reference_images=[self._png_bytes((250, 250, 40))],
+            )
+            self.assertIsNotNone(keeper)
+            self.assertIsNotNone(locked)
+            self.assertIsNotNone(doomed)
+
+            await manager.update_generation_record_flags(keeper["id"], favorite=True)
+            await manager.update_generation_record_flags(locked["id"], locked=True)
+
+            keeper_path = manager.get_generation_image_path(self._stored(manager, keeper["id"]))
+            locked_path = manager.get_generation_image_path(self._stored(manager, locked["id"]))
+            doomed_record = self._stored(manager, doomed["id"])
+            doomed_path = manager.get_generation_image_path(doomed_record)
+            doomed_preview = await manager.get_or_create_generation_preview(doomed_record)
+            doomed_source = manager.get_generation_source_path(doomed_record, 1)
+            doomed_source_preview = await manager.get_or_create_generation_source_preview(doomed_record, 1)
+            for path in (keeper_path, locked_path, doomed_path, doomed_preview, doomed_source, doomed_source_preview):
+                self.assertIsNotNone(path)
+                self.assertTrue(path.is_file())
+
+            result = await manager.purge_unprotected_generation_history()
+
+            self.assertEqual(result["total_before"], 3)
+            self.assertEqual(result["removed_records"], 1)
+            self.assertEqual(result["removed_images"], 1)
+            self.assertEqual(result["removed_source_images"], 1)
+            self.assertEqual(result["removed_previews"], 1)
+            self.assertEqual(result["removed_source_previews"], 1)
+            self.assertEqual(result["removed_orphans"], 0)
+            self.assertEqual(result["failed_records"], 0)
+            self.assertEqual(result["remaining_records"], 2)
+            self.assertEqual(result["protected_records"], 2)
+            self.assertGreater(result["freed_bytes"], 0)
+            self.assertGreater(result["remaining_bytes"], 0)
+
+            self.assertEqual(
+                sorted(item["id"] for item in manager.generation_history),
+                sorted([keeper["id"], locked["id"]]),
+            )
+            self.assertFalse(doomed_path.exists())
+            self.assertFalse(doomed_preview.exists())
+            self.assertFalse(doomed_source.exists())
+            self.assertFalse(doomed_source_preview.exists())
+            self.assertTrue(keeper_path.is_file())
+            self.assertTrue(locked_path.is_file())
+
+            again = await manager.purge_unprotected_generation_history()
+            self.assertEqual(again["removed_records"], 0)
+            self.assertEqual(again["removed_orphans"], 0)
+            self.assertEqual(again["protected_records"], 2)
+            self.assertEqual(len(manager.generation_history), 2)
+
+    async def test_purge_sweeps_leftover_files_regardless_of_age(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.DataManager(pathlib.Path(directory), {})
+            record = await manager.save_generation_record(
+                self._png_bytes(),
+                prompt="locked record",
+                user_id="10001",
+                model="image-model",
+            )
+            await manager.update_generation_record_flags(record["id"], locked=True)
+
+            stray_output = manager.generation_cache_dir / "stray_output.png"
+            stray_output.write_bytes(self._png_bytes((5, 5, 5)))
+            stray_preview = manager.generation_preview_cache_dir / "stray_preview.jpg"
+            stray_preview.write_bytes(b"leftover-preview")
+            stray_source = manager.generation_source_cache_dir / "stray_source.png"
+            stray_source.write_bytes(self._png_bytes((7, 7, 7)))
+            stray_source_preview = manager.generation_source_preview_cache_dir / "stray_source_preview.jpg"
+            stray_source_preview.write_bytes(b"leftover-preview")
+
+            result = await manager.purge_unprotected_generation_history()
+
+            self.assertEqual(result["removed_records"], 0)
+            self.assertEqual(result["removed_orphans"], 2)
+            self.assertEqual(result["removed_previews"], 1)
+            self.assertEqual(result["removed_source_previews"], 1)
+            self.assertEqual(result["protected_records"], 1)
+            self.assertFalse(stray_output.exists())
+            self.assertFalse(stray_preview.exists())
+            self.assertFalse(stray_source.exists())
+            self.assertFalse(stray_source_preview.exists())
+            self.assertEqual(len(manager.generation_history), 1)
+            self.assertTrue(manager.get_generation_image_path(manager.generation_history[0]).is_file())
+
+    async def test_purge_endpoint_requires_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.DataManager(pathlib.Path(directory), {})
+            record = await manager.save_generation_record(
+                self._png_bytes(),
+                prompt="temporary record",
+                user_id="10001",
+                group_id="20002",
+                model="image-model",
+            )
+            self.assertIsNotNone(record)
+            plugin = types.SimpleNamespace(
+                conf={"generation_cache_retention_days": 7},
+                data_mgr=manager,
+            )
+            api = self.DashboardApi(plugin)
+
+            async def unconfirmed_body():
+                return {"action": "purge_unprotected"}
+
+            api._json_body = unconfirmed_body
+            payload, status = await api.generation_record()
+            self.assertEqual(status, 400)
+            self.assertFalse(payload["success"])
+            self.assertIn("需要确认", payload["message"])
+            self.assertEqual(len(manager.generation_history), 1)
+
+            async def confirmed_body():
+                return {"action": "purge_unprotected", "confirm": True}
+
+            api._json_body = confirmed_body
+            confirmed = await api.generation_record()
+            self.assertTrue(confirmed["success"])
+            self.assertEqual(confirmed["result"]["removed_records"], 1)
+            self.assertEqual(confirmed["result"]["removed_total"], 1)
+            self.assertEqual(confirmed["result"]["protected_records"], 0)
+            self.assertIn("已清空 1 条未收藏记录", confirmed["message"])
+            self.assertEqual(manager.generation_history, [])
+
+    def _api(self, conf=None):
+        plugin = types.SimpleNamespace(conf=dict(conf or {}))
+        return self.DashboardApi(plugin)
+
+    def test_purge_message_reports_what_was_deleted(self):
+        message = self._api()._purge_result_message({
+            "removed_records": 12,
+            "removed_images": 12,
+            "removed_source_images": 5,
+            "removed_orphans": 3,
+            "failed_records": 0,
+            "freed_bytes": 5 * 1024 * 1024,
+            "protected_records": 4,
+        })
+        self.assertIn("已清空 12 条未收藏记录", message)
+        self.assertIn("12 张结果图", message)
+        self.assertIn("5 张输入原图", message)
+        self.assertIn("5.0 MB", message)
+        self.assertIn("另清掉 3 个遗留文件", message)
+        self.assertIn("保留 4 条已收藏或锁定的记录", message)
+        self.assertTrue(message.endswith("。"))
+
+    def test_purge_message_flags_records_that_could_not_be_deleted(self):
+        message = self._api()._purge_result_message({
+            "removed_records": 2,
+            "removed_images": 2,
+            "removed_source_images": 0,
+            "removed_orphans": 0,
+            "failed_records": 1,
+            "freed_bytes": 900,
+            "protected_records": 0,
+        })
+        self.assertIn("当前已没有其他记录", message)
+        self.assertIn("1 条因文件被占用暂未删除", message)
+        self.assertIn("900 B", message)
+
+    def test_purge_message_explains_each_empty_case(self):
+        api = self._api()
+        orphan_only = api._purge_result_message({"removed_records": 0, "removed_orphans": 6})
+        self.assertIn("没有未收藏记录需要清空", orphan_only)
+        self.assertIn("6 个", orphan_only)
+
+        all_protected = api._purge_result_message({
+            "removed_records": 0,
+            "removed_orphans": 0,
+            "protected_records": 9,
+        })
+        self.assertIn("都已收藏或锁定", all_protected)
+
+        empty = api._purge_result_message({
+            "removed_records": 0,
+            "removed_orphans": 0,
+            "protected_records": 0,
+        })
+        self.assertIn("空的", empty)
+
+    def test_friendly_size_scales_units_and_tolerates_bad_input(self):
+        api = self._api()
+        self.assertEqual(api._friendly_size(0), "0 B")
+        self.assertEqual(api._friendly_size(512), "512 B")
+        self.assertEqual(api._friendly_size(1024), "1.0 KB")
+        self.assertEqual(api._friendly_size(1536), "1.5 KB")
+        self.assertEqual(api._friendly_size(3 * 1024 * 1024), "3.0 MB")
+        self.assertEqual(api._friendly_size(None), "0 B")
+        self.assertEqual(api._friendly_size("bad"), "0 B")
+        self.assertEqual(api._friendly_size(-5), "0 B")
+
+
 if __name__ == "__main__":
     unittest.main()
