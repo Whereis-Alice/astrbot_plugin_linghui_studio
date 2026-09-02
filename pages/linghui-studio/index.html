@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>灵绘工坊</title>
     <link rel="icon" type="image/svg+xml" href="./assets/linghui-logo.svg" />
-    <link rel="stylesheet" href="./style.css?v=3.8.4" />
+    <link rel="stylesheet" href="./style.css?v=3.8.5" />
   </head>
   <body>
     <main class="shell">
@@ -246,7 +246,17 @@
         <section id="tab-prompts" class="tab-pane">
           <div class="two-columns wide-first">
             <section class="section-block">
-              <div class="section-heading"><div><h2>提示词预设</h2><p>默认使用 #&lt;预设名&gt; [追加要求] 调用；命名空间模式请在前面加上配置的命名空间。预设名不能包含冒号。</p></div><button id="add-preset" class="quiet-action">添加预设</button></div>
+              <div class="section-heading"><div><h2>提示词预设</h2><p>默认使用 #&lt;预设名&gt; [追加要求] 调用；命名空间模式请在前面加上配置的命名空间。预设名不能包含冒号。聊天里发 <code>#预设列表</code> 可看图鉴，<code>#预设查看 名称</code> 看完整提示词。</p></div><button id="add-preset" class="quiet-action">添加预设</button></div>
+              <div class="preset-toolbar">
+                <input id="preset-filter" type="search" placeholder="搜索预设名或提示词" autocomplete="off" aria-label="搜索预设" />
+                <div class="preset-source-filter" role="group" aria-label="按来源筛选预设">
+                  <button type="button" class="preset-chip is-active" data-preset-source="all">全部</button>
+                  <button type="button" class="preset-chip" data-preset-source="default">📌 自带</button>
+                  <button type="button" class="preset-chip" data-preset-source="modified">✏️ 改过</button>
+                  <button type="button" class="preset-chip" data-preset-source="custom">✨ 自定义</button>
+                </div>
+                <span id="preset-count" class="preset-count"></span>
+              </div>
               <div id="preset-list" class="preset-list"></div>
             </section>
             <section class="section-block">
@@ -345,7 +355,7 @@
         <div class="statusbar-right">
           <span id="status-dispatch" class="status-dispatch" title="当前主渠道">调度 · 读取中</span>
           <span id="status-breadcrumb" class="status-breadcrumb">概览</span>
-          <span id="status-version" class="status-version" title="灵绘工坊插件版本">灵绘 · v3.8.4</span>
+          <span id="status-version" class="status-version" title="灵绘工坊插件版本">灵绘 · v3.8.5</span>
         </div>
       </footer>
     </main>
@@ -361,6 +371,6 @@
       </section>
     </dialog>
     <div id="toast" class="toast" role="status"></div>
-    <script type="module" src="./app.js?v=3.8.4"></script>
+    <script type="module" src="./app.js?v=3.8.5"></script>
   </body>
 </html>

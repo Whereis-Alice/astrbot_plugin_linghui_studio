@@ -38,6 +38,8 @@ const state = {
   studioPreviewCache: new Map(),
   personaState: {},
   sessionOverrides: {},
+  presetKeyword: "",
+  presetSource: "all",
 };
 
 const THEME_STORAGE_KEY = "linghui-studio-theme";
@@ -269,7 +271,7 @@ function updateStatusBar() {
   }
   const versionTarget = byId("status-version");
   if (versionTarget) {
-    versionTarget.textContent = `灵绘 · v${config.plugin_version || "3.8.4"}`;
+    versionTarget.textContent = `灵绘 · v${config.plugin_version || "3.8.5"}`;
   }
 }
 
@@ -455,20 +457,63 @@ function renderChannels() {
   byId("reference-image-channel").innerHTML = referenceOptions.join("");
 }
 
+const PRESET_SOURCE_BADGES = {
+  default: { icon: "📌", label: "自带", title: "插件出厂自带的预设" },
+  modified: { icon: "✏️", label: "改过", title: "出厂预设，提示词已被修改" },
+  custom: { icon: "✨", label: "自定义", title: "自己新增的预设" },
+};
+
+function presetSourceOf(preset) {
+  const raw = String(preset?.source || "").toLowerCase();
+  return PRESET_SOURCE_BADGES[raw] ? raw : "custom";
+}
+
+// Rows are always rendered so that readPresets() keeps seeing every preset;
+// filtering only toggles visibility, otherwise saving would silently drop
+// whatever the current filter hides.
 function renderPresets() {
   const presets = state.config?.presets || [];
-  byId("preset-list").innerHTML = presets.map((preset, index) => `
-    <div class="preset-row" data-preset-index="${index}">
+  const keyword = String(state.presetKeyword || "").trim().toLowerCase();
+  const wanted = state.presetSource || "all";
+  let visible = 0;
+  const counts = { default: 0, modified: 0, custom: 0 };
+  const markup = presets.map((preset, index) => {
+    const source = presetSourceOf(preset);
+    counts[source] += 1;
+    const badge = PRESET_SOURCE_BADGES[source];
+    const haystack = `${preset.name || ""}\n${preset.prompt || ""}`.toLowerCase();
+    const hidden = (wanted !== "all" && source !== wanted) || (keyword && !haystack.includes(keyword));
+    if (!hidden) visible += 1;
+    return `
+    <div class="preset-row${hidden ? " is-filtered" : ""}" data-preset-index="${index}" data-preset-source="${source}">
+      <span class="preset-badge preset-badge-${source}" title="${escapeHtml(badge.title)}">${badge.icon} ${escapeHtml(badge.label)}</span>
       <input data-preset="name" value="${escapeHtml(preset.name)}" placeholder="预设名" />
       <textarea data-preset="prompt" rows="3" placeholder="提示词">${escapeHtml(preset.prompt)}</textarea>
       <button class="remove-button" type="button" data-remove-preset="${index}" title="删除预设" aria-label="删除预设">×</button>
-    </div>`).join("") || '<p class="empty">尚未配置预设。</p>';
+    </div>`;
+  }).join("");
+  byId("preset-list").innerHTML = markup || '<p class="empty">尚未配置预设。</p>';
+  if (presets.length && !visible) {
+    byId("preset-list").insertAdjacentHTML("beforeend", '<p class="empty">没有符合筛选条件的预设。</p>');
+  }
+  const counter = byId("preset-count");
+  if (counter) {
+    counter.textContent = presets.length
+      ? `${visible}/${presets.length} 个 · 📌 ${counts.default} ✏️ ${counts.modified} ✨ ${counts.custom}`
+      : "暂无预设";
+  }
+  document.querySelectorAll("[data-preset-source]").forEach((node) => {
+    if (node.classList.contains("preset-chip")) {
+      node.classList.toggle("is-active", node.dataset.presetSource === wanted);
+    }
+  });
 }
 
 function readPresets() {
-  return [...document.querySelectorAll("[data-preset-index]")].map((row) => ({
+  return [...document.querySelectorAll(".preset-row[data-preset-index]")].map((row) => ({
     name: row.querySelector('[data-preset="name"]').value.trim(),
     prompt: row.querySelector('[data-preset="prompt"]').value.trim(),
+    source: row.dataset.presetSource || "custom",
   })).filter((item) => item.name || item.prompt);
 }
 
@@ -2027,8 +2072,18 @@ document.addEventListener("click", async (event) => {
     }
     const refreshModels = event.target.closest("[data-refresh-channel-models]");
     if (refreshModels) { await refreshChannelModels(refreshModels.dataset.refreshChannelModels); return; }
+    const presetChip = event.target.closest(".preset-chip[data-preset-source]");
+    if (presetChip) {
+      state.presetSource = presetChip.dataset.presetSource || "all";
+      renderPresets();
+      return;
+    }
     if (event.target.closest("#add-preset")) {
-      state.config.presets.push({ name: "", prompt: "" }); renderPresets(); return;
+      state.presetKeyword = "";
+      state.presetSource = "all";
+      const filterInput = byId("preset-filter");
+      if (filterInput) filterInput.value = "";
+      state.config.presets.push({ name: "", prompt: "", source: "custom" }); renderPresets(); return;
     }
     const removePreset = event.target.closest("[data-remove-preset]");
     if (removePreset) {
@@ -2131,6 +2186,10 @@ document.addEventListener("error", (event) => {
   }
 }, true);
 
+byId("preset-filter")?.addEventListener("input", (event) => {
+  state.presetKeyword = event.target.value || "";
+  renderPresets();
+});
 byId("reference-preset").addEventListener("change", renderReferenceImages);
 byId("theme-select").addEventListener("change", (event) => { void changeTheme(event.target.value); });
 byId("history-group-filter").addEventListener("change", async (event) => {

@@ -89,6 +89,10 @@ class DataManager:
             "groups": {},
         }
         self.prompt_map: Dict[str, str] = {}
+        # 预设来源标记：名称 -> default / modified / custom。
+        self.prompt_sources: Dict[str, str] = {}
+        # 插件出厂自带的预设，仅从 _conf_schema.json 读一次。
+        self.default_prompts: Dict[str, str] = self._load_default_prompt_presets()
         # A single lock protects read-modify-write credit/check-in operations.
         # The upstream version could lose credits when concurrent image tasks
         # finished at nearly the same time.
@@ -235,9 +239,31 @@ class DataManager:
                 await self._save_json(self.identity_labels_file, self.identity_labels)
             return changed
 
+    def _load_default_prompt_presets(self) -> Dict[str, str]:
+        """Read the factory preset list shipped in ``_conf_schema.json`` once."""
+        defaults: Dict[str, str] = {}
+        try:
+            schema_path = Path(__file__).resolve().parent / "_conf_schema.json"
+            with open(schema_path, "r", encoding="utf-8") as fp:
+                schema = json.load(fp)
+            entries = (schema.get("prompt_list") or {}).get("default") or []
+            for item in entries:
+                text = str(item or "").strip()
+                sep = ":" if ":" in text else ("：" if "：" in text else "")
+                if not sep:
+                    continue
+                name, prompt = text.split(sep, 1)
+                name = name.strip()
+                if name:
+                    defaults[name] = prompt.strip()
+        except Exception as exc:
+            logger.warning(f"Unable to read the shipped preset list from _conf_schema.json: {exc}")
+        return defaults
+
     def reload_prompts(self):
         self.prompt_map.clear()
-        # 内置预设
+        self.prompt_sources.clear()
+        # 内置预设（历史遗留指令名，即使配置被清空也保证可用）
         base_cmd_map = {
             "手办化": "figurine_1", "手办化2": "figurine_2", "手办化3": "figurine_3",
             "手办化4": "figurine_4", "手办化5": "figurine_5", "手办化6": "figurine_6",
@@ -248,7 +274,10 @@ class DataManager:
             "孤独的我": "clown",
             "第三视角": "view_3", "鬼图": "ghost", "第一视角": "view_1"
         }
-        for k in base_cmd_map.keys(): self.prompt_map[k] = "[内置预设]"
+        for k in base_cmd_map.keys():
+            fallback = self.default_prompts.get(k)
+            if fallback:
+                self.prompt_map[k] = fallback
 
         # 配置中的 prompts (兼容旧版)
         prompts_cfg = self.config.get("prompts", {})
@@ -259,20 +288,52 @@ class DataManager:
                 elif isinstance(v, str):
                     self.prompt_map[k] = v
 
-        # Prompt List (Config)
+        # Prompt List (Config) - 半角/全角冒号都接受
         prompt_list = self.config.get("prompt_list", [])
         if isinstance(prompt_list, list):
             for item in prompt_list:
-                if ":" in item:
-                    k, v = item.split(":", 1)
-                    self.prompt_map[k.strip()] = v.strip()
-        
+                text = str(item or "")
+                sep = ":" if ":" in text else ("：" if "：" in text else "")
+                if not sep:
+                    continue
+                k, v = text.split(sep, 1)
+                k = k.strip()
+                if k:
+                    self.prompt_map[k] = v.strip()
+
         # User Prompts (Persistence) - 优先级最高，覆盖前面的
         for k, v in self.user_prompts.items():
             self.prompt_map[k] = v
 
+        # 来源标记：出厂自带 / 自带但被改过 / 用户自定义
+        for k, v in self.prompt_map.items():
+            shipped = self.default_prompts.get(k)
+            if shipped is None:
+                self.prompt_sources[k] = "custom"
+            elif str(v or "").strip() == str(shipped or "").strip():
+                self.prompt_sources[k] = "default"
+            else:
+                self.prompt_sources[k] = "modified"
+
     def get_prompt(self, key: str) -> Optional[str]:
         return self.prompt_map.get(key)
+
+    def preset_source(self, name: str) -> str:
+        """Return ``default`` / ``modified`` / ``custom`` for one preset."""
+        return self.prompt_sources.get(name, "custom")
+
+    def preset_overview(self) -> List[Dict[str, Any]]:
+        """List every usable preset with provenance and attachment counts."""
+        rows: List[Dict[str, Any]] = []
+        for name in sorted(self.prompt_map.keys()):
+            rows.append({
+                "name": name,
+                "prompt": str(self.prompt_map.get(name) or ""),
+                "source": self.preset_source(name),
+                "has_sample": bool(self.get_preset_image_path(name)),
+                "ref_images": len(self.preset_ref_images.get(name, []) or []),
+            })
+        return rows
         
     async def add_user_prompt(self, key: str, prompt: str):
         """添加或更新用户预设，并持久化保存"""

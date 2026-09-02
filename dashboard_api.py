@@ -28,7 +28,7 @@ from .utils import is_ambiguous_message_delivery_timeout, norm_id, normalize_api
 
 
 PLUGIN_NAME = "astrbot_plugin_linghui_studio"
-PLUGIN_VERSION = "3.8.4"
+PLUGIN_VERSION = "3.8.5"
 DRAWING_CHANNEL_TEMPLATE_KEY = "drawing_channel"
 _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -221,9 +221,12 @@ class LinghuiDashboardApi:
     def _preset_rows(self) -> List[Dict[str, str]]:
         rows: Dict[str, str] = {}
         for entry in self.plugin.conf.get("prompt_list", []) or []:
-            if not isinstance(entry, str) or ":" not in entry:
+            if not isinstance(entry, str):
                 continue
-            name, prompt = entry.split(":", 1)
+            separator = ":" if ":" in entry else ("：" if "：" in entry else "")
+            if not separator:
+                continue
+            name, prompt = entry.split(separator, 1)
             name = name.strip()
             if name:
                 rows[name] = prompt.strip()
@@ -238,7 +241,18 @@ class LinghuiDashboardApi:
                 prompt = str(prompt).strip()
                 if name and prompt:
                     rows[name] = prompt
-        return [{"name": name, "prompt": prompt} for name, prompt in sorted(rows.items())]
+        shipped = getattr(self.plugin.data_mgr, "default_prompts", {}) or {}
+        result: List[Dict[str, str]] = []
+        for name, prompt in sorted(rows.items()):
+            origin = shipped.get(name)
+            if origin is None:
+                source = "custom"
+            elif str(origin or "").strip() == str(prompt or "").strip():
+                source = "default"
+            else:
+                source = "modified"
+            result.append({"name": name, "prompt": prompt, "source": source})
+        return result
 
     def _safe_reference_path(self, raw_path: str | Path) -> Path | None:
         """Return a stored reference image only when it stays under the data root."""

@@ -750,7 +750,7 @@ class ImageManager:
 
         return img_bytes
 
-    def _create_table_sync(self, presets: List[Tuple[str, bool]], data_mgr, font_path: str) -> bytes:
+    def _create_table_sync(self, presets: List[Tuple[str, str]], data_mgr, font_path: str) -> bytes:
         """(同步) 绘制表格"""
         q_map = {
             "标准": (200, 250, 16),
@@ -782,7 +782,7 @@ class ImageManager:
 
         image_area_h = int(ch * 0.8)
 
-        for i, (name, is_builtin) in enumerate(presets):
+        for i, (name, marker) in enumerate(presets):
             row, col = divmod(i, cols)
             x = padding + col * (cw + padding)
             y = padding + row * (ch + padding)
@@ -800,7 +800,7 @@ class ImageManager:
                     pass
 
             draw.rectangle([x, y, x + cw, y + ch], outline='black', width=1)
-            disp_name = ("📌" if is_builtin else "✨") + name
+            disp_name = f"{marker}{name}" if marker else name
 
             try:
                 bbox = draw.textbbox((0, 0), disp_name, font=font)
@@ -818,7 +818,7 @@ class ImageManager:
         canvas.save(out, format='PNG', optimize=True)
         return out.getvalue()
 
-    async def create_preset_table(self, presets: List[Tuple[str, bool]], data_mgr) -> bytes:
+    async def create_preset_table(self, presets: List[Tuple[str, str]], data_mgr) -> bytes:
         """异步生成预览表格"""
         loop = asyncio.get_running_loop()
         custom_font_path = await self.get_cached_font_path(data_mgr.data_dir)

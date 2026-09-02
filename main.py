@@ -4374,13 +4374,63 @@ class LinghuiStudioPlugin(Star):
     @filter.command("预设列表", alias={"lm列表", "lmlist"}, prefix_optional=True)
     @_direct_command_only
     async def on_preset_list(self, event: AstrMessageEvent, ctx=None):
-        presets = []
-        for k, v in self.data_mgr.prompt_map.items():
-            presets.append((k, v == "[内置预设]"))
-        presets.sort(key=lambda x: x[0])
-        if not presets: yield event.chain_result([Plain("暂无预设")]); return
-        img_data = await self.img_mgr.create_preset_table(presets, self.data_mgr)
-        yield event.chain_result([Image.fromBytes(img_data)])
+        raw_args = self._command_args(event, "预设列表", "lm列表", "lmlist")
+        want_source = ""
+        text_mode = False
+        keywords: List[str] = []
+        for token in str(raw_args or "").split():
+            low = token.lower()
+            if low in {"我的", "自定义", "自建", "mine", "custom"}:
+                want_source = "custom"
+            elif low in {"自带", "默认", "内置", "default"}:
+                want_source = "default"
+            elif low in {"改过", "已改", "修改过", "modified"}:
+                want_source = "modified"
+            elif low in {"文字", "文本", "text", "txt"}:
+                text_mode = True
+            else:
+                keywords.append(low)
+        rows = self.data_mgr.preset_overview()
+        total = len(rows)
+        if want_source == "custom":
+            rows = [r for r in rows if r["source"] != "default"]
+        elif want_source:
+            rows = [r for r in rows if r["source"] == want_source]
+        if keywords:
+            rows = [r for r in rows if all(k in r["name"].lower() for k in keywords)]
+        if not rows:
+            if total:
+                hint = f"没有符合条件的预设，直接发 {self._command_example('预设列表')} 可以看全部 {total} 个。"
+            else:
+                hint = f"暂无预设，管理员可用 {self._command_example('预设添加')} 名称:提示词 添加。"
+            yield event.chain_result([Plain(hint)])
+            return
+        marker_map = {"default": "📌", "modified": "✏️", "custom": "✨"}
+        counts = {"default": 0, "modified": 0, "custom": 0}
+        for row in rows:
+            counts[row["source"]] = counts.get(row["source"], 0) + 1
+        summary = f"共 {len(rows)} 个预设（自带 {counts['default']}、自带改过 {counts['modified']}、自定义 {counts['custom']}）"
+        if len(rows) != total:
+            summary += f"，已从全部 {total} 个里筛选"
+        if text_mode:
+            groups = []
+            for source_key, source_title in (("default", "📌 自带"), ("modified", "✏️ 自带·已改"), ("custom", "✨ 自定义")):
+                names = [r["name"] for r in rows if r["source"] == source_key]
+                if names:
+                    groups.append(f"{source_title}（{len(names)}）：" + "、".join(names))
+            body = "\n\n".join(groups)
+            tip = f"\n\n看完整提示词：{self._command_example('预设查看')} <预设名>"
+            yield event.chain_result([Plain(f"📋 {summary}\n\n{body}{tip}")])
+            return
+        header = (
+            f"📋 {summary}\n"
+            f"📌 自带　✏️ 自带·已改　✨ 自定义\n"
+            f"筛选：{self._command_example('预设列表')} 我的 / 自带 / 关键词\n"
+            f"纯文字清单：{self._command_example('预设列表')} 文字　看提示词：{self._command_example('预设查看')} <预设名>"
+        )
+        table_rows = [(r["name"], marker_map.get(r["source"], "✨")) for r in rows]
+        img_data = await self.img_mgr.create_preset_table(table_rows, self.data_mgr)
+        yield event.chain_result([Plain(header), Image.fromBytes(img_data)])
 
     @filter.command("预设添加", alias={"lm添加", "lma"}, prefix_optional=True)
     @_direct_command_only
@@ -4475,10 +4525,40 @@ class LinghuiStudioPlugin(Star):
     @_direct_command_only
     async def on_view_preset(self, event: AstrMessageEvent, ctx=None):
         kw = self._command_args(event, "预设查看", "lm查看", "lmv", "lm预览")
-        if not kw: yield event.chain_result([Plain(f"用法: {self._command_example('预设查看')} <关键词>")]); return
-        prompt = self.data_mgr.get_prompt(kw)
-        msg = f"🔍 [{kw}]:\n{prompt}" if prompt else f"没找到 [{kw}]"
-        yield event.chain_result([Plain(msg)])
+        if not kw:
+            yield event.chain_result([Plain(
+                f"用法: {self._command_example('预设查看')} <预设名>\n"
+                f"不记得名字就先发 {self._command_example('预设列表')} 看清单"
+            )])
+            return
+        source_label = {"default": "自带", "modified": "自带（已改过）", "custom": "自定义"}
+
+        def _render_preset(name: str) -> str:
+            prompt = str(self.data_mgr.get_prompt(name) or "")
+            label = source_label.get(self.data_mgr.preset_source(name), "自定义")
+            extras = []
+            if self.data_mgr.get_preset_image_path(name):
+                extras.append("有示例图")
+            ref_count = len(self.data_mgr.preset_ref_images.get(name, []) or [])
+            if ref_count:
+                extras.append(f"参考图 {ref_count} 张")
+            tail = "\n📎 " + "、".join(extras) if extras else ""
+            return f"🔍 [{name}]（{label}）\n{prompt}{tail}"
+
+        if self.data_mgr.get_prompt(kw) is not None:
+            yield event.chain_result([Plain(_render_preset(kw))])
+            return
+        needle = kw.lower()
+        matches = [n for n in sorted(self.data_mgr.prompt_map.keys()) if needle in n.lower()]
+        if len(matches) == 1:
+            yield event.chain_result([Plain(_render_preset(matches[0]))])
+            return
+        if matches:
+            shown = "、".join(matches[:12])
+            more = f"（共 {len(matches)} 个，只列前 12 个）" if len(matches) > 12 else ""
+            yield event.chain_result([Plain(f"🔍 [{kw}] 匹配到多个预设{more}：\n{shown}\n\n写完整名称再查一次即可。")])
+            return
+        yield event.chain_result([Plain(f"没找到 [{kw}]，发 {self._command_example('预设列表')} 看看有哪些预设。")])
 
     @filter.command("签到", alias={"手办化签到"}, prefix_optional=True)
     @_direct_command_only

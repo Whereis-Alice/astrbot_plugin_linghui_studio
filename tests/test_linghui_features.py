@@ -440,8 +440,8 @@ class DashboardRegistrationTest(unittest.TestCase):
         )
         rows = self.DashboardApi(plugin)._preset_rows()
         self.assertEqual(rows, [
-            {"name": "chat", "prompt": "from chat"},
-            {"name": "config", "prompt": "chat override"},
+            {"name": "chat", "prompt": "from chat", "source": "custom"},
+            {"name": "config", "prompt": "chat override", "source": "custom"},
         ])
 
     def test_dashboard_preserves_or_clears_a_masked_channel_key_explicitly(self):
@@ -1435,6 +1435,78 @@ class PurgeUnprotectedHistoryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(api._friendly_size(None), "0 B")
         self.assertEqual(api._friendly_size("bad"), "0 B")
         self.assertEqual(api._friendly_size(-5), "0 B")
+
+
+class PresetProvenanceTest(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.DataManager = _load_module("data_manager").DataManager
+        cls.DashboardApi = _load_module("dashboard_api", with_quart=True)
+        schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+        cls.shipped_entries = list(schema["prompt_list"]["default"])
+        first_name, first_prompt = cls.shipped_entries[0].split(":", 1)
+        cls.first_name = first_name.strip()
+        cls.first_prompt = first_prompt.strip()
+        cls.second_name = cls.shipped_entries[1].split(":", 1)[0].strip()
+
+    async def _manager(self, directory, config):
+        manager = self.DataManager(pathlib.Path(directory), config)
+        await manager.initialize()
+        return manager
+
+    async def test_shipped_edited_and_custom_presets_are_told_apart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = {
+                "prompt_list": list(self.shipped_entries) + ["我的夕阳:golden hour, warm rim light"],
+            }
+            manager = await self._manager(directory, config)
+            self.assertEqual(manager.preset_source(self.first_name), "default")
+            self.assertEqual(manager.preset_source("我的夕阳"), "custom")
+
+            config["prompt_list"] = [f"{self.first_name}:completely rewritten prompt"]
+            manager.reload_prompts()
+            self.assertEqual(manager.preset_source(self.first_name), "modified")
+
+    async def test_legacy_command_names_fall_back_to_real_prompts_not_a_placeholder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = await self._manager(directory, {"prompt_list": []})
+            self.assertIn("手办化", manager.prompt_map)
+            for name, prompt in manager.prompt_map.items():
+                self.assertNotEqual(prompt, "[内置预设]", name)
+                self.assertTrue(prompt.strip(), name)
+            self.assertEqual(manager.preset_source("手办化"), "default")
+
+    async def test_full_width_colon_and_non_string_entries_are_tolerated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = await self._manager(directory, {
+                "prompt_list": ["全角预设：wide colon prompt", None, 42, "", "半角预设:narrow colon prompt"],
+            })
+            self.assertEqual(manager.get_prompt("全角预设"), "wide colon prompt")
+            self.assertEqual(manager.get_prompt("半角预设"), "narrow colon prompt")
+            self.assertEqual(manager.preset_source("全角预设"), "custom")
+
+    async def test_preset_overview_reports_names_sources_and_attachments(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = await self._manager(directory, {"prompt_list": ["甲:alpha prompt", "乙:beta prompt"]})
+            manager.preset_ref_images["甲"] = ["one.png", "two.png"]
+            rows = {row["name"]: row for row in manager.preset_overview()}
+            self.assertEqual([row["name"] for row in manager.preset_overview()], sorted(rows))
+            self.assertEqual(rows["甲"]["prompt"], "alpha prompt")
+            self.assertEqual(rows["甲"]["source"], "custom")
+            self.assertEqual(rows["甲"]["ref_images"], 2)
+            self.assertFalse(rows["甲"]["has_sample"])
+            self.assertEqual(rows["乙"]["ref_images"], 0)
+
+    async def test_dashboard_preset_rows_carry_the_same_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            entries = [self.shipped_entries[0], f"{self.second_name}:reworded", "自建:mine"]
+            manager = await self._manager(directory, {"prompt_list": entries})
+            plugin = types.SimpleNamespace(conf={"prompt_list": entries}, data_mgr=manager)
+            api = self.DashboardApi.LinghuiDashboardApi(plugin)
+            rows = {row["name"]: row["source"] for row in api._preset_rows()}
+            self.assertEqual(rows[self.first_name], "default")
+            self.assertEqual(rows["自建"], "custom")
+            self.assertEqual(rows[self.second_name], "modified")
 
 
 if __name__ == "__main__":
