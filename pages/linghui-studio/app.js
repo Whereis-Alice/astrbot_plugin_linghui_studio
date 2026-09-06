@@ -372,7 +372,7 @@ function channelTemplate(channel = {}, index = 0) {
     enabled: channel.enabled !== false,
     fallback_enabled: channel.fallback_enabled !== false,
     reference_image_enabled: channel.reference_image_enabled !== false,
-    interface_mode: channel.interface_mode || "openai_chat",
+    interface_mode: channel.interface_mode || "auto",
     protocol: channel.protocol || "auto",
     image_edit_transport: channel.image_edit_transport || "auto",
     base_url: channel.base_url || "",
@@ -398,8 +398,8 @@ function channelTemplate(channel = {}, index = 0) {
         <label class="field"><span>渠道 ID</span><input data-channel="id" value="${escapeHtml(item.id)}" /><small class="field-hint">唯一标识，只能使用字母、数字、下划线和连字符；可用于管理员切换主渠道。</small></label>
         <label class="field"><span>显示名称</span><input data-channel="name" value="${escapeHtml(item.name)}" /><small class="field-hint">仅用于 Dashboard 和状态展示，留空时显示渠道 ID。</small></label>
         <label class="field"><span>接口模式</span><select data-channel="interface_mode">
-          ${["openai_chat", "openai_image", "gemini_official", "custom_endpoint"].map((kind) => `<option value="${kind}" ${item.interface_mode === kind ? "selected" : ""}>${kind}</option>`).join("")}
-        </select><small class="field-hint">New API/OpenAI Images 请选择 openai_image；不要把地址填到 /v1/images。</small></label>
+          ${["auto", "openai_chat", "openai_image", "gemini_official", "custom_endpoint"].map((kind) => `<option value="${kind}" ${item.interface_mode === kind ? "selected" : ""}>${kind}</option>`).join("")}
+        </select><small class="field-hint">推荐 auto：按模型类型优先选择 Chat Completions 或 Images API，遇到明确的接口兼容错误时切换一次；固定模式适合已确认接口能力的渠道。</small></label>
         <label class="field"><span>原生协议</span><select data-channel="protocol">
           ${protocolOptions}
         </select><small class="field-hint">默认 auto 走 OpenAI 兼容协议。选择 grok / agnes / novelai / jimeng 后，会改用对应厂商的原生请求体，接口地址与模型可留空以使用官方默认值。</small></label>
