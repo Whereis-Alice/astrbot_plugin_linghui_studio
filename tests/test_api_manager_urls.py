@@ -99,6 +99,42 @@ class ApiEndpointBuildTest(unittest.TestCase):
         )
         self.assertEqual(normalized, requested)
 
+    def test_auto_interface_order_prefers_images_for_gpt_image(self):
+        self.assertEqual(
+            self.manager._auto_interface_order("gpt-image-2", False),
+            ["openai_image", "openai_chat"],
+        )
+
+    def test_auto_interface_order_prefers_chat_for_generic_multimodal_model(self):
+        self.assertEqual(
+            self.manager._auto_interface_order("gemini-3.1-flash-image", True),
+            ["openai_image", "openai_chat"],
+        )
+        self.assertEqual(
+            self.manager._auto_interface_order("some-vision-model", True),
+            ["openai_chat", "openai_image"],
+        )
+
+    def test_gpt_image_size_fallback_does_not_mutate_original(self):
+        requested = {"resolution": "4K", "aspect_ratio": "16:9", "size": "3840x2160"}
+        fallback = self.manager._safe_gpt_image_size_fallback(requested)
+        self.assertEqual(fallback, {"resolution": "1K", "aspect_ratio": "1:1", "size": "1024x1024"})
+        self.assertEqual(requested["size"], "3840x2160")
+
+    def test_transport_compatibility_error_detection_is_bounded_to_endpoint_signals(self):
+        self.assertTrue(self.manager._is_transport_compatibility_error(
+            'Images API Error 400: {"code":"bad_response_status_code"}'
+        ))
+        self.assertTrue(self.manager._is_transport_compatibility_error(
+            'API Error 400: invalid operation: <nil> * float64'
+        ))
+        self.assertFalse(self.manager._is_transport_compatibility_error(
+            'Images API Multipart Error 503: temporary upstream failure'
+        ))
+        self.assertFalse(self.manager._is_transport_compatibility_error(
+            'API Error 401: invalid api key'
+        ))
+
     def test_gpt_image_edit_keeps_multiple_reference_images(self):
         images, field_name = self.manager._edit_upload_images(
             [b"first", b"second"], "gpt-image-2"
@@ -169,6 +205,98 @@ class ImageEditTransportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, b"image-result")
         self.assertEqual(captured["args"][4], "https://api.example.com/v1/images")
         self.assertFalse(captured["kwargs"]["exact_endpoint"])
+
+    async def test_chat_payload_contains_standard_n_for_relay_billing(self):
+        manager = self.ApiManager({
+            "interface_mode": "openai_chat",
+            "base_url": "https://api.example.com",
+            "api_keys": "test-key",
+        })
+        captured = {}
+
+        class FakeResponse:
+            status = 400
+            charset = "utf-8"
+
+            async def read(self):
+                return b'{"error":{"message":"invalid request"}}'
+
+        class FakeRequest:
+            def __init__(self):
+                self.response = FakeResponse()
+
+            async def __aenter__(self):
+                return self.response
+
+            async def __aexit__(self, *exc):
+                return False
+
+        class FakeSession:
+            def post(self, url, **kwargs):
+                captured["url"] = url
+                captured["json"] = kwargs["json"]
+                return FakeRequest()
+
+        async def fake_session():
+            return FakeSession()
+
+        manager._get_session = fake_session
+        result = await manager._call_api_once([], "a cat", "gpt-image-2")
+        self.assertIsInstance(result, str)
+        self.assertEqual(captured["json"]["n"], 1)
+        self.assertEqual(captured["json"]["model"], "gpt-image-2")
+
+    async def test_gpt_image_generation_retries_once_with_conservative_size(self):
+        manager = self.ApiManager({"timeout": 10})
+        requested_sizes = []
+
+        class FakeResponse:
+            charset = "utf-8"
+
+            def __init__(self, status, body):
+                self.status = status
+                self.body = body
+
+            async def read(self):
+                return self.body
+
+        output = io.BytesIO()
+        Image.new("RGB", (8, 8), (220, 90, 40)).save(output, "PNG")
+        image_bytes = output.getvalue()
+
+        class FakeRequest:
+            def __init__(self, response):
+                self.response = response
+
+            async def __aenter__(self):
+                return self.response
+
+            async def __aexit__(self, *exc):
+                return False
+
+        class FakeSession:
+            def __init__(self):
+                self.responses = [
+                    FakeResponse(400, b'{"error":{"message":"bad_response_status_code"}}'),
+                    FakeResponse(200, image_bytes),
+                ]
+
+            def post(self, url, **kwargs):
+                requested_sizes.append(kwargs["json"].get("size"))
+                return FakeRequest(self.responses.pop(0))
+
+        session = FakeSession()
+
+        async def fake_session():
+            return session
+
+        manager._get_session = fake_session
+        result = await manager.call_images_api(
+            [], "a cat", "gpt-image-2", "test-key", "https://api.example.com",
+            generation_params={"resolution": "2K", "aspect_ratio": "16:9", "size": "2048x1152"},
+        )
+        self.assertEqual(result, image_bytes)
+        self.assertEqual(requested_sizes, ["2048x1152", "1024x1024"])
 
 
 class ReferenceImageEchoGuardTest(unittest.IsolatedAsyncioTestCase):

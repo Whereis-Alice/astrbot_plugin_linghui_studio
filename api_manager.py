@@ -265,7 +265,7 @@ class ApiManager:
     def _get_interface_mode(self) -> str:
         """读取新版接口模式，并兼容旧版 generic 配置。"""
         mode = str(self.config.get("interface_mode", "") or "").strip().lower()
-        valid_modes = {"openai_image", "openai_chat", "gemini_official", "custom_endpoint"}
+        valid_modes = {"auto", "openai_image", "openai_chat", "gemini_official", "custom_endpoint"}
         if mode in valid_modes:
             return mode
 
@@ -557,6 +557,54 @@ class ApiManager:
         return "json"
 
     @staticmethod
+    def _auto_interface_order(model: str, has_input_image: bool) -> List[str]:
+        """Choose a low-risk first transport and keep the other one as fallback.
+
+        OpenAI-compatible relays do not expose a reliable capability flag: the
+        ``/v1/models`` response usually only says ``openai``.  Model naming is
+        therefore used as a hint, while both transports remain available. GPT
+        Image models are most consistent on Images API; generic multimodal
+        models are usually more compatible through Chat Completions.
+        """
+        lower = str(model or "").strip().lower()
+        if lower.startswith("gpt-image"):
+            return ["openai_image", "openai_chat"]
+        if has_input_image and any(token in lower for token in ("image", "imagen", "qwen-image", "nai-")):
+            return ["openai_image", "openai_chat"]
+        return ["openai_chat", "openai_image"]
+
+    @staticmethod
+    def _is_transport_compatibility_error(result: Any) -> bool:
+        """Return whether trying the alternate OpenAI transport is sensible."""
+        if not isinstance(result, str):
+            return False
+        text = result.lower()
+        if re.search(r"(?:api error|http|error)\s+5\d\d", text) and not any(
+                marker in text for marker in ("unsupported", "not support", "use images api", "does not support")
+        ):
+            return False
+        explicit_markers = (
+            "unsupported", "not support", "images/generations", "images/edits",
+            "bad_response_status_code", "invalid operation", "param(\"n\")",
+            "missing_image", "use images api", "does not support chat",
+            "chat completions not supported", "image must be a file",
+            "openai_error", "multipart error", "form-data",
+        )
+        if any(marker in text for marker in explicit_markers):
+            return True
+        # A bare 4xx is commonly a bad prompt, quota, or authentication error;
+        # do not issue a second billable request unless the body names a
+        # transport or endpoint compatibility problem.
+        return False
+
+    @staticmethod
+    def _safe_gpt_image_size_fallback(generation_params: Dict) -> Dict:
+        """Build the conservative size accepted by most GPT Image relays."""
+        fallback = dict(generation_params or {})
+        fallback.update({"resolution": "1K", "aspect_ratio": "1:1", "size": "1024x1024"})
+        return fallback
+
+    @staticmethod
     def _is_gpt_image_model(model: str) -> bool:
         return str(model or "").strip().lower().startswith("gpt-image")
 
@@ -835,21 +883,39 @@ class ApiManager:
     async def call_images_api(self, images: List[bytes], prompt: str,
                                model: str, key: str, base_url: str, proxy: str = None,
                                generation_params: Dict = None,
-                               exact_endpoint: bool = False) -> bytes | str:
+                               exact_endpoint: bool = False,
+                               _size_fallback_attempt: bool = False,
+                               _skip_multipart: bool = False) -> bytes | str:
         """调用 Images API (DALL-E 风格接口) - 作为 fallback"""
 
         has_input_image = bool(images)
 
-        if has_input_image and self._get_image_edit_transport(model) == "multipart":
+        if has_input_image and self._get_image_edit_transport(model) == "multipart" and not _skip_multipart:
             logger.info(
                 "Images API image edit uses multipart/form-data "
                 f"(model={model}, exact_endpoint={exact_endpoint})."
             )
-            return await self._call_images_api_multipart(
+            multipart_result = await self._call_images_api_multipart(
                 images, prompt, model, key, base_url, proxy,
                 generation_params=generation_params,
                 exact_endpoint=exact_endpoint,
             )
+            if (
+                    str(self.config.get("image_edit_transport", "auto") or "auto").strip().lower() == "auto"
+                    and not exact_endpoint
+                    and self._is_transport_compatibility_error(multipart_result)
+            ):
+                logger.warning(
+                    "Multipart 图生图请求不兼容，尝试同一渠道的 JSON Images API 回退。"
+                )
+                return await self.call_images_api(
+                    images, prompt, model, key, base_url, proxy,
+                    generation_params=generation_params,
+                    exact_endpoint=exact_endpoint,
+                    _size_fallback_attempt=_size_fallback_attempt,
+                    _skip_multipart=True,
+                )
+            return multipart_result
 
         candidate_urls = [base_url.rstrip("/")] if exact_endpoint else self._build_candidate_generic_image_urls(
             base_url, has_input_image=has_input_image
@@ -917,6 +983,24 @@ class ApiManager:
                                 err_msg = json.dumps(err_json, ensure_ascii=False)
                         except:
                             pass
+
+                        if (
+                                not _size_fallback_attempt
+                                and not has_input_image
+                                and self._is_gpt_image_model(model)
+                                and str(generation_params.get("size", "")).lower() != "1024x1024"
+                                and resp.status in {400, 422}
+                        ):
+                            logger.warning(
+                                "Images API rejected GPT Image size=%s; retrying once with 1024x1024.",
+                                generation_params.get("size", ""),
+                            )
+                            return await self.call_images_api(
+                                images, prompt, model, key, base_url, proxy,
+                                generation_params=self._safe_gpt_image_size_fallback(generation_params),
+                                exact_endpoint=exact_endpoint,
+                                _size_fallback_attempt=True,
+                            )
 
                         if has_input_image and self._is_images_edits_unsupported_error(err_msg):
                             if idx < len(candidate_urls) - 1:
@@ -1338,7 +1422,8 @@ class ApiManager:
                              model: str, proxy: str = None,
                              use_text_to_image_api: bool = False,
                              aspect_ratio: str = None,
-                             resolution: str = None) -> bytes | str:
+                             resolution: str = None,
+                             interface_override: str = None) -> bytes | str:
         """核心生成逻辑"""
 
         self._reset_metrics()
@@ -1353,7 +1438,27 @@ class ApiManager:
                 resolution=resolution,
             )
 
-        interface_mode = self._get_interface_mode()
+        interface_mode = str(interface_override or self._get_interface_mode()).strip().lower()
+        if interface_mode == "auto":
+            last_result: bytes | str = "自动接口探测失败"
+            for transport in self._auto_interface_order(model, bool(images)):
+                last_result = await self._call_api_once(
+                    images, prompt, model, proxy,
+                    use_text_to_image_api=use_text_to_image_api,
+                    aspect_ratio=aspect_ratio,
+                    resolution=resolution,
+                    interface_override=transport,
+                )
+                if isinstance(last_result, bytes) and last_result:
+                    return last_result
+                if not self._is_transport_compatibility_error(last_result):
+                    return last_result
+                logger.warning(
+                    "自动接口模式的 %s 请求不兼容，尝试 %s。",
+                    transport,
+                    "openai_chat" if transport == "openai_image" else "openai_image",
+                )
+            return last_result
         mode = "gemini_official" if interface_mode == "gemini_official" else "generic"
 
         # 1. 确定 URL
@@ -1412,11 +1517,26 @@ class ApiManager:
                     base,
                 )
                 exact_image_endpoint = False
-            return await self.call_images_api(
+            image_result = await self.call_images_api(
                 images, prompt, model, key, base, proxy,
                 generation_params=generation_params,
                 exact_endpoint=exact_image_endpoint,
             )
+            if (
+                    interface_override is None
+                    and self._is_transport_compatibility_error(image_result)
+            ):
+                logger.warning(
+                    "Images API 请求不兼容，尝试同一渠道的 Chat Completions 回退。"
+                )
+                return await self._call_api_once(
+                    images, prompt, model, proxy,
+                    use_text_to_image_api=use_text_to_image_api,
+                    aspect_ratio=aspect_ratio,
+                    resolution=resolution,
+                    interface_override="openai_chat",
+                )
+            return image_result
 
         # 对于明确使用 Generic 图片接口的站点，可配置为优先直连 Images API
         # 但当输入为多图时，优先走 chat/completions 以保留全部参考图（Images API 常只接受单图编辑）。
@@ -1491,7 +1611,16 @@ class ApiManager:
             
             # [性能优化] 显式设置 max_tokens
             # 如果不设置，某些中转接口可能会等待或者分配过大的 Tokens 空间，增加延迟
-            pl = {"model": model, "messages": msgs, "stream": use_stream, "max_tokens": 4096}
+            # Some relay billing rules reference param("n").  Supplying the
+            # standard optional field avoids a nil arithmetic error while
+            # remaining valid for ordinary Chat Completions implementations.
+            pl = {
+                "model": model,
+                "messages": msgs,
+                "stream": use_stream,
+                "max_tokens": 4096,
+                "n": 1,
+            }
             payload.update(pl)
 
             # 针对 Gemini 系模型的 OpenAI 兼容层特殊处理

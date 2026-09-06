@@ -1,3 +1,12 @@
+## v3.8.7
+
+- OpenAI 兼容渠道新增 `auto` 接口模式：按模型类型选择 Chat Completions 或 Images API，并在检测到明确的接口兼容错误时尝试另一条请求路径；保留 `openai_chat`、`openai_image` 等固定模式。
+- Chat Completions 图片请求补充标准 `n: 1` 字段，修复部分中转计费表达式读取 `param("n")` 为空导致的 `<nil> * float64` 400。
+- GPT Image 文生图遇到 400/422 且尺寸不受支持时，仅重试一次 `1024x1024`；不会循环重试，也不改变原始分辨率配置。
+- 图生图的 `image_edit_transport=auto` 在 multipart 文件上传明确不兼容时回退 JSON Images API；固定为 `multipart` 或 `json` 时保持原有严格行为。
+- 固定使用 Images API 的渠道在端点兼容错误时可回退到同一渠道的 Chat Completions，减少“一个渠道只能文生图或只能图生图”的情况。
+- 两个中转的 `/v1/models` 通常只返回 `supported_endpoint_types=["openai"]`，无法证明具体模型支持哪条图片接口；因此插件不发送会计费的探测请求，只在真实请求出现明确兼容信号时切换。
+
 ## v3.8.6
 
 - 「向用户显示上游错误详情」现在可以放心打开：发到聊天窗口的报错正文会先经过一层端点脱敏，`https://your-relay.example/v1/images/edits` 变成 `https://***/v1/images/edits`，`Cannot connect to host your-relay.example:443` 变成 `host ***:443`，`base_url=` 后的地址和 `sk-` 开头的密钥同样换成 `***`。状态码、错误码、`type` / `param` 字段和上游原文照旧显示，端点路径也保留，因为它能直接区分这次走的是图生图还是文生图。

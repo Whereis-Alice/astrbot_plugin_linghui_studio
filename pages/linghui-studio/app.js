@@ -271,7 +271,7 @@ function updateStatusBar() {
   }
   const versionTarget = byId("status-version");
   if (versionTarget) {
-    versionTarget.textContent = `灵绘 · v${config.plugin_version || "3.8.6"}`;
+    versionTarget.textContent = `灵绘 · v${config.plugin_version || "3.8.7"}`;
   }
 }
 

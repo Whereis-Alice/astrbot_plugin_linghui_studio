@@ -71,14 +71,15 @@
           "interface_mode": {
             "type": "string",
             "description": "接口模式",
-            "hint": "必须与服务端的请求和响应协议匹配；New API/OpenAI Images 请选择 openai_image 并只填写站点基础地址，不要填到 /v1/images。",
+            "hint": "auto 会按模型类型自动尝试 Chat Completions 与 Images API，并在接口不兼容时切换；也可固定为 openai_image 或 openai_chat。New API/OpenAI Images 请选择 openai_image 并只填写站点基础地址，不要填到 /v1/images。",
             "options": [
+              "auto",
               "openai_image",
               "openai_chat",
               "gemini_official",
               "custom_endpoint"
             ],
-            "default": "openai_chat"
+            "default": "auto"
           },
           "protocol": {
             "type": "string",
@@ -211,14 +212,15 @@
   "interface_mode": {
     "type": "string",
     "description": "【兼容单接口】兼容单接口模式",
-    "hint": "仅在绘图渠道列表为空时使用。New API/OpenAI Images 请选择 openai_image 并只填写站点基础地址；新安装建议使用上方的绘图渠道列表。",
+    "hint": "仅在绘图渠道列表为空时使用。auto 会按模型类型自动尝试 Chat Completions 与 Images API，并在接口不兼容时切换；新安装建议使用上方的绘图渠道列表。",
     "options": [
+      "auto",
       "openai_image",
       "openai_chat",
       "gemini_official",
       "custom_endpoint"
     ],
-    "default": "openai_chat"
+    "default": "auto"
   },
   "image_edit_transport": {
     "type": "string",
