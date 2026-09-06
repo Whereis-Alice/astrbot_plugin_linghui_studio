@@ -271,7 +271,7 @@ function updateStatusBar() {
   }
   const versionTarget = byId("status-version");
   if (versionTarget) {
-    versionTarget.textContent = `灵绘 · v${config.plugin_version || "3.8.7"}`;
+    versionTarget.textContent = `灵绘 · v${config.plugin_version || "3.8.8"}`;
   }
 }
 
@@ -399,13 +399,13 @@ function channelTemplate(channel = {}, index = 0) {
         <label class="field"><span>显示名称</span><input data-channel="name" value="${escapeHtml(item.name)}" /><small class="field-hint">仅用于 Dashboard 和状态展示，留空时显示渠道 ID。</small></label>
         <label class="field"><span>接口模式</span><select data-channel="interface_mode">
           ${["auto", "openai_chat", "openai_image", "gemini_official", "custom_endpoint"].map((kind) => `<option value="${kind}" ${item.interface_mode === kind ? "selected" : ""}>${kind}</option>`).join("")}
-        </select><small class="field-hint">推荐 auto：按模型类型优先选择 Chat Completions 或 Images API，遇到明确的接口兼容错误时切换一次；固定模式适合已确认接口能力的渠道。</small></label>
+        </select><small class="field-hint">auto 按模型选择优先协议；openai_chat / openai_image 指定优先协议。仅在明确的协议或格式不兼容时有限回退；完整 custom_endpoint 不跨协议。</small></label>
         <label class="field"><span>原生协议</span><select data-channel="protocol">
           ${protocolOptions}
         </select><small class="field-hint">默认 auto 走 OpenAI 兼容协议。选择 grok / agnes / novelai / jimeng 后，会改用对应厂商的原生请求体，接口地址与模型可留空以使用官方默认值。</small></label>
         <label class="field"><span>图生图上传格式</span><select data-channel="image_edit_transport">
           ${[["auto", "自动"], ["multipart", "multipart 文件上传"], ["json", "JSON / Base64"]].map(([kind, label]) => `<option value="${kind}" ${item.image_edit_transport === kind ? "selected" : ""}>${label}</option>`).join("")}
-        </select><small class="field-hint">人设拍照和参考图会使用此设置。auto 会为 gpt-image-* 选择标准 multipart，其余渠道保留兼容策略。</small></label>
+        </select><small class="field-hint">Images API 带参考图时，auto 为 gpt-image-* 优先 multipart，其他模型优先 JSON；格式不兼容时有限回退。显式选择 multipart 或 json 后不切换上传格式。</small></label>
         <label class="field"><span>超时（秒）</span><input data-channel="timeout" type="number" min="5" value="${escapeHtml(item.timeout)}" /><small class="field-hint">单次请求的最长等待时间。超时后会尝试下一个可回退渠道。</small></label>
         <label class="field full"><span>接口地址</span><input data-channel="base_url" value="${escapeHtml(item.base_url)}" placeholder="https://api.example.com" /><small class="field-hint">OpenAI Images/New API 填站点基础地址，例如 https://example.com；程序会自动补齐 /v1/images/generations 或 /v1/images/edits。自定义接口才填写完整地址。</small></label>
         <label class="field full"><span>API Key</span><textarea data-channel="api_keys" rows="2" placeholder="${escapeHtml(masked)}"></textarea><small class="field-hint">每行一个 Key，可轮换使用。已有 Key 不会回显；留空保存会保留原值。</small></label>
@@ -2066,7 +2066,7 @@ document.addEventListener("click", async (event) => {
       return;
     }
     if (event.target.closest("#add-channel")) {
-      state.config.channels.push({ id: `channel_${state.config.channels.length + 1}`, enabled: true, fallback_enabled: true, interface_mode: "openai_chat", timeout: 120 });
+      state.config.channels.push({ id: `channel_${state.config.channels.length + 1}`, enabled: true, fallback_enabled: true, interface_mode: "auto", timeout: 120 });
       renderChannels(); return;
     }
     const removeChannel = event.target.closest("[data-remove-channel]");

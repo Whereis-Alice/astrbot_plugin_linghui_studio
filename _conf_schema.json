@@ -71,7 +71,7 @@
           "interface_mode": {
             "type": "string",
             "description": "接口模式",
-            "hint": "auto 会按模型类型自动尝试 Chat Completions 与 Images API，并在接口不兼容时切换；也可固定为 openai_image 或 openai_chat。New API/OpenAI Images 请选择 openai_image 并只填写站点基础地址，不要填到 /v1/images。",
+            "hint": "auto 按模型类型选择优先协议；openai_image 优先 Images API，openai_chat 优先 Chat Completions。这三种模式仅在明确的协议或格式不兼容时有限回退到另一协议。custom_endpoint 使用完整地址，不跨协议。OpenAI 兼容模式只填写站点基础地址，不要填到 /v1/images。",
             "options": [
               "auto",
               "openai_image",
@@ -97,7 +97,7 @@
           "image_edit_transport": {
             "type": "string",
             "description": "图生图上传格式",
-            "hint": "用于人设拍照、头像图生图和带参考图的请求。auto 会让 gpt-image-* 直接使用 OpenAI 标准 multipart 文件上传；其他旧中转先用 JSON，报格式错误时自动尝试 multipart。",
+            "hint": "用于 Images API 的带参考图请求。auto 为 gpt-image-* 优先选择 multipart，其他模型优先 JSON；只有格式不兼容时才尝试另一上传格式。显式选择 multipart 或 json 后不会切换上传格式。",
             "options": [
               "auto",
               "multipart",
@@ -212,7 +212,7 @@
   "interface_mode": {
     "type": "string",
     "description": "【兼容单接口】兼容单接口模式",
-    "hint": "仅在绘图渠道列表为空时使用。auto 会按模型类型自动尝试 Chat Completions 与 Images API，并在接口不兼容时切换；新安装建议使用上方的绘图渠道列表。",
+    "hint": "仅在绘图渠道列表为空时使用。auto 按模型类型选择优先协议；openai_image/openai_chat 指定优先协议，仅遇到明确的协议或格式不兼容时有限回退。完整 custom_endpoint 不跨协议。新安装建议使用上方的绘图渠道列表。",
     "options": [
       "auto",
       "openai_image",
@@ -225,7 +225,7 @@
   "image_edit_transport": {
     "type": "string",
     "description": "【兼容单接口】兼容单接口图生图上传格式",
-    "hint": "仅在绘图渠道列表为空时使用。auto 会让 gpt-image-* 直接使用 multipart 文件上传；其他旧中转先使用 JSON，必要时自动回退为 multipart。",
+    "hint": "仅在绘图渠道列表为空时使用。Images API 带参考图请求的 auto 模式为 gpt-image-* 优先 multipart，其他模型优先 JSON，格式不兼容时有限回退；显式选择 multipart 或 json 后不会切换上传格式。",
     "options": [
       "auto",
       "multipart",
@@ -286,7 +286,7 @@
   "image_resolution": {
     "type": "string",
     "description": "【兼容单接口】默认分辨率",
-    "hint": "传给支持分辨率参数的绘图接口。gpt-image-* 的人设拍照、头像图生图和参考图编辑会自动使用兼容的 1024x1024；这不会影响文生图所选的 1K/2K/4K。",
+    "hint": "文生图和图生图都会先保留所选分辨率。gpt-image-* 的 Images 请求只有遇到尺寸拒绝，或仅含 openai_error/bad_response_status_code 的 400/422 时，才以 1024x1024 重试一次；不会无条件改成方图，也不会改写此配置。实际尺寸支持以渠道为准。",
     "options": [
       "1K",
       "2K",

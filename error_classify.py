@@ -98,7 +98,13 @@ def classify_generation_error(error: Any) -> GenerationError:
     lower = raw.lower()
     status = _status_code(raw)
 
-    if _contains(lower, "reference image", "参考图相同", "reference_echo", "无效结果"):
+    # A mere mention of "reference image" often describes an input validation,
+    # safety or authentication failure.  Only explicit echo/same-result markers
+    # are classified as the retryable reference-image echo guard.
+    if _contains(
+        lower, "参考图相同", "reference_echo", "无效结果", "same as reference",
+        "identical to reference", "returned the reference image", "echoed reference",
+    ):
         return GenerationError(
             "reference_echo", "参考图回显", True, False, True, False, status,
             "渠道原样返回了参考图，已自动拒绝该结果。",

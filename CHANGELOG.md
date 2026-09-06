@@ -1,3 +1,12 @@
+## v3.8.8
+
+- 修复 Dashboard 已显示 `auto` 接口模式，但保存时被后端判定无效的问题；新建渠道默认使用 `auto`，保存和重命名渠道仍保留已有密钥及 AstrBot 渠道模板标识。
+- 统一 OpenAI 模式的兼容行为与说明：`auto` 按模型选择优先协议，`openai_chat` / `openai_image` 指定优先协议，仅在明确的协议或格式不兼容时有限回退。完整 `custom_endpoint` 不跨协议，显式 `json` / `multipart` 不切换上传格式。
+- 移除交叉递归回退：两个协议各最多尝试一次，并共用本轮密钥；自动上传格式不再来回切换。错误判定仅检查上游正文，不将错误前缀里的 `Multipart` 或附带的接口 URL 当成兼容信号。
+- Chat 请求保留标准 `n: 1`，不再给 GPT Image 注入 Gemini 专用参数；兼容单接口的 `接口模式 auto` 指令同步支持自动模式。
+- GPT Image 文生图、图生图先保留用户所选尺寸；只在尺寸被拒绝或笼统的 `openai_error` / `bad_response_status_code` 400/422 后，以 `1024x1024` 重试一次，修正旧版图生图无条件改成方图的行为。
+- 同步 Dashboard 显示版本与前端资源版本为 `3.8.8`，并增加渠道自动模式保存、密钥保留和模板标识的行为测试。
+
 ## v3.8.7
 
 - OpenAI 兼容渠道新增 `auto` 接口模式：按模型类型选择 Chat Completions 或 Images API，并在检测到明确的接口兼容错误时尝试另一条请求路径；保留 `openai_chat`、`openai_image` 等固定模式。

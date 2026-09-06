@@ -4679,13 +4679,13 @@ class LinghuiStudioPlugin(Star):
             "gemini": "gemini_official",
         }
         mode = aliases.get(mode, mode)
-        if mode in ["openai_image", "openai_chat", "gemini_official", "custom_endpoint"]:
+        if mode in ["auto", "openai_image", "openai_chat", "gemini_official", "custom_endpoint"]:
             self.conf["interface_mode"] = mode
             self._save_config(["interface_mode"])
             yield event.chain_result([Plain(f"✅ 已切换为 {mode}")])
         else:
             yield event.chain_result([Plain(
-                "模式无效 (openai_image / openai_chat / gemini_official / custom_endpoint；旧 generic 仍兼容)"
+                "模式无效 (auto / openai_image / openai_chat / gemini_official / custom_endpoint；旧 generic 仍兼容)"
             )])
 
     def _session_override_scope(self, event: AstrMessageEvent) -> Tuple[str, str]:

@@ -13,6 +13,7 @@ from typing import Any, List, Dict
 from astrbot import logger
 from PIL import Image as PILImage, ImageChops, ImageOps, ImageStat
 from .generation_params import detect_aspect_ratio_from_image, resolve_image_generation_params
+from .error_classify import classify_generation_error, safe_error_summary
 from .protocol_adapters import (
     PROTOCOL_AUTO,
     PROTOCOL_LABELS,
@@ -567,9 +568,7 @@ class ApiManager:
         models are usually more compatible through Chat Completions.
         """
         lower = str(model or "").strip().lower()
-        if lower.startswith("gpt-image"):
-            return ["openai_image", "openai_chat"]
-        if has_input_image and any(token in lower for token in ("image", "imagen", "qwen-image", "nai-")):
+        if lower.startswith(("gpt-image", "dall-e", "imagen", "qwen-image", "grok-imagine")):
             return ["openai_image", "openai_chat"]
         return ["openai_chat", "openai_image"]
 
@@ -578,24 +577,46 @@ class ApiManager:
         """Return whether trying the alternate OpenAI transport is sensible."""
         if not isinstance(result, str):
             return False
-        text = result.lower()
-        if re.search(r"(?:api error|http|error)\s+5\d\d", text) and not any(
-                marker in text for marker in ("unsupported", "not support", "use images api", "does not support")
-        ):
+        text = result.split(" | URL:", 1)[0].split(" | Candidates:", 1)[0].lower()
+        classification = classify_generation_error(text)
+        if classification.category in {"authentication", "rate_limit", "safety", "timeout", "network"}:
             return False
-        explicit_markers = (
-            "unsupported", "not support", "images/generations", "images/edits",
-            "bad_response_status_code", "invalid operation", "param(\"n\")",
-            "missing_image", "use images api", "does not support chat",
-            "chat completions not supported", "image must be a file",
-            "openai_error", "multipart error", "form-data",
-        )
-        if any(marker in text for marker in explicit_markers):
+        if classification.status_code not in {400, 404, 405, 415, 422}:
+            return False
+        if any(word in text for word in ("quota", "balance", "billing_hard_limit", "insufficient", "payment", "余额", "计费", "tiered expr", "invalid operation")):
+            return False
+        if classification.status_code == 405:
             return True
-        # A bare 4xx is commonly a bad prompt, quota, or authentication error;
-        # do not issue a second billable request unless the body names a
-        # transport or endpoint compatibility problem.
-        return False
+        if classification.status_code == 404:
+            return any(marker in text for marker in (
+                "endpoint", "route", "path", "not found", "接口", "路径",
+            )) and not any(marker in text for marker in (
+                "model_not_found", "unknown model", "model does not exist", "模型不存在",
+            ))
+        # Inspect the provider body, not our "Images API Multipart Error" label.
+        text = text.split(":", 1)[-1]
+        return any(marker in text for marker in (
+            "unsupported endpoint", "unsupported api", "not support this api",
+            "api not supported", "use images api", "not a chat model",
+            "does not support chat", "chat completions not supported",
+            "不支持该接口", "接口不支持", "当前接口不支持",
+            "unsupported media type", "multipart", "form-data", "expected uploadfile",
+            "application/json", "expected json", "expected file", "file upload",
+            "image must be a file", "missing_image", "image_url is required",
+        )) or (
+            classification.status_code in {400, 422}
+            and any(marker in text for marker in ("bad_response_status_code", "openai_error"))
+        )
+
+    @staticmethod
+    def _is_size_compatibility_error(result: Any) -> bool:
+        text = str(result or "").split(" | URL:", 1)[0].lower()
+        error = classify_generation_error(text)
+        if error.category in {"authentication", "rate_limit", "safety"} or error.status_code not in {400, 422}:
+            return False
+        if any(word in text for word in ("quota", "balance", "insufficient", "payment", "tiered expr", "余额", "计费", "invalid operation")):
+            return False
+        return any(marker in text for marker in ("size", "resolution", "dimension", "尺寸", "分辨率", "openai_error", "bad_response_status_code"))
 
     @staticmethod
     def _safe_gpt_image_size_fallback(generation_params: Dict) -> Dict:
@@ -614,35 +635,8 @@ class ApiManager:
             model: str,
             has_input_image: bool,
     ) -> Dict:
-        """Use the stable OpenAI Images Edit size contract for GPT Image requests.
-
-        New API's OpenAI-compatible ``/v1/images/edits`` endpoint accepts only
-        256x256, 512x512, or 1024x1024.  The general resolution picker also
-        serves providers that support 2K/4K, so clamp only GPT Image requests
-        that include a reference image.  Text-to-image keeps the user's chosen
-        resolution unchanged.
-        """
-        resolved = dict(generation_params or {})
-        if not has_input_image or not self._is_gpt_image_model(model):
-            return resolved
-
-        allowed_sizes = {"256x256", "512x512", "1024x1024"}
-        requested_size = str(resolved.get("size", "") or "").lower()
-        if requested_size in allowed_sizes:
-            return resolved
-
-        logger.warning(
-            "OpenAI Images edit for %s does not accept size=%s; "
-            "using 1024x1024 for the reference-image request.",
-            model,
-            requested_size or "unknown",
-        )
-        resolved.update({
-            "resolution": "1K",
-            "aspect_ratio": "1:1",
-            "size": "1024x1024",
-        })
-        return resolved
+        """Preserve requested dimensions; only rejected requests may downgrade."""
+        return dict(generation_params or {})
 
     def _edit_upload_images(self, images: List[bytes], model: str) -> tuple[List[bytes], str]:
         """Select standard multipart fields for a reference-image request.
@@ -719,10 +713,8 @@ class ApiManager:
 
     def _is_images_edits_unsupported_error(self, error_msg: str) -> bool:
         """Detect providers that do not implement /images/edits at all."""
-        error_lower = (error_msg or "").lower()
+        error_lower = (error_msg or "").split(" | URL:", 1)[0].lower()
         keywords = [
-            "images/edits",
-            "image edits",
             "not support this api",
             "api not supported",
             "unsupported endpoint",
@@ -731,6 +723,10 @@ class ApiManager:
             "不支持该接口",
             "该接口暂不支持",
             "接口不支持",
+            "images/edits endpoint unavailable",
+            "image edits endpoint unavailable",
+            "images/edits endpoint not found",
+            "image edits endpoint not found",
         ]
         return any(keyword in error_lower for keyword in keywords)
 
@@ -854,14 +850,14 @@ class ApiManager:
                                 if idx < len(candidate_urls) - 1:
                                     logger.warning(f"Images API multipart edits endpoint unsupported, trying next candidate: {candidate_urls[idx + 1]}")
                                     continue
-                                return f"Images API edits endpoint unsupported {resp.status}: {err_msg} | URL: {url}"
+                                return f"Images API Multipart Error {resp.status}: edits endpoint unsupported: {err_msg} | URL: {url}"
                             return f"Images API Multipart Error {resp.status}: {err_msg} | URL: {url}"
                         except:
                             if has_input_image and self._is_images_edits_unsupported_error(resp_text):
                                 if idx < len(candidate_urls) - 1:
                                     logger.warning(f"Images API multipart edits endpoint unsupported, trying next candidate: {candidate_urls[idx + 1]}")
                                     continue
-                                return f"Images API edits endpoint unsupported {resp.status}: {resp_text[:300]} | URL: {url}"
+                                return f"Images API Multipart Error {resp.status}: edits endpoint unsupported: {resp_text[:300]} | URL: {url}"
                             return f"HTTP {resp.status}: {resp_text[:200]} | URL: {url}"
 
                     if "<html" in resp_text.lower():
@@ -883,39 +879,72 @@ class ApiManager:
     async def call_images_api(self, images: List[bytes], prompt: str,
                                model: str, key: str, base_url: str, proxy: str = None,
                                generation_params: Dict = None,
-                               exact_endpoint: bool = False,
-                               _size_fallback_attempt: bool = False,
-                               _skip_multipart: bool = False) -> bytes | str:
-        """调用 Images API (DALL-E 风格接口) - 作为 fallback"""
+                               exact_endpoint: bool = False) -> bytes | str:
+        """Try each upload format at most once, plus one rejected-size retry."""
+        params = dict(generation_params or resolve_image_generation_params(
+            prompt, self.config.get("image_resolution", "1K")
+        ))
+        first_format = self._get_image_edit_transport(model) if images else "json"
+        formats = [first_format]
+        configured = str(self.config.get("image_edit_transport", "auto") or "auto").strip().lower()
+        if images and configured == "auto" and not exact_endpoint:
+            formats.append("json" if first_format == "multipart" else "multipart")
 
-        has_input_image = bool(images)
-
-        if has_input_image and self._get_image_edit_transport(model) == "multipart" and not _skip_multipart:
-            logger.info(
-                "Images API image edit uses multipart/form-data "
-                f"(model={model}, exact_endpoint={exact_endpoint})."
-            )
-            multipart_result = await self._call_images_api_multipart(
+        size_retried = False
+        for index, upload_format in enumerate(formats):
+            request = self._call_images_api_multipart if upload_format == "multipart" else self._call_images_api_json
+            result = await request(
                 images, prompt, model, key, base_url, proxy,
-                generation_params=generation_params,
-                exact_endpoint=exact_endpoint,
+                generation_params=params, exact_endpoint=exact_endpoint,
             )
             if (
-                    str(self.config.get("image_edit_transport", "auto") or "auto").strip().lower() == "auto"
-                    and not exact_endpoint
-                    and self._is_transport_compatibility_error(multipart_result)
+                not exact_endpoint and not size_retried
+                and self._is_gpt_image_model(model)
+                and params.get("size") != "1024x1024"
+                and self._is_size_compatibility_error(result)
             ):
                 logger.warning(
-                    "Multipart 图生图请求不兼容，尝试同一渠道的 JSON Images API 回退。"
+                    "Images API rejected size=%s; retrying once with 1024x1024 (%s).",
+                    params.get("size"), upload_format,
                 )
-                return await self.call_images_api(
+                size_retried = True
+                params = self._safe_gpt_image_size_fallback(params)
+                result = await request(
                     images, prompt, model, key, base_url, proxy,
-                    generation_params=generation_params,
-                    exact_endpoint=exact_endpoint,
-                    _size_fallback_attempt=_size_fallback_attempt,
-                    _skip_multipart=True,
+                    generation_params=params, exact_endpoint=exact_endpoint,
                 )
-            return multipart_result
+            if index + 1 == len(formats) or not self._is_image_upload_compatibility_error(result):
+                return result
+            logger.warning(
+                "Images API %s upload rejected (%s); trying %s once.",
+                upload_format, safe_error_summary(result), formats[index + 1],
+            )
+        return result
+
+    def _is_image_upload_compatibility_error(self, result: Any) -> bool:
+        if not self._is_transport_compatibility_error(result):
+            return False
+        text = result.split(" | URL:", 1)[0].lower()
+        if classify_generation_error(text).status_code in {404, 405}:
+            return False
+        if self._is_images_edits_unsupported_error(text):
+            return False
+        if classify_generation_error(text).status_code == 415:
+            return True
+        text = text.split(":", 1)[-1]
+        return any(marker in text for marker in (
+            "multipart", "form-data", "unsupported media type", "expected uploadfile",
+            "image must be a file", "missing_image", "image_url is required",
+            "openai_error", "bad_response_status_code", "application/json",
+            "expected json", "expected file", "file upload",
+        ))
+
+    async def _call_images_api_json(self, images: List[bytes], prompt: str,
+                                    model: str, key: str, base_url: str, proxy: str = None,
+                                    generation_params: Dict = None,
+                                    exact_endpoint: bool = False) -> bytes | str:
+        """Send one JSON Images request without recursively retrying uploads."""
+        has_input_image = bool(images)
 
         candidate_urls = [base_url.rstrip("/")] if exact_endpoint else self._build_candidate_generic_image_urls(
             base_url, has_input_image=has_input_image
@@ -984,41 +1013,11 @@ class ApiManager:
                         except:
                             pass
 
-                        if (
-                                not _size_fallback_attempt
-                                and not has_input_image
-                                and self._is_gpt_image_model(model)
-                                and str(generation_params.get("size", "")).lower() != "1024x1024"
-                                and resp.status in {400, 422}
-                        ):
-                            logger.warning(
-                                "Images API rejected GPT Image size=%s; retrying once with 1024x1024.",
-                                generation_params.get("size", ""),
-                            )
-                            return await self.call_images_api(
-                                images, prompt, model, key, base_url, proxy,
-                                generation_params=self._safe_gpt_image_size_fallback(generation_params),
-                                exact_endpoint=exact_endpoint,
-                                _size_fallback_attempt=True,
-                            )
-
                         if has_input_image and self._is_images_edits_unsupported_error(err_msg):
                             if idx < len(candidate_urls) - 1:
                                 logger.warning(f"Images API edits endpoint unsupported, trying next candidate: {candidate_urls[idx + 1]}")
                                 continue
-                            return f"Images API edits endpoint unsupported {resp.status}: {err_msg[:300]} | URL: {url}"
-
-                        if self._should_retry_images_api_with_multipart(
-                                err_msg,
-                                has_input_image,
-                                allow_opaque_upstream_error=not exact_endpoint,
-                        ):
-                            logger.info("Images API JSON 请求失败，检测到服务端更偏好 multipart/form-data，自动重试")
-                            return await self._call_images_api_multipart(
-                                images, prompt, model, key, base_url, proxy,
-                                generation_params=generation_params,
-                                exact_endpoint=exact_endpoint,
-                            )
+                            return f"Images API Error {resp.status}: edits endpoint unsupported: {err_msg[:300]} | URL: {url}"
 
                         return f"Images API Error {resp.status}: {err_msg[:300]} | URL: {url}"
 
@@ -1424,11 +1423,8 @@ class ApiManager:
                              aspect_ratio: str = None,
                              resolution: str = None,
                              interface_override: str = None) -> bytes | str:
-        """核心生成逻辑"""
-
+        """Bound protocol fallback to one attempt per interface and one key."""
         self._reset_metrics()
-        call_start = asyncio.get_running_loop().time()
-
         protocol = normalize_protocol(self.config.get("protocol", PROTOCOL_AUTO))
         if is_native_protocol(protocol):
             return await self._call_native_protocol_api(
@@ -1440,25 +1436,41 @@ class ApiManager:
 
         interface_mode = str(interface_override or self._get_interface_mode()).strip().lower()
         if interface_mode == "auto":
-            last_result: bytes | str = "自动接口探测失败"
-            for transport in self._auto_interface_order(model, bool(images)):
-                last_result = await self._call_api_once(
-                    images, prompt, model, proxy,
-                    use_text_to_image_api=use_text_to_image_api,
-                    aspect_ratio=aspect_ratio,
-                    resolution=resolution,
-                    interface_override=transport,
-                )
-                if isinstance(last_result, bytes) and last_result:
-                    return last_result
-                if not self._is_transport_compatibility_error(last_result):
-                    return last_result
-                logger.warning(
-                    "自动接口模式的 %s 请求不兼容，尝试 %s。",
-                    transport,
-                    "openai_chat" if transport == "openai_image" else "openai_image",
-                )
-            return last_result
+            interfaces = self._auto_interface_order(model, bool(images))
+        elif interface_override or interface_mode not in {"openai_image", "openai_chat"}:
+            interfaces = [interface_mode]
+        else:
+            if interface_mode == "openai_chat" and self.config.get("generic_prefer_images_api", False) and len(images) <= 1:
+                interface_mode = "openai_image"
+            interfaces = [interface_mode, "openai_chat" if interface_mode == "openai_image" else "openai_image"]
+
+        if not self._get_base_url(interfaces[0], use_text_to_image_api=use_text_to_image_api):
+            return "API URL 未配置"
+        key = await self.get_key(interfaces[0], use_text_to_image_api=use_text_to_image_api)
+        if not key:
+            return "无可用 API Key"
+        for index, transport in enumerate(interfaces):
+            result = await self._call_api_transport(
+                images, prompt, model, key, transport, proxy,
+                use_text_to_image_api=use_text_to_image_api,
+                aspect_ratio=aspect_ratio, resolution=resolution,
+            )
+            if index + 1 == len(interfaces) or not self._is_transport_compatibility_error(result):
+                return result
+            logger.warning(
+                "Drawing interface %s rejected the request (%s); trying %s once.",
+                transport, safe_error_summary(result), interfaces[index + 1],
+            )
+        return result
+
+    async def _call_api_transport(self, images: List[bytes], prompt: str,
+                                   model: str, key: str, interface_mode: str,
+                                   proxy: str = None,
+                                   use_text_to_image_api: bool = False,
+                                   aspect_ratio: str = None,
+                                   resolution: str = None) -> bytes | str:
+        """Send a single protocol request; the caller owns compatibility retries."""
+        call_start = asyncio.get_running_loop().time()
         mode = "gemini_official" if interface_mode == "gemini_official" else "generic"
 
         # 1. 确定 URL
@@ -1466,11 +1478,6 @@ class ApiManager:
 
         if not base:
             return "API URL 未配置"
-
-        # 2. 获取 Key
-        key = await self.get_key(interface_mode, use_text_to_image_api=use_text_to_image_api)
-        if not key:
-            return "无可用 API Key"
 
         # 3. 构造请求
         headers = {"Content-Type": "application/json"}
@@ -1517,48 +1524,11 @@ class ApiManager:
                     base,
                 )
                 exact_image_endpoint = False
-            image_result = await self.call_images_api(
+            return await self.call_images_api(
                 images, prompt, model, key, base, proxy,
                 generation_params=generation_params,
                 exact_endpoint=exact_image_endpoint,
             )
-            if (
-                    interface_override is None
-                    and self._is_transport_compatibility_error(image_result)
-            ):
-                logger.warning(
-                    "Images API 请求不兼容，尝试同一渠道的 Chat Completions 回退。"
-                )
-                return await self._call_api_once(
-                    images, prompt, model, proxy,
-                    use_text_to_image_api=use_text_to_image_api,
-                    aspect_ratio=aspect_ratio,
-                    resolution=resolution,
-                    interface_override="openai_chat",
-                )
-            return image_result
-
-        # 对于明确使用 Generic 图片接口的站点，可配置为优先直连 Images API
-        # 但当输入为多图时，优先走 chat/completions 以保留全部参考图（Images API 常只接受单图编辑）。
-        if interface_mode == "openai_chat" and self.config.get("generic_prefer_images_api", False):
-            if len(images) <= 1:
-                logger.info("已启用 generic_prefer_images_api，优先直接走 Images API")
-                image_api_result = await self.call_images_api(
-                    images, prompt, model, key, base, proxy,
-                    generation_params=generation_params
-                )
-                if not (
-                        images
-                        and isinstance(image_api_result, str)
-                        and self._is_images_edits_unsupported_error(image_api_result)
-                ):
-                    return image_api_result
-                logger.warning("Preferred Images API edits endpoint is unsupported; falling back to chat/completions.")
-            logger.info(
-                "generic_prefer_images_api 已启用，但检测到多图输入，"
-                "为保留全部参考图改走 chat/completions"
-            )
-
         # 画质强化 Prompt
         res_set = generation_params["resolution"]
         final_prompt = f"(Masterpiece, Best Quality, {res_set} Resolution), {prompt}" if res_set != "1K" else prompt
@@ -1624,10 +1594,8 @@ class ApiManager:
             payload.update(pl)
 
             # 针对 Gemini 系模型的 OpenAI 兼容层特殊处理
-            # 参考 bananic_ninjutsu: 如果模型名包含 pro/image/banana，显式添加 modalities
             lower_model = model.lower()
-            if "gemini" in lower_model or "pro" in lower_model or "image" in lower_model:
-                # 无论何种模式，只要模型名看起来像 Gemini，就尝试注入 modalities
+            if "gemini" in lower_model or "banana" in lower_model:
                 payload["modalities"] = ["image", "text"]
 
                 # 尝试强制注入 safetySettings (很多中转支持透传此参数)
@@ -1694,25 +1662,11 @@ class ApiManager:
                             if "error" in err_json:
                                 err_msg = json.dumps(err_json["error"], ensure_ascii=False)
 
-                                if interface_mode == "openai_chat" and self._should_fallback_to_images_api(err_msg, bool(images)):
-                                    logger.info(f"模型 {model} 当前错误适合切换到 Images API，自动回退处理")
-                                    return await self.call_images_api(
-                                        images, prompt, model, key, base, proxy,
-                                        generation_params=generation_params
-                                    )
-
                                 return f"API Error {resp.status}: {err_msg} | URL: {active_url}"
 
                             # 兼容顶层直接报错结构: {"message": "...", "type": "...", "code": "..."}
                             if any(k in err_json for k in ["message", "type", "code", "param"]):
                                 err_msg = json.dumps(err_json, ensure_ascii=False)
-
-                                if interface_mode == "openai_chat" and self._should_fallback_to_images_api(err_msg, bool(images)):
-                                    logger.info(f"模型 {model} 返回顶层错误结构，自动回退到 Images API")
-                                    return await self.call_images_api(
-                                        images, prompt, model, key, base, proxy,
-                                        generation_params=generation_params
-                                    )
 
                                 return f"API Error {resp.status}: {err_msg} | URL: {active_url}"
                         except:
@@ -1725,13 +1679,6 @@ class ApiManager:
                                     f"请填写 API 基础地址，而不是网站首页。例如应填写接口所在前缀，如 https://域名/api 或 https://域名/openai。"
                                 )
                             return f"HTTP {resp.status}: 服务端返回了网页而非数据，请检查URL配置。"
-
-                        if interface_mode == "openai_chat" and self._should_fallback_to_images_api(resp_text, bool(images)):
-                            logger.info(f"模型 {model} 当前错误适合切换到 Images API，自动回退处理")
-                            return await self.call_images_api(
-                                images, prompt, model, key, base, proxy,
-                                generation_params=generation_params
-                            )
 
                         return f"HTTP {resp.status}: {resp_text[:200]} | URL: {active_url}"
 

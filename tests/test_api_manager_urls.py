@@ -80,14 +80,15 @@ class ApiEndpointBuildTest(unittest.TestCase):
             "json",
         )
 
-    def test_gpt_image_edit_clamps_an_unsupported_high_resolution_size(self):
+    def test_gpt_image_edit_preserves_requested_high_resolution_size(self):
         requested = {"resolution": "2K", "aspect_ratio": "1:1", "size": "2048x2048"}
         normalized = self.manager._normalize_gpt_image_edit_generation_params(
             requested,
             "gpt-image-2",
             True,
         )
-        self.assertEqual(normalized, {"resolution": "1K", "aspect_ratio": "1:1", "size": "1024x1024"})
+        self.assertEqual(normalized, requested)
+        self.assertIsNot(normalized, requested)
         self.assertEqual(requested["size"], "2048x2048")
 
     def test_gpt_image_text_request_keeps_the_requested_resolution(self):
@@ -108,7 +109,7 @@ class ApiEndpointBuildTest(unittest.TestCase):
     def test_auto_interface_order_prefers_chat_for_generic_multimodal_model(self):
         self.assertEqual(
             self.manager._auto_interface_order("gemini-3.1-flash-image", True),
-            ["openai_image", "openai_chat"],
+            ["openai_chat", "openai_image"],
         )
         self.assertEqual(
             self.manager._auto_interface_order("some-vision-model", True),
@@ -125,7 +126,7 @@ class ApiEndpointBuildTest(unittest.TestCase):
         self.assertTrue(self.manager._is_transport_compatibility_error(
             'Images API Error 400: {"code":"bad_response_status_code"}'
         ))
-        self.assertTrue(self.manager._is_transport_compatibility_error(
+        self.assertFalse(self.manager._is_transport_compatibility_error(
             'API Error 400: invalid operation: <nil> * float64'
         ))
         self.assertFalse(self.manager._is_transport_compatibility_error(
@@ -245,6 +246,9 @@ class ImageEditTransportTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(result, str)
         self.assertEqual(captured["json"]["n"], 1)
         self.assertEqual(captured["json"]["model"], "gpt-image-2")
+        self.assertNotIn("safetySettings", captured["json"])
+        self.assertNotIn("modalities", captured["json"])
+        self.assertNotIn("image_config", captured["json"])
 
     async def test_gpt_image_generation_retries_once_with_conservative_size(self):
         manager = self.ApiManager({"timeout": 10})

@@ -29,12 +29,12 @@ from .utils import is_ambiguous_message_delivery_timeout, norm_id, normalize_api
 
 
 PLUGIN_NAME = "astrbot_plugin_linghui_studio"
-PLUGIN_VERSION = "3.8.6"
+PLUGIN_VERSION = "3.8.8"
 DRAWING_CHANNEL_TEMPLATE_KEY = "drawing_channel"
 _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _PREVIEW_MAX_BYTES = 300 * 1024
-_INTERFACE_MODES = {"openai_image", "openai_chat", "gemini_official", "custom_endpoint"}
+_INTERFACE_MODES = {"auto", "openai_image", "openai_chat", "gemini_official", "custom_endpoint"}
 _DASHBOARD_THEMES = {"dark", "light", "alice", "terminal", "nebula"}
 _DASHBOARD_DENSITIES = {"comfortable", "compact"}
 
@@ -206,7 +206,7 @@ class LinghuiDashboardApi:
             "enabled": self._as_bool(channel.get("enabled", True)),
             "fallback_enabled": self._as_bool(channel.get("fallback_enabled", True)),
             "reference_image_enabled": self._as_bool(channel.get("reference_image_enabled", True)),
-            "interface_mode": str(channel.get("interface_mode", "openai_chat") or "openai_chat"),
+            "interface_mode": str(channel.get("interface_mode", "auto") or "auto"),
             "protocol": normalize_protocol(channel.get("protocol", "auto")),
             "image_edit_transport": str(channel.get("image_edit_transport", "auto") or "auto"),
             "base_url": str(channel.get("base_url", "") or ""),
@@ -592,7 +592,7 @@ class LinghuiDashboardApi:
             # renames the channel without re-entering that key.
             original_id = str(raw.get("original_id", "") or "").strip()
             old = existing.get(original_id) or existing.get(channel_id, {})
-            interface_mode = str(raw.get("interface_mode", "openai_chat") or "openai_chat").strip()
+            interface_mode = str(raw.get("interface_mode", old.get("interface_mode", "auto")) or "auto").strip().lower()
             if interface_mode not in _INTERFACE_MODES:
                 raise ValueError(f"渠道 {channel_id} 的接口模式无效。")
             protocol = str(raw.get("protocol", "auto") or "auto").strip().lower()
@@ -2149,7 +2149,7 @@ class LinghuiDashboardApi:
         return {
             "id": "legacy",
             "name": "兼容单接口",
-            "interface_mode": self.plugin.conf.get("interface_mode", "openai_chat"),
+            "interface_mode": self.plugin.conf.get("interface_mode", "auto"),
             "base_url": self.plugin.conf.get("base_url", ""),
             "api_keys": self.plugin.conf.get("api_keys", ""),
             "model": self.plugin.conf.get("model", ""),
@@ -2161,7 +2161,7 @@ class LinghuiDashboardApi:
         if channel is None:
             return jsonify({"success": False, "message": "未找到绘图渠道。"}), 404
 
-        interface_mode = str(channel.get("interface_mode", "openai_chat") or "openai_chat").strip()
+        interface_mode = str(channel.get("interface_mode", "auto") or "auto").strip()
         base_url = str(channel.get("base_url", "") or self.plugin.conf.get("base_url", "") or "").strip()
         root = normalize_api_root(base_url)
         if not root:
