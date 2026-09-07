@@ -3990,6 +3990,15 @@ class LinghuiStudioPlugin(Star):
                             suppress_user_error=True
                         )
 
+            if self._background_generation_enabled():
+                async def process_sources_in_background():
+                    await asyncio.gather(*(process_single_source(img) for img in images))
+                self._spawn_background_generation(
+                    process_sources_in_background(), event.unified_msg_origin, total_images * count
+                )
+                return self._finalize_llm_tool_success(
+                    f"[TOOL_SUCCESS] 已提交后台图片处理任务，共 {total_images * count} 张；结果会陆续发回，你可以继续正常聊天。"
+                )
             branch_results = await asyncio.gather(*(process_single_source(img) for img in images))
             total_success = 0
             total_fail = 0
