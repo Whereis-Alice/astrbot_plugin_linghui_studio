@@ -3079,7 +3079,8 @@ class LinghuiStudioPlugin(Star):
                                    suppress_user_error: bool = False,
                                    aspect_ratio: str = None, resolution: str = None,
                                    force_task: bool = False, task_nonce: str = "",
-                                   task_type_override: str = "") -> Tuple[bool, str]:
+                                   task_type_override: str = "",
+                                   llm_tool_call: bool = False) -> Tuple[bool, str]:
         """
         后台执行生成任务，并在完成后主动发送消息。
 
@@ -3094,7 +3095,7 @@ class LinghuiStudioPlugin(Star):
         try:
             execution_mode = str(self.conf.get("generation_execution_mode", "background") or "background").strip().lower()
             result_text_mode = str(self.conf.get("background_result_text_mode", "image_only") or "image_only").strip().lower()
-            is_background = execution_mode == "background"
+            is_background = llm_tool_call and execution_mode == "background"
             if is_background and result_text_mode == "image_only":
                 hide_text = True
             # 人设功能的参考图已在调用前合并，普通预设在这里补齐。
@@ -3788,7 +3789,8 @@ class LinghuiStudioPlugin(Star):
                 extra_rules,
                 model_override=self._get_text_to_image_model(), hide_text=hide_llm_result_text,
                 use_text_to_image_api=True, suppress_user_error=True,
-                aspect_ratio=requested_aspect_ratio, resolution=requested_resolution
+                aspect_ratio=requested_aspect_ratio, resolution=requested_resolution,
+                llm_tool_call=True
             )
             if self._background_generation_enabled():
                 self._spawn_background_generation(generation_coro, event.unified_msg_origin, count)
@@ -3981,7 +3983,7 @@ class LinghuiStudioPlugin(Star):
                         return await self._run_background_task(
                             event, [img], final_prompt, preset_name, deduction, uid, gid, count,
                             extra_rules, hide_text=hide_llm_result_text, charge_quota=False,
-                            suppress_user_error=True
+                            suppress_user_error=True, llm_tool_call=True
                         )
                     else:
                         return await self._run_batch_image_to_image(
@@ -4060,6 +4062,7 @@ class LinghuiStudioPlugin(Star):
             generation_coro = self._run_background_task(
                 event, images, final_prompt, preset_name, deduction, uid, gid, total_cost,
                 extra_rules, hide_text=hide_llm_result_text, suppress_user_error=True
+                , llm_tool_call=True
             )
             if self._background_generation_enabled():
                 self._spawn_background_generation(generation_coro, event.unified_msg_origin, count)
@@ -5348,6 +5351,7 @@ class LinghuiStudioPlugin(Star):
             success, error_msg = await self._run_background_task(
                 event, [], final_prompt, preset_name, deduction, uid, gid, 1, extra_rules,
                 hide_text=True, use_text_to_image_api=True, suppress_user_error=True
+                , llm_tool_call=True
             )
             if not success:
                 return self._build_llm_tool_failure(error_msg)
@@ -5390,6 +5394,7 @@ class LinghuiStudioPlugin(Star):
             success, error_msg = await self._run_background_task(
                 event, images, processed_prompt, preset_name, deduction, uid, gid, 1,
                 extra_rules, hide_text=True, suppress_user_error=True
+                , llm_tool_call=True
             )
             if not success:
                 return self._build_llm_tool_failure(error_msg)
@@ -7177,18 +7182,12 @@ class LinghuiStudioPlugin(Star):
                 cost=1,
                 extra_rules=extra_request,
                 hide_text=hide_llm_result_text,
-                suppress_user_error=True
+                suppress_user_error=True, llm_tool_call=True
             )
-            if self._background_generation_enabled():
-                self._spawn_background_generation(batch_coro, event.unified_msg_origin, count)
-                return self._finalize_llm_tool_success(
-                    f"[TOOL_SUCCESS] 已提交后台自拍任务，共 {count} 张；照片完成后会陆续发回，你可以继续正常聊天。"
-                )
-            batch_result = await batch_coro
             if self._background_generation_enabled():
                 self._spawn_background_generation(generation_coro, event.unified_msg_origin, count)
                 return self._finalize_llm_tool_success(
-                    "[TOOL_SUCCESS] 自拍任务已提交后台处理，完成后会主动发回；你可以继续正常聊天，不要重复提交同一请求。"
+                    f"[TOOL_SUCCESS] 已提交后台自拍任务，共 {count} 张；照片完成后会陆续发回，你可以继续正常聊天。"
                 )
             success, error_msg = await generation_coro
             if not success:
