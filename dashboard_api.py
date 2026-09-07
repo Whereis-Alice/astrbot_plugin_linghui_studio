@@ -29,7 +29,7 @@ from .utils import is_ambiguous_message_delivery_timeout, norm_id, normalize_api
 
 
 PLUGIN_NAME = "astrbot_plugin_linghui_studio"
-PLUGIN_VERSION = "3.8.8"
+PLUGIN_VERSION = "3.8.9"
 DRAWING_CHANNEL_TEMPLATE_KEY = "drawing_channel"
 _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024

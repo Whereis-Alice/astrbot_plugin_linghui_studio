@@ -123,7 +123,7 @@ class ApiEndpointBuildTest(unittest.TestCase):
         self.assertEqual(requested["size"], "3840x2160")
 
     def test_transport_compatibility_error_detection_is_bounded_to_endpoint_signals(self):
-        self.assertTrue(self.manager._is_transport_compatibility_error(
+        self.assertFalse(self.manager._is_transport_compatibility_error(
             'Images API Error 400: {"code":"bad_response_status_code"}'
         ))
         self.assertFalse(self.manager._is_transport_compatibility_error(
@@ -281,7 +281,7 @@ class ImageEditTransportTest(unittest.IsolatedAsyncioTestCase):
         class FakeSession:
             def __init__(self):
                 self.responses = [
-                    FakeResponse(400, b'{"error":{"message":"bad_response_status_code"}}'),
+                    FakeResponse(400, b'{"error":{"message":"unsupported size"}}'),
                     FakeResponse(200, image_bytes),
                 ]
 

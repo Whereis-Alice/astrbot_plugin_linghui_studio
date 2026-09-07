@@ -164,6 +164,7 @@ class TransportFallbackTest(unittest.IsolatedAsyncioTestCase):
             (400, "invalid prompt"),
             (400, "reference image blocked by safety policy openai_error"),
             (400, "reference image invalid_api_key"),
+            (400, "upstream_error code=400 openai_error"),
             (503, "openai_error"),
             (504, "gateway timeout"),
         ]
@@ -220,7 +221,5 @@ class TransportFallbackTest(unittest.IsolatedAsyncioTestCase):
     async def test_opaque_error_has_bounded_size_format_and_protocol_attempts(self):
         manager, session = self.manager([error(400, "openai_error")] * 4)
         await manager._call_api_once([png_bytes("red")], "a blue circle", "gpt-image-2", resolution="2K")
-        self.assertEqual(len(session.calls), 4)
-        self.assertEqual(["multipart" if "data" in kwargs else "json" for _, kwargs in session.calls], ["multipart", "multipart", "json", "json"])
-        self.assertTrue(session.calls[-1][0].endswith("/chat/completions"))
+        self.assertEqual(len(session.calls), 1)
         self.assertEqual(manager.unified_idx, 1)

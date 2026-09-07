@@ -131,11 +131,18 @@ def classify_generation_error(error: Any) -> GenerationError:
 
     if _contains(
         lower, "content_filter", "safety filter", "safety", "blocked", "moderation",
+        "image_unsafe", "image unsafe", "poll failed: 451",
         "安全过滤", "内容过滤", "生成被拦截", "sexually_explicit",
     ):
         return GenerationError(
             "safety", "内容安全限制", False, False, False, False, status,
             "请求被内容安全规则拦截，请调整提示词后重试。",
+        )
+
+    if _contains(lower, "upstream_error", "upstream error", "bad_response_status_code", "openai_error"):
+        return GenerationError(
+            "upstream", "上游服务异常", True, False, True, True, status,
+            "上游服务返回了异常响应，已尝试其他可用渠道。",
         )
 
     if _contains(

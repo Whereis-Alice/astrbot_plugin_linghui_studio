@@ -376,6 +376,20 @@
     "options": ["off", "name", "at"],
     "default": "name"
   },
+  "generation_execution_mode": {
+    "type": "string",
+    "description": "【绘图运行与排障】生图任务执行方式",
+    "hint": "wait=工具等待图片完成后再返回；background=提交任务后立即返回，图片完成后由插件主动发回。后台模式允许 Bot 在等待期间继续处理聊天，推荐使用 background。",
+    "options": ["background", "wait"],
+    "default": "background"
+  },
+  "background_result_text_mode": {
+    "type": "string",
+    "description": "【绘图运行与排障】后台完成消息文字",
+    "hint": "image_only=后台任务完成时只发送图片，不附加成功文字；name=附带请求者和简短完成信息；full=沿用完整成功信息（预设、额度、模型等）。",
+    "options": ["image_only", "name", "full"],
+    "default": "image_only"
+  },
   "enable_luxury_mode": {
     "type": "bool",
     "description": "【绘图运行与排障】并发抢占模式",

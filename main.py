@@ -209,6 +209,8 @@ class LinghuiStudioPlugin(Star):
         "channel_cooldown_seconds",
         "channel_key_retry_count",
         "fallback_on_safety_error",
+        "generation_execution_mode",
+        "background_result_text_mode",
         "generic_api_url",
         "generic_api_keys",
         "gemini_api_url",
@@ -334,6 +336,7 @@ class LinghuiStudioPlugin(Star):
         # 后台生成任务状态跟踪（用于 PDF 等待“全部生成完成”）
         self._pending_generation_tasks: Dict[str, int] = {}  # session_id -> pending count
         self._pending_generation_lock = asyncio.Lock()
+        self._background_generation_tasks: set[asyncio.Task] = set()
 
         # 会话级成功生成记录（用于限制 PDF 工具只能在图片成功生成后调用）
         self._session_generated_success: Dict[str, int] = {}  # session_id -> success count
@@ -3089,6 +3092,11 @@ class LinghuiStudioPlugin(Star):
         charged = False
         record: Optional[Dict[str, Any]] = None
         try:
+            execution_mode = str(self.conf.get("generation_execution_mode", "background") or "background").strip().lower()
+            result_text_mode = str(self.conf.get("background_result_text_mode", "image_only") or "image_only").strip().lower()
+            is_background = execution_mode == "background"
+            if is_background and result_text_mode == "image_only":
+                hide_text = True
             # 人设功能的参考图已在调用前合并，普通预设在这里补齐。
             if preset_name != "自定义" and not preset_name.startswith("人设-") and self.conf.get(
                     "enable_preset_ref_images", True):
@@ -3193,8 +3201,8 @@ class LinghuiStudioPlugin(Star):
                     if self.conf.get("show_model_info", False):
                         info_text += f" | {actual_model}"
                     chain_nodes.append(Plain(info_text))
-                else:
-                    chain_nodes.append(Plain(" "))
+                elif is_background and result_text_mode == "name":
+                    chain_nodes.append(Plain(f"\n{self._requester_prefix_text(event)}✅ 图片完成"))
 
                 delivery_status = await self._send_generated_result(event, event.chain_result(chain_nodes))
                 if record_id:
@@ -3258,6 +3266,26 @@ class LinghuiStudioPlugin(Star):
             return False, str(error_msg).removeprefix("❌").strip()
         finally:
             await self._complete_pending_generation(event.unified_msg_origin, 1)
+
+    def _background_generation_enabled(self) -> bool:
+        return str(self.conf.get("generation_execution_mode", "background") or "background").strip().lower() == "background"
+
+    def _spawn_background_generation(self, coroutine, session_id: str = "", count: int = 1) -> asyncio.Task:
+        """提交后台生成并保留任务引用，避免被 GC 或插件卸载时失控。"""
+        task = asyncio.create_task(coroutine)
+        self._background_generation_tasks.add(task)
+
+        def done(completed: asyncio.Task):
+            self._background_generation_tasks.discard(completed)
+            if completed.cancelled():
+                return
+            try:
+                completed.exception()
+            except Exception as exc:
+                logger.error("Linghui background generation task failed: %s", exc, exc_info=True)
+
+        task.add_done_callback(done)
+        return task
 
     # ================= 批量文生图功能 =================
 
@@ -3755,22 +3783,34 @@ class LinghuiStudioPlugin(Star):
         # 5. 等待生成任务完成并确认图片已发送，再把成功结果交给二次 LLM 收尾。
         await self._register_pending_generation(event.unified_msg_origin, count)
         if count == 1:
-            success, error_msg = await self._run_background_task(
+            generation_coro = self._run_background_task(
                 event, [], final_prompt, preset_name, deduction, uid, gid, total_cost,
                 extra_rules,
                 model_override=self._get_text_to_image_model(), hide_text=hide_llm_result_text,
                 use_text_to_image_api=True, suppress_user_error=True,
                 aspect_ratio=requested_aspect_ratio, resolution=requested_resolution
             )
+            if self._background_generation_enabled():
+                self._spawn_background_generation(generation_coro, event.unified_msg_origin, count)
+                return self._finalize_llm_tool_success(
+                    "[TOOL_SUCCESS] 图片任务已提交后台处理，完成后会主动发回；请继续正常聊天，不要重复提交同一请求。"
+                )
+            success, error_msg = await generation_coro
             total_success = 1 if success else 0
             total_fail = 0 if success else 1
             branch_errors = [error_msg] if error_msg else []
         else:
-            batch_result = await self._run_batch_text_to_image(
+            batch_coro = self._run_batch_text_to_image(
                 event, final_prompt, preset_name, deduction, uid, gid, count, extra_rules,
                 hide_llm_result_text, suppress_user_error=True,
                 aspect_ratio=requested_aspect_ratio, resolution=requested_resolution
             )
+            if self._background_generation_enabled():
+                self._spawn_background_generation(batch_coro, event.unified_msg_origin, count)
+                return self._finalize_llm_tool_success(
+                    f"[TOOL_SUCCESS] 已提交后台批量任务，共 {count} 张；图片完成后会陆续发回，请继续正常聊天。"
+                )
+            batch_result = await batch_coro
             total_success = int(batch_result.get("success", 0))
             total_fail = int(batch_result.get("fail", 0))
             branch_errors = batch_result.get("errors", [])
@@ -4008,10 +4048,16 @@ class LinghuiStudioPlugin(Star):
         # 7. 等待生成任务完成并确认图片已发送，再把成功结果交给二次 LLM 收尾。
         await self._register_pending_generation(event.unified_msg_origin, count)
         if count == 1:
-            success, error_msg = await self._run_background_task(
+            generation_coro = self._run_background_task(
                 event, images, final_prompt, preset_name, deduction, uid, gid, total_cost,
                 extra_rules, hide_text=hide_llm_result_text, suppress_user_error=True
             )
+            if self._background_generation_enabled():
+                self._spawn_background_generation(generation_coro, event.unified_msg_origin, count)
+                return self._finalize_llm_tool_success(
+                    "[TOOL_SUCCESS] 图片任务已提交后台处理，完成后会主动发回；请继续正常聊天，不要重复提交同一请求。"
+                )
+            success, error_msg = await generation_coro
             total_success = 1 if success else 0
             total_fail = 0 if success else 1
             branch_errors = [error_msg] if error_msg else []
@@ -7111,7 +7157,7 @@ class LinghuiStudioPlugin(Star):
         # 10. 等待拍照任务完成并确认图片已发送，再把成功结果交给二次 LLM 收尾。
         await self._register_pending_generation(event.unified_msg_origin, count)
         if count == 1:
-            success, error_msg = await self._run_background_task(
+            generation_coro = self._run_background_task(
                 event=event,
                 images=final_images,
                 prompt=full_prompt,
@@ -7124,6 +7170,12 @@ class LinghuiStudioPlugin(Star):
                 hide_text=hide_llm_result_text,
                 suppress_user_error=True
             )
+            if self._background_generation_enabled():
+                self._spawn_background_generation(generation_coro, event.unified_msg_origin, count)
+                return self._finalize_llm_tool_success(
+                    "[TOOL_SUCCESS] 自拍任务已提交后台处理，完成后会主动发回；你可以继续正常聊天，不要重复提交同一请求。"
+                )
+            success, error_msg = await generation_coro
             if not success:
                 return self._build_llm_tool_failure(error_msg)
             if count_limited:
@@ -7642,6 +7694,13 @@ class LinghuiStudioPlugin(Star):
 
     async def terminate(self):
         """Stop maintenance work and release persistent HTTP sessions on unload."""
+        background_tasks = list(self._background_generation_tasks)
+        self._background_generation_tasks.clear()
+        for task in background_tasks:
+            if not task.done():
+                task.cancel()
+        if background_tasks:
+            await asyncio.gather(*background_tasks, return_exceptions=True)
         cleanup_task = self._generation_cache_cleanup_task
         self._generation_cache_cleanup_task = None
         if cleanup_task is not None and not cleanup_task.done():

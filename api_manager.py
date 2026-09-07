@@ -579,7 +579,7 @@ class ApiManager:
             return False
         text = result.split(" | URL:", 1)[0].split(" | Candidates:", 1)[0].lower()
         classification = classify_generation_error(text)
-        if classification.category in {"authentication", "rate_limit", "safety", "timeout", "network"}:
+        if classification.category in {"authentication", "rate_limit", "safety", "timeout", "network", "upstream"}:
             return False
         if classification.status_code not in {400, 404, 405, 415, 422}:
             return False
@@ -612,7 +612,7 @@ class ApiManager:
     def _is_size_compatibility_error(result: Any) -> bool:
         text = str(result or "").split(" | URL:", 1)[0].lower()
         error = classify_generation_error(text)
-        if error.category in {"authentication", "rate_limit", "safety"} or error.status_code not in {400, 422}:
+        if error.category in {"authentication", "rate_limit", "safety", "upstream"} or error.status_code not in {400, 422}:
             return False
         if any(word in text for word in ("quota", "balance", "insufficient", "payment", "tiered expr", "余额", "计费", "invalid operation")):
             return False
@@ -925,6 +925,8 @@ class ApiManager:
         if not self._is_transport_compatibility_error(result):
             return False
         text = result.split(" | URL:", 1)[0].lower()
+        if classify_generation_error(text).category == "upstream":
+            return False
         if classify_generation_error(text).status_code in {404, 405}:
             return False
         if self._is_images_edits_unsupported_error(text):
