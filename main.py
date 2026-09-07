@@ -4062,7 +4062,7 @@ class LinghuiStudioPlugin(Star):
             total_fail = 0 if success else 1
             branch_errors = [error_msg] if error_msg else []
         else:
-            batch_result = await self._run_batch_image_to_image(
+            batch_coro = self._run_batch_image_to_image(
                 event, images, final_prompt, preset_name, deduction, uid, gid, count,
                 extra_rules, hide_llm_result_text, suppress_user_error=True
             )
@@ -7170,6 +7170,12 @@ class LinghuiStudioPlugin(Star):
                 hide_text=hide_llm_result_text,
                 suppress_user_error=True
             )
+            if self._background_generation_enabled():
+                self._spawn_background_generation(batch_coro, event.unified_msg_origin, count)
+                return self._finalize_llm_tool_success(
+                    f"[TOOL_SUCCESS] 已提交后台自拍任务，共 {count} 张；照片完成后会陆续发回，你可以继续正常聊天。"
+                )
+            batch_result = await batch_coro
             if self._background_generation_enabled():
                 self._spawn_background_generation(generation_coro, event.unified_msg_origin, count)
                 return self._finalize_llm_tool_success(
