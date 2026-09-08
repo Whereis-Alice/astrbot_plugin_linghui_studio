@@ -1568,6 +1568,7 @@ function hydrateFields() {
   byId("route-failure-threshold").value = routePolicy.failure_threshold ?? 3;
   byId("route-cooldown-seconds").value = routePolicy.cooldown_seconds ?? 90;
   byId("route-key-retry-count").value = routePolicy.key_retry_count ?? 1;
+  byId("command-image-cooldown").value = settings.command_cooldown_seconds ?? 0;
   byId("fallback-on-safety-error").checked = bool(routePolicy.fallback_on_safety_error);
   byId("enable-session-model-override").checked = bool(routePolicy.enable_session_model_override);
   byId("enable-session-channel-override").checked = bool(routePolicy.enable_session_channel_override);
@@ -1626,6 +1627,7 @@ function buildPayload() {
       image_resolution: value("resolution"),
       image_aspect_ratio: value("aspect-ratio"),
       timeout: Number(value("default-timeout")) || 120,
+      command_cooldown_seconds: Math.max(0, Math.min(3600, Number(value("command-image-cooldown")) || 0)),
       generation_cache_retention_days: Number(value("generation-cache-retention")) || 7,
       show_model_info: checked("show-model-info"),
       debug_mode: checked("debug-mode"),

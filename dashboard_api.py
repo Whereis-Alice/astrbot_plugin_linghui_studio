@@ -392,6 +392,9 @@ class LinghuiDashboardApi:
                 "image_resolution": str(self.plugin.conf.get("image_resolution", "1K") or "1K"),
                 "image_aspect_ratio": str(self.plugin.conf.get("image_aspect_ratio", "1:1") or "1:1"),
                 "timeout": self._as_int(self.plugin.conf.get("timeout", 120), 5, 900),
+                "command_cooldown_seconds": self._as_int(
+                    self.plugin.conf.get("command_cooldown_seconds", 0), 0, 3600
+                ),
                 "generation_cache_retention_days": self._as_int(
                     self.plugin.conf.get("generation_cache_retention_days", 7), 1, 365
                 ),
@@ -681,6 +684,7 @@ class LinghuiDashboardApi:
                                 changed_dynamic_keys.add(key)
                     for key, minimum, maximum in (
                         ("timeout", 5, 900),
+                        ("command_cooldown_seconds", 0, 3600),
                         ("generation_cache_retention_days", 1, 365),
                         ("generation_cache_max_mb", 0, 102_400),
                         ("result_image_download_timeout", 5, 300),
@@ -690,7 +694,7 @@ class LinghuiDashboardApi:
                     ):
                         if key in settings:
                             self.plugin.conf[key] = self._as_int(settings[key], minimum, maximum)
-                            if key in {"generation_cache_retention_days", "generation_cache_max_mb"}:
+                            if key in {"command_cooldown_seconds", "generation_cache_retention_days", "generation_cache_max_mb"}:
                                 changed_dynamic_keys.add(key)
                     if "generation_cache_trim_ratio" in settings:
                         self.plugin.conf["generation_cache_trim_ratio"] = self._as_float(
