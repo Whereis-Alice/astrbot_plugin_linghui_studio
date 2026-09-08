@@ -209,6 +209,7 @@ class LinghuiStudioPlugin(Star):
         "channel_cooldown_seconds",
         "channel_key_retry_count",
         "fallback_on_safety_error",
+        "command_cooldown_seconds",
         "generation_execution_mode",
         "background_result_text_mode",
         "generic_api_url",
@@ -327,6 +328,8 @@ class LinghuiStudioPlugin(Star):
         # 图片生成冷却时间（只针对图片生成，不影响正常聊天）
         self._image_cooldown_seconds = config.get("llm_cooldown_seconds", 60)
         self._user_last_image_gen: Dict[str, datetime] = {}  # 用户ID -> 上次图片生成时间
+        self._command_image_cooldown_seconds = config.get("command_cooldown_seconds", 0)
+        self._user_group_last_command_image_gen: Dict[Tuple[str, str], datetime] = {}
 
         # 消息去重缓存（防止多平台重复处理同一消息）
         self._processed_msg_ids: Dict[str, float] = {}  # msg_id -> timestamp
@@ -718,6 +721,31 @@ class LinghuiStudioPlugin(Star):
     def _update_image_cooldown(self, uid: str):
         """更新用户的图片生成时间"""
         self._user_last_image_gen[uid] = datetime.now()
+
+    def _command_cooldown_seconds(self) -> int:
+        try:
+            return min(max(0, int(self._command_image_cooldown_seconds or 0)), 3600)
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _command_cooldown_key(uid: str, gid: str) -> Tuple[str, str]:
+        return norm_id(uid), norm_id(gid) or "__private__"
+
+    def _check_command_image_cooldown(self, uid: str, gid: str) -> Tuple[bool, int]:
+        """Check manual-command cooldown independently per user and group."""
+        seconds = self._command_cooldown_seconds()
+        if seconds <= 0:
+            return False, 0
+        last = self._user_group_last_command_image_gen.get(self._command_cooldown_key(uid, gid))
+        if not last:
+            return False, 0
+        remaining = seconds - (datetime.now() - last).total_seconds()
+        return (True, max(1, int(remaining))) if remaining > 0 else (False, 0)
+
+    def _update_command_image_cooldown(self, uid: str, gid: str) -> None:
+        if self._command_cooldown_seconds() > 0:
+            self._user_group_last_command_image_gen[self._command_cooldown_key(uid, gid)] = datetime.now()
 
     def _get_cooldown_excuse(self, remaining: int) -> str:
         """
@@ -1369,6 +1397,13 @@ class LinghuiStudioPlugin(Star):
 
     def _save_config(self, changed_keys: Optional[List[str]] = None):
         try:
+            # Keep cooldown values live when Dashboard edits the config.
+            self._image_cooldown_seconds = self.conf.get(
+                "llm_cooldown_seconds", getattr(self, "_image_cooldown_seconds", 60)
+            )
+            self._command_image_cooldown_seconds = self.conf.get(
+                "command_cooldown_seconds", getattr(self, "_command_image_cooldown_seconds", 0)
+            )
             self._purge_deprecated_config_keys()
 
             dynamic_keys = set(self._DYNAMIC_CONFIG_KEYS)
@@ -4209,6 +4244,12 @@ class LinghuiStudioPlugin(Star):
         gid = norm_id(event.get_group_id())
         cost = 1
 
+        in_command_cooldown, remaining = self._check_command_image_cooldown(uid, gid)
+        if in_command_cooldown:
+            yield event.chain_result([Plain(self._get_cooldown_excuse(remaining))])
+            event.stop_event()
+            return
+
         deduction = await self._check_quota(event, uid, gid, cost)
         if deduction["allowed"] is False:
             yield event.chain_result([Plain(deduction["msg"])])
@@ -4274,6 +4315,8 @@ class LinghuiStudioPlugin(Star):
         if not images and not (is_custom_command and user_prompt):
             yield event.chain_result([Plain("请发送图片或提供描述。")])
             return
+
+        self._update_command_image_cooldown(uid, gid)
 
         # A custom command without an image is text-to-image.
         is_text_to_image = is_custom_command and not images and user_prompt
@@ -4419,8 +4462,15 @@ class LinghuiStudioPlugin(Star):
         if not prompt: yield event.chain_result([Plain("请输入描述。")]); return
 
         uid = norm_id(event.get_sender_id())
-        deduction = await self._check_quota(event, uid, event.get_group_id(), 1)
+        gid = norm_id(event.get_group_id())
+        in_command_cooldown, remaining = self._check_command_image_cooldown(uid, gid)
+        if in_command_cooldown:
+            yield event.chain_result([Plain(self._get_cooldown_excuse(remaining))])
+            return
+        deduction = await self._check_quota(event, uid, gid, 1)
         if not deduction["allowed"]: yield event.chain_result([Plain(deduction["msg"])]); return
+
+        self._update_command_image_cooldown(uid, gid)
 
         final_prompt, preset_name, extra_rules = self._process_prompt_and_preset(prompt)
 
@@ -4461,6 +4511,10 @@ class LinghuiStudioPlugin(Star):
             yield event.chain_result([Plain("这个指令需要 QQ 数字账号，当前平台无法读取 QQ 头像。")])
             return
 
+        in_command_cooldown, remaining = self._check_command_image_cooldown(uid, gid)
+        if in_command_cooldown:
+            yield event.chain_result([Plain(self._get_cooldown_excuse(remaining))])
+            return
         deduction = await self._check_quota(event, uid, gid, 1)
         if not deduction["allowed"]:
             yield event.chain_result([Plain(deduction["msg"])])
@@ -4470,6 +4524,8 @@ class LinghuiStudioPlugin(Star):
         if not avatar:
             yield event.chain_result([Plain("QQ 头像获取失败，请稍后重试或直接发送参考图。")])
             return
+
+        self._update_command_image_cooldown(uid, gid)
 
         if not prompt:
             prompt = "Create a polished portrait based on the reference avatar, preserving recognizable facial features and overall identity."
@@ -7297,10 +7353,16 @@ class LinghuiStudioPlugin(Star):
         # 检查配额
         uid = norm_id(event.get_sender_id())
         gid = norm_id(event.get_group_id())
+        in_command_cooldown, remaining = self._check_command_image_cooldown(uid, gid)
+        if in_command_cooldown:
+            yield event.chain_result([Plain(self._get_cooldown_excuse(remaining))])
+            return
         deduction = await self._check_quota(event, uid, gid, 1)
         if not deduction["allowed"]:
             yield event.chain_result([Plain(deduction["msg"])])
             return
+
+        self._update_command_image_cooldown(uid, gid)
 
         # 发送反馈
         persona_name = self.conf.get("persona_name", "小助手")

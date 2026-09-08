@@ -906,6 +906,14 @@
     "min": 0,
     "max": 3600
   },
+  "command_cooldown_seconds": {
+    "type": "int",
+    "description": "【命令与帮助】手动指令生图冷却（秒）",
+    "hint": "仅限制 #画、#bnn、#文生图、#头像图生图、#人设拍照和预设指令，不影响 LLM 工具或普通聊天。按“QQ 用户 ID + 群号”独立计时；同一用户在不同群互不影响。私聊按用户单独计时。设置为 0 可关闭。",
+    "default": 0,
+    "min": 0,
+    "max": 3600
+  },
   "auto_detect_confidence": {
     "type": "float",
     "description": "【智能工具与批量处理】智能判断最低置信度",
