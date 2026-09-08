@@ -5,6 +5,7 @@
 - 修复 `image_unsafe`、`upstream_error` 等 400 包装错误的分类，避免把安全拒绝或上游异常误判成参数错误并重复切换接口。
 - 手动指令与 LLM 工具冷却彻底分离；新增 `command_cooldown_seconds`，按 QQ 用户 ID + 群号独立计时，避免不同群互相影响。
 - Dashboard「运行设置」新增手动指令冷却输入框，保存后立即生效；默认 0（关闭）。
+- 重写 README 为简洁的公众入口，详细命令、配置、Dashboard、LLM 工具和排障内容移至 `docs/`。
 
 ## v3.8.8
 

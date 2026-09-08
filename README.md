@@ -62,6 +62,7 @@ AstrBot 的文生图、图生图与人设图片插件。支持多渠道回退、
 - [命令与使用](docs/COMMANDS.md)：完整命令、前缀、命名空间、预设和图生图用法。
 - [配置指南](docs/CONFIGURATION.md)：渠道回退、白名单/额度、提示词、人设、冷却和缓存配置。
 - [Dashboard 指南](docs/DASHBOARD.md)：页面模块、主题、记录、原图、下载、收藏和筛选。
+- [LLM 工具](docs/LLM_TOOLS.md)：等待/后台模式、人格回复、工具冷却和批量任务。
 - [排障手册](docs/TROUBLESHOOTING.md)：接口选择、400/503、参考图回显、头像和消息发送问题。
 - [更新日志](CHANGELOG.md)：功能变更和修复记录。
 
