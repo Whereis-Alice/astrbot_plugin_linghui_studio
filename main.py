@@ -21,6 +21,7 @@ from .channel_router import DrawingChannelRouter
 from .session_overrides import SessionOverrideStore
 from .batch_policy import BatchFailureGuard, policy_label
 from .default_presets import ADDITIONAL_DEFAULT_PRESETS, DEFAULT_PRESET_PACK_VERSION
+from .preset_descriptions import preset_description
 from .persona_profile import PersonaProfileManager
 from .persona_dialogue import build_persona_progress_prompts, sanitize_persona_progress_reply
 from .studio_manager import StudioAssetManager
@@ -4113,6 +4114,12 @@ class LinghuiStudioPlugin(Star):
                 event, images, final_prompt, preset_name, deduction, uid, gid, count,
                 extra_rules, hide_llm_result_text, suppress_user_error=True
             )
+            if self._background_generation_enabled():
+                self._spawn_background_generation(batch_coro, event.unified_msg_origin, count)
+                return self._finalize_llm_tool_success(
+                    f"[TOOL_SUCCESS] 已提交后台批量图生图任务，共 {count} 张；图片完成后会陆续发回，请继续正常聊天。"
+                )
+            batch_result = await batch_coro
             total_success = int(batch_result.get("success", 0))
             total_fail = int(batch_result.get("fail", 0))
             branch_errors = batch_result.get("errors", [])
@@ -4552,7 +4559,17 @@ class LinghuiStudioPlugin(Star):
 
     # 辅助方法
     def _get_help_node(self, event):
-        txt = self.conf.get("help_text", "帮助文档未配置")
+        txt = str(self.conf.get("help_text", "帮助文档未配置") or "帮助文档未配置").rstrip()
+        # Existing installations may retain an older customized help_text in
+        # AstrBot's config.  Keep the new preset-description entry discoverable
+        # without overwriting anything the administrator wrote themselves.
+        if "预设列表" not in txt or not any(
+            marker in txt for marker in ("预设效果说明", "效果说明", "预设列表 说明")
+        ):
+            txt += (
+                f"\n\n预设效果说明：{self._command_example('预设列表')} 说明 [关键词]"
+                "；大多数内置预设需要附带图片进行图生图。"
+            )
         bot_id = self._get_bot_id(event) or "2854196310"
         return event.chain_result([Nodes(nodes=[Node(name="灵绘工坊", uin=bot_id, content=[Plain(txt)])])])
 
@@ -4562,6 +4579,7 @@ class LinghuiStudioPlugin(Star):
         raw_args = self._command_args(event, "预设列表", "lm列表", "lmlist")
         want_source = ""
         text_mode = False
+        description_mode = False
         keywords: List[str] = []
         for token in str(raw_args or "").split():
             low = token.lower()
@@ -4573,6 +4591,8 @@ class LinghuiStudioPlugin(Star):
                 want_source = "modified"
             elif low in {"文字", "文本", "text", "txt"}:
                 text_mode = True
+            elif low in {"说明", "效果", "描述", "desc", "description", "info"}:
+                description_mode = True
             else:
                 keywords.append(low)
         rows = self.data_mgr.preset_overview()
@@ -4607,10 +4627,23 @@ class LinghuiStudioPlugin(Star):
             tip = f"\n\n看完整提示词：{self._command_example('预设查看')} <预设名>"
             yield event.chain_result([Plain(f"📋 {summary}\n\n{body}{tip}")])
             return
+        if description_mode:
+            marker_map = {"default": "📌", "modified": "✏️", "custom": "✨"}
+            body = "\n".join(
+                f"{marker_map.get(row['source'], '✨')} {row['name']}：{preset_description(row['name'])}"
+                for row in rows
+            )
+            tip = (
+                f"\n\n查看完整提示词：{self._command_example('预设查看')} <预设名>"
+                f"\n图生图预设需附带图片；文生图请使用 {self._command_example('文生图')} 或无图的 {self._command_example('画')}。"
+            )
+            yield event.chain_result([Plain(f"📋 {summary}\n\n{body}{tip}")])
+            return
         header = (
             f"📋 {summary}\n"
             f"📌 自带　✏️ 自带·已改　✨ 自定义\n"
             f"筛选：{self._command_example('预设列表')} 我的 / 自带 / 关键词\n"
+            f"效果说明：{self._command_example('预设列表')} 说明 [关键词]\n"
             f"纯文字清单：{self._command_example('预设列表')} 文字　看提示词：{self._command_example('预设查看')} <预设名>"
         )
         table_rows = [(r["name"], marker_map.get(r["source"], "✨")) for r in rows]
