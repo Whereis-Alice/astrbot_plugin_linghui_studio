@@ -412,6 +412,7 @@ class DashboardRegistrationTest(unittest.TestCase):
                 "/astrbot_plugin_linghui_studio/asset",
                 "/astrbot_plugin_linghui_studio/generation_history",
                 "/astrbot_plugin_linghui_studio/generation_preview",
+                "/astrbot_plugin_linghui_studio/generation_full_image",
                 "/astrbot_plugin_linghui_studio/generation_prompt",
                 "/astrbot_plugin_linghui_studio/generation_download",
                 "/astrbot_plugin_linghui_studio/generation_sources",

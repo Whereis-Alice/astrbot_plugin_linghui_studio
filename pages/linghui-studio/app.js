@@ -1,3 +1,5 @@
+import { createImageViewer } from "./image-viewer.js?v=3.9.1";
+
 const bridge = window.AstrBotPluginPage || {
   ready: async () => ({}),
   apiGet: async (endpoint, params = {}) => {
@@ -82,6 +84,17 @@ const titles = {
 };
 
 const byId = (id) => document.getElementById(id);
+const imageViewer = createImageViewer({
+  loadImage: (id, sourceIndex) => bridge.apiGet("generation_full_image", { id, source_index: sourceIndex }),
+  downloadImage: (id, sourceIndex) => sourceIndex > 0
+    ? downloadGenerationSource(id, sourceIndex)
+    : downloadGenerationImage(id),
+});
+
+function imageViewerButton(id, sourceIndex = 0) {
+  return `<button type="button" class="image-viewer-trigger" data-image-viewer-id="${escapeHtml(id)}" data-image-viewer-source="${sourceIndex}" aria-label="查看${sourceIndex ? `输入原图 ${sourceIndex}` : "结果图"}大图" title="点击查看大图"><span aria-hidden="true">⤢ 查看大图</span></button>`;
+}
+
 const escapeHtml = (value) => String(value ?? "")
   .replaceAll("&", "&amp;")
   .replaceAll("<", "&lt;")
@@ -271,7 +284,7 @@ function updateStatusBar() {
   }
   const versionTarget = byId("status-version");
   if (versionTarget) {
-    versionTarget.textContent = `灵绘 · v${config.plugin_version || "3.9.0"}`;
+    versionTarget.textContent = `灵绘 · v${config.plugin_version || "3.9.1"}`;
   }
 }
 
@@ -571,7 +584,7 @@ function renderOverviewRecent() {
       ? `<img data-generation-preview-id="${escapeHtml(id)}" alt="${escapeHtml(title)}" loading="lazy" decoding="async" />`
       : '<span class="overview-recent-fallback">缓存图片不可用</span>';
     return `<article class="overview-recent-item">
-      <div class="overview-recent-preview${record.image_available && id ? " loading" : " failed"}">${preview}</div>
+      <div class="overview-recent-preview${record.image_available && id ? " loading" : " failed"}">${preview}${record.image_available && id ? imageViewerButton(id) : ""}</div>
       <div class="overview-recent-copy">
         <div class="overview-recent-meta"><span class="overview-recent-kind ${kind === "图生图" ? "image" : "text"}">${kind}</span><time>${escapeHtml(formatHistoryTime(record.created_at))}</time></div>
         <strong title="${escapeHtml(title)}">${escapeHtml(title)}</strong>
@@ -884,7 +897,7 @@ function renderGenerationSources(details, response) {
       ? `<img class="generation-source-image" data-generation-source-id="${escapeHtml(recordId)}" data-generation-source-index="${index}" alt="输入原图 ${index}" loading="lazy" decoding="async" />`
       : "<span class=\"generation-source-fallback\">原图缓存不可用</span>";
     return `<figure class="generation-source-tile${available ? " loading" : " failed"}">
-      <div class="generation-source-preview">${image}</div>
+      <div class="generation-source-preview">${image}${available ? imageViewerButton(recordId, index) : ""}</div>
       <figcaption>输入原图 ${index} · ${escapeHtml(size)} · ${escapeHtml(formatBytes(source.size_bytes))}</figcaption>
       <button type="button" class="quiet-action source-download" data-history-source-download="${escapeHtml(recordId)}" data-history-source-index="${index}" ${available ? "" : "disabled"}>下载原图</button>
     </figure>`;
@@ -1062,7 +1075,7 @@ function renderGenerationHistory() {
         : "";
       return `
         <article class="generation-record${isFavorite || isLocked ? " protected" : ""}${isImageToImage ? " image-to-image" : ""}">
-          <div class="generation-preview${previewId ? " loading" : ""}">${image}</div>
+          <div class="generation-preview${previewId ? " loading" : ""}">${image}${previewId ? imageViewerButton(id) : ""}</div>
           <div class="generation-record-main">
             <div class="generation-record-topline">
               <div class="generation-record-title"><strong>${escapeHtml(taskType)}</strong><span>${escapeHtml(formatHistoryTime(record.created_at))}</span><div class="generation-record-badges">${sourceBadge}${channelBadge}</div></div>
@@ -2102,6 +2115,11 @@ document.addEventListener("click", async (event) => {
     const clearButton = event.target.closest("[data-clear-ref]");
     if (clearButton) { await clearReference(clearButton.dataset.clearRef); return; }
     if (event.target.closest("#reference-clear")) { await clearReference(value("reference-preset")); return; }
+    const viewerButton = event.target.closest("[data-image-viewer-id]");
+    if (viewerButton) {
+      await imageViewer.open(viewerButton.dataset.imageViewerId, Number(viewerButton.dataset.imageViewerSource) || 0);
+      return;
+    }
     const downloadButton = event.target.closest("[data-history-download]");
     if (downloadButton) { await downloadGenerationImage(downloadButton.dataset.historyDownload); return; }
     const sourceDownloadButton = event.target.closest("[data-history-source-download]");

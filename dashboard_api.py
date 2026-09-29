@@ -23,13 +23,14 @@ from PIL import ImageOps
 
 from .batch_policy import POLICY_LABELS, normalize_policy
 from .error_classify import safe_error_summary
+from .gallery_preview import GalleryPreviewError, build_gallery_image
 from .protocol_adapters import PROTOCOL_CHOICES, PROTOCOL_LABELS, normalize_protocol
 from .requester_tag import DEFAULT_TAG_MODE, normalize_tag_mode
 from .utils import is_ambiguous_message_delivery_timeout, norm_id, normalize_api_root
 
 
 PLUGIN_NAME = "astrbot_plugin_linghui_studio"
-PLUGIN_VERSION = "3.9.0"
+PLUGIN_VERSION = "3.9.1"
 DRAWING_CHANNEL_TEMPLATE_KEY = "drawing_channel"
 _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -45,6 +46,7 @@ class LinghuiDashboardApi:
     def __init__(self, plugin: Any):
         self.plugin = plugin
         self._lock = asyncio.Lock()
+        self._gallery_image_semaphore = asyncio.Semaphore(2)
         self._background_jobs: set[asyncio.Task] = set()
 
     def _spawn_background_job(self, coroutine) -> asyncio.Task:
@@ -79,6 +81,7 @@ class LinghuiDashboardApi:
             ("asset", self.asset, ["GET"], "Preview Linghui Studio reference image"),
             ("generation_history", self.generation_history, ["GET"], "Get Linghui Studio successful generation history"),
             ("generation_preview", self.generation_preview, ["GET"], "Preview one Linghui Studio successful image"),
+            ("generation_full_image", self.generation_full_image, ["GET"], "View one Linghui Studio result or input image"),
             ("generation_prompt", self.generation_prompt, ["GET"], "Get one Linghui Studio successful generation prompt"),
             ("generation_download", self.generation_download, ["GET"], "Download one Linghui Studio successful image"),
             ("generation_sources", self.generation_sources, ["GET"], "Get Linghui Studio image-to-image source metadata"),
@@ -1339,6 +1342,51 @@ class LinghuiDashboardApi:
             "id": record_id,
             "preview": f"data:image/jpeg;base64,{base64.b64encode(preview_bytes).decode('ascii')}",
         })
+
+    async def generation_full_image(self):
+        """Return one bounded image through the authenticated Plugin Page bridge."""
+        def respond(payload: Dict[str, Any], status: int = 200):
+            return jsonify(payload), status, {"Cache-Control": "no-store"}
+
+        record_id = str(request.args.get("id", "") or "").strip()
+        raw_index = str(request.args.get("source_index", "0"))
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", record_id) or not re.fullmatch(
+            r"(?:0|[1-9][0-9]{0,2})", raw_index
+        ):
+            return respond({"success": False, "message": "请提供有效的记录 ID 和输入图序号（0 至 999）。"}, 400)
+        source_index = int(raw_index)
+        manager = self.plugin.data_mgr
+        record = await manager.get_generation_record(record_id)
+        if record is None:
+            return respond({"success": False, "message": "未找到成功记录。"}, 404)
+
+        def read_image():
+            image_path = (
+                manager.get_generation_source_path(record, source_index)
+                if source_index else manager.get_generation_image_path(record)
+            )
+            return build_gallery_image(image_path) if image_path is not None else None
+
+        await self._gallery_image_semaphore.acquire()
+        worker = asyncio.create_task(asyncio.to_thread(read_image))
+
+        def release_worker(completed: asyncio.Task) -> None:
+            # A cancelled HTTP request cannot stop a decoder thread. Retain its
+            # slot until the real work ends, even if the viewer has closed.
+            self._gallery_image_semaphore.release()
+            if not completed.cancelled():
+                completed.exception()
+
+        worker.add_done_callback(release_worker)
+        try:
+            image = await asyncio.shield(worker)
+        except GalleryPreviewError as exc:
+            return respond({"success": False, "message": str(exc)}, exc.status)
+        except OSError:
+            return respond({"success": False, "message": "该图片缓存已不可用，请刷新记录后重试。"}, 404)
+        if image is None:
+            return respond({"success": False, "message": "该图片缓存已不可用。"}, 404)
+        return respond({"success": True, "id": record_id, "source_index": source_index, **image})
 
     async def generation_prompt(self):
         """Return a single prompt on demand so list pages stay lightweight."""

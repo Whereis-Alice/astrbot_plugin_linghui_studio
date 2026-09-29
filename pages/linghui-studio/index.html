@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>灵绘工坊</title>
     <link rel="icon" type="image/svg+xml" href="./assets/linghui-logo.svg" />
-    <link rel="stylesheet" href="./style.css?v=3.9.0" />
+    <link rel="stylesheet" href="./style.css?v=3.9.1" />
   </head>
   <body>
     <main class="shell">
@@ -363,7 +363,7 @@
         <div class="statusbar-right">
           <span id="status-dispatch" class="status-dispatch" title="当前主渠道">调度 · 读取中</span>
           <span id="status-breadcrumb" class="status-breadcrumb">概览</span>
-          <span id="status-version" class="status-version" title="灵绘工坊插件版本">灵绘 · v3.9.0</span>
+          <span id="status-version" class="status-version" title="灵绘工坊插件版本">灵绘 · v3.9.1</span>
         </div>
       </footer>
     </main>
@@ -378,7 +378,28 @@
         </div>
       </section>
     </dialog>
+    <dialog id="image-viewer" class="image-viewer" aria-labelledby="image-viewer-title" aria-describedby="image-viewer-info">
+      <header class="image-viewer-header">
+        <div class="image-viewer-heading"><h2 id="image-viewer-title">查看大图</h2><p id="image-viewer-info">正在加载…</p></div>
+        <button type="button" class="quiet-action image-viewer-close" data-viewer-action="close" aria-label="关闭大图" title="关闭（Esc）" autofocus>×</button>
+      </header>
+      <div id="image-viewer-viewport" class="image-viewer-viewport" tabindex="0" aria-label="大图，可滚动或拖动查看细节">
+        <div class="image-viewer-canvas"><img id="image-viewer-image" alt="" draggable="false" hidden /></div>
+        <div id="image-viewer-notice" class="image-viewer-notice" role="status"><span id="image-viewer-message">正在加载大图…</span><button type="button" class="quiet-action" data-viewer-action="retry" hidden>重新加载</button></div>
+      </div>
+      <footer class="image-viewer-footer">
+        <div class="image-viewer-zoom" role="group" aria-label="图片缩放">
+          <button type="button" class="quiet-action" data-viewer-action="out" data-viewer-zoom title="缩小（−）" aria-label="缩小" disabled>−</button>
+          <output id="image-viewer-scale" aria-live="polite">—</output>
+          <button type="button" class="quiet-action" data-viewer-action="in" data-viewer-zoom title="放大（+）" aria-label="放大" disabled>+</button>
+          <button type="button" class="quiet-action" data-viewer-action="fit" data-viewer-zoom title="适应窗口（0）" disabled>适应</button>
+          <button type="button" class="quiet-action" data-viewer-action="actual" data-viewer-zoom title="实际像素（1）" disabled>100%</button>
+        </div>
+        <span id="image-viewer-hint" class="image-viewer-hint" role="status">双击切换适应 / 100% · 放大后可拖动</span>
+        <button type="button" class="quiet-action" data-viewer-action="download">下载原图 ↓</button>
+      </footer>
+    </dialog>
     <div id="toast" class="toast" role="status"></div>
-    <script type="module" src="./app.js?v=3.9.0"></script>
+    <script type="module" src="./app.js?v=3.9.1"></script>
   </body>
 </html>
