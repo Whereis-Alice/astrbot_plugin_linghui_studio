@@ -12,6 +12,7 @@ from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.core import AstrBotConfig
 from astrbot.core.message.components import Image, Plain, Node, Nodes, At, Reply
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
+from astrbot.core.platform.message_type import MessageType
 
 # 导入模块
 from .data_manager import DataManager
@@ -1233,8 +1234,68 @@ class LinghuiStudioPlugin(Star):
             except Exception:
                 logger.exception("LinghuiStudio: generation cache maintenance failed")
 
+    def _effective_identity(self, event, uid=None, gid=None) -> Tuple[str, str]:
+        """还原合成事件（如定时任务 cron）的真实用户/群身份。
+
+        普通消息零影响：群消息自带真实 group_id 时直接返回；私聊等非群事件也直接返回。
+        仅当事件为群类型但 group_id 为空（AstrBot cron 合成事件的典型特征）时，
+        才用会话 id 还原群号，并尽量从 cron_payload 中还原真实触发者 QQ。
+        """
+        if uid is None and event is not None:
+            uid = event.get_sender_id()
+        if gid is None and event is not None:
+            gid = event.get_group_id()
+        uid, gid = norm_id(uid), norm_id(gid)
+        if event is None or gid:
+            return uid, gid
+        try:
+            is_group = event.get_message_type() == MessageType.GROUP_MESSAGE
+        except Exception:
+            is_group = False
+        if not is_group:
+            return uid, gid
+        session_gid = norm_id(event.get_session_id())
+        if not session_gid:
+            return uid, gid
+        gid = session_gid
+        if uid == session_gid:
+            payload = None
+            try:
+                payload = event.get_extra("cron_payload")
+            except Exception:
+                payload = None
+            if isinstance(payload, dict):
+                uid = norm_id(payload.get("sender_id"))
+            else:
+                uid = ""
+        return uid, gid
+
+    @staticmethod
+    def _quota_denied_tool_message(deduction) -> str:
+        """根据拒绝原因返回合适的工具失败文案，区分“无使用权限”与“次数不足”。"""
+        level = ""
+        if isinstance(deduction, dict):
+            level = str(deduction.get("access_level") or "")
+        if level in {
+            "blocked_user",
+            "blocked_group",
+            "user_not_allowed",
+            "private_disabled",
+            "group_not_allowed",
+        }:
+            return (
+                "[TOOL_FAILED] 当前场景没有使用权限，无法完成。"
+                "请用你自己平时的语气告诉用户这里暂时用不了，"
+                "别提'权限''名单''配置'等词汇，随口带过就好，可以让TA换到已授权的群聊再试。"
+            )
+        return (
+            "[TOOL_FAILED] 用户次数不足，无法完成。"
+            "请用你自己平时的语气告诉用户现在搞不了，"
+            "别提'次数''配额''限制'等词汇，随口带过就好，可以让TA联系管理员或等等再来。"
+        )
+
     def is_admin(self, event: AstrMessageEvent) -> bool:
-        sender_id = norm_id(event.get_sender_id())
+        sender_id, _ = self._effective_identity(event)
         context_config = self.context.get_config() or {}
         admins = context_config.get("admins_id", []) or []
         if isinstance(admins, str):
@@ -3057,9 +3118,10 @@ class LinghuiStudioPlugin(Star):
         return False, "现在还没有图可以打包哦，先发点图或者让我帮你弄几张，然后再来打包~"
 
     async def _check_quota(self, event, uid, gid, cost) -> dict:
-        uid, gid = norm_id(uid), norm_id(gid)
+        uid, gid = self._effective_identity(event, uid, gid)
         decision = self.access_policy.evaluate(uid, gid, is_admin=self.is_admin(event))
         if not decision.allowed:
+            logger.info(f"LinghuiStudio access denied: uid={uid} gid={gid} level={decision.level}")
             return {"allowed": False, "source": None, "msg": decision.message, "access_level": decision.level}
 
         # Access and quota exemption are intentionally separate. A group in
@@ -3090,6 +3152,7 @@ class LinghuiStudioPlugin(Star):
         else:
             g_bal = 0
 
+        logger.info(f"LinghuiStudio quota exhausted: uid={uid} gid={gid} cost={cost} user_bal={u_bal} group_bal={g_bal}")
         return {
             "allowed": False,
             "source": None,
@@ -3125,6 +3188,7 @@ class LinghuiStudioPlugin(Star):
             model_override: 指定使用的模型（如果为空则使用默认模型）
             hide_text: 是否隐藏生成成功提示文字
         """
+        uid, gid = self._effective_identity(event, uid, gid)
         task_id = ""
         charged = False
         record: Optional[Dict[str, Any]] = None
@@ -3346,6 +3410,7 @@ class LinghuiStudioPlugin(Star):
             hide_text: 是否隐藏提示文字
         """
         try:
+            uid, gid = self._effective_identity(event, uid, gid)
             # 1. 统一扣费
             total_cost = count
             if deduction["source"] == "user":
@@ -3509,6 +3574,7 @@ class LinghuiStudioPlugin(Star):
             hide_text: 是否隐藏提示文字
         """
         try:
+            uid, gid = self._effective_identity(event, uid, gid)
             # 1. 统一扣费
             total_cost = count
             if charge_quota:
@@ -3800,11 +3866,7 @@ class LinghuiStudioPlugin(Star):
         total_cost = count
         deduction = await self._check_quota(event, uid, gid, total_cost)
         if not deduction["allowed"]:
-            return self._finalize_llm_tool_result(
-                "[TOOL_FAILED] 用户次数不足，无法完成。"
-                "请用你自己平时的语气告诉用户现在搞不了，"
-                "别提'次数''配额''限制'等词汇，随口带过就好，可以让TA联系管理员或等等再来。"
-            )
+            return self._finalize_llm_tool_result(self._quota_denied_tool_message(deduction))
 
         # 3. 仅在任务确实允许执行时生成并发送人格化开始提示，避免浪费模型请求。
         await self._send_llm_progress(
@@ -3995,11 +4057,7 @@ class LinghuiStudioPlugin(Star):
             total_cost = total_images * count
             deduction = await self._check_quota(event, uid, gid, total_cost)
             if not deduction["allowed"]:
-                return self._finalize_llm_tool_result(
-                    "[TOOL_FAILED] 用户次数不足，无法完成。"
-                    "请用你自己平时的语气告诉用户现在搞不了，"
-                    "别提'次数''配额''限制'等词汇，随口带过就好，可以让TA联系管理员或等等再来。"
-                )
+                return self._finalize_llm_tool_result(self._quota_denied_tool_message(deduction))
 
             self._update_image_cooldown(uid)
 
@@ -4075,11 +4133,7 @@ class LinghuiStudioPlugin(Star):
         total_cost = count
         deduction = await self._check_quota(event, uid, gid, total_cost)
         if not deduction["allowed"]:
-            return self._finalize_llm_tool_result(
-                "[TOOL_FAILED] 用户次数不足，无法完成。"
-                "请用你自己平时的语气告诉用户现在搞不了，"
-                "别提'次数''配额''限制'等词汇，随口带过就好，可以让TA联系管理员或等等再来。"
-            )
+            return self._finalize_llm_tool_result(self._quota_denied_tool_message(deduction))
 
         # 2. 根据配置决定是否发送进度提示
         await self._send_llm_progress(
@@ -6500,11 +6554,7 @@ class LinghuiStudioPlugin(Star):
 
         deduction = await self._check_quota(event, uid, gid, total_cost)
         if not deduction["allowed"]:
-            return self._finalize_llm_tool_result(
-                "[TOOL_FAILED] 用户次数不足，无法完成。"
-                "请用你自己平时的语气告诉用户现在搞不了，"
-                "别提'次数''配额''限制'等词汇，随口带过就好，可以让TA联系管理员或等等再来。"
-            )
+            return self._finalize_llm_tool_result(self._quota_denied_tool_message(deduction))
 
         # 4.1 更新冷却时间
         self._update_image_cooldown(uid)
@@ -6807,11 +6857,7 @@ class LinghuiStudioPlugin(Star):
 
         deduction = await self._check_quota(event, uid, gid, total_cost)
         if not deduction["allowed"]:
-            return self._finalize_llm_tool_result(
-                "[TOOL_FAILED] 用户次数不足，无法完成。"
-                "请用你自己平时的语气告诉用户现在搞不了，"
-                "别提'次数''配额''限制'等词汇，随口带过就好，可以让TA联系管理员或等等再来。"
-            )
+            return self._finalize_llm_tool_result(self._quota_denied_tool_message(deduction))
 
         # 4.1 更新冷却时间
         self._update_image_cooldown(uid)
@@ -7237,10 +7283,7 @@ class LinghuiStudioPlugin(Star):
         gid = norm_id(event.get_group_id())
         deduction = await self._check_quota(event, uid, gid, count)
         if not deduction["allowed"]:
-            return self._finalize_llm_tool_result(
-                "[TOOL_FAILED] 用户次数不足，无法完成。"
-                "请用你自己平时的语气告诉用户现在搞不了，随口带过就好。"
-            )
+            return self._finalize_llm_tool_result(self._quota_denied_tool_message(deduction))
 
         # 8. 仅在任务确实允许执行时生成并发送人格化开始提示。
         await self._send_llm_progress(
