@@ -1,4 +1,4 @@
-import { createImageViewer } from "./image-viewer.js?v=3.9.2";
+import { createImageViewer } from "./image-viewer.js?v=3.9.3";
 
 const bridge = window.AstrBotPluginPage || {
   ready: async () => ({}),
@@ -284,7 +284,7 @@ function updateStatusBar() {
   }
   const versionTarget = byId("status-version");
   if (versionTarget) {
-    versionTarget.textContent = `灵绘 · v${config.plugin_version || "3.9.2"}`;
+    versionTarget.textContent = `灵绘 · v${config.plugin_version || "3.9.3"}`;
   }
 }
 

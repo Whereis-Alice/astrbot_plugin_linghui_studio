@@ -13,6 +13,8 @@ from astrbot.core import AstrBotConfig
 from astrbot.core.message.components import Image, Plain, Node, Nodes, At, Reply
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.message_type import MessageType
+from astrbot.api.provider import ProviderRequest
+from astrbot.core.agent.message import TextPart
 
 # 导入模块
 from .data_manager import DataManager
@@ -346,6 +348,10 @@ class LinghuiStudioPlugin(Star):
         # 会话级成功生成记录（用于限制 PDF 工具只能在图片成功生成后调用）
         self._session_generated_success: Dict[str, int] = {}  # session_id -> success count
         self._session_generated_success_lock = asyncio.Lock()
+
+        # LLM 工具生成成功后，把缓存文件路径补送给模型（供其后续自行引用文件）
+        self._pending_llm_image_paths: Dict[str, List[Dict[str, str]]] = {}
+        self._pending_llm_image_paths_lock = asyncio.Lock()
 
         # 会话级最近成功生成图片缓存（用于 PDF 打包时直接拿到刚生成完成的图片）
         self._session_generated_images: Dict[str, List[bytes]] = {}  # session_id -> recent image bytes
@@ -2012,6 +2018,7 @@ class LinghuiStudioPlugin(Star):
             event: Optional[AstrMessageEvent] = None,
             task_id: str = "",
             delivery_status: str = "pending",
+            llm_tool_call: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """Persist one successful output without letting cache failures affect delivery.
 
@@ -2063,7 +2070,96 @@ class LinghuiStudioPlugin(Star):
 
         await self._register_generation_success(session_id, 1)
         await self._register_generated_image(session_id, image_bytes)
+        if isinstance(record, dict) and llm_tool_call:
+            await self._remember_pending_image_path(session_id, record)
         return dict(record) if isinstance(record, dict) else None
+
+    def _llm_report_image_path_enabled(self) -> bool:
+        """是否把生成图片的缓存路径补送给 LLM。"""
+        return self._get_conf_bool("llm_report_image_path", True)
+
+    def _image_cache_abs_path(self, record: Dict[str, Any]) -> str:
+        """按生成记录还原缓存图片的绝对路径；记录不完整时返回空串。"""
+        filename = str(record.get("filename", "") or "").strip()
+        if not filename:
+            return ""
+        try:
+            path = self.data_mgr._generation_cache_path(filename)
+        except Exception:
+            path = None
+        return str(path) if path is not None else ""
+
+    def _format_llm_image_path_report(self, records: List[Dict[str, Any]]) -> str:
+        """把成功生成的图片路径整理成给 LLM 内部参考的一小段文字。"""
+        entries: List[str] = []
+        seen: set = set()
+        for record in records or []:
+            if not isinstance(record, dict):
+                continue
+            filename = str(record.get("filename", "") or "").strip()
+            abs_path = self._image_cache_abs_path(record)
+            if not filename:
+                continue
+            key = abs_path or filename
+            if key in seen:
+                continue
+            seen.add(key)
+            if abs_path:
+                entries.append(f"- 文件名：{filename}\n  完整路径：{abs_path}")
+            else:
+                entries.append(f"- 文件名：{filename}")
+        if not entries:
+            return ""
+        return (
+            "\n\n[已生成图片本地缓存（仅供你内部参考，绝对不要在回复里对用户说出路径）]\n"
+            + "\n".join(entries)
+            + "\n后续用户要求继续处理、改名、发送或对比这些图片时，可直接引用上面的绝对路径，不要向用户展示。"
+        )
+
+    async def _remember_pending_image_path(self, session_id: str, record: Optional[Dict[str, Any]]):
+        """记录一次成功生成，供下一轮 LLM 请求注入文件路径。"""
+        if not session_id or not isinstance(record, dict):
+            return
+        filename = str(record.get("filename", "") or "").strip()
+        if not filename:
+            return
+        entry = {"filename": filename, "path": self._image_cache_abs_path(record)}
+        async with self._pending_llm_image_paths_lock:
+            entries = self._pending_llm_image_paths.setdefault(session_id, [])
+            if len(entries) >= 20:
+                entries.pop(0)
+            entries.append(entry)
+
+    async def _consume_pending_image_paths(self, session_id: str) -> List[Dict[str, str]]:
+        """取走并清空某会话待注入的图片路径，避免重复注入。"""
+        if not session_id:
+            return []
+        async with self._pending_llm_image_paths_lock:
+            return self._pending_llm_image_paths.pop(session_id, [])
+
+    @filter.on_llm_request()
+    async def on_llm_request_inject_image_paths(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
+        """把最近生成图片的缓存路径补送给 LLM，让模型知道文件位置。"""
+        try:
+            if not self._llm_report_image_path_enabled():
+                return
+            session_id = getattr(event, "unified_msg_origin", "") or ""
+            if not session_id:
+                return
+            entries = await self._consume_pending_image_paths(session_id)
+            if not entries:
+                return
+            report = self._format_llm_image_path_report(entries)
+            if not report:
+                return
+            part = TextPart(text=report)
+            try:
+                part.mark_as_temp()
+            except Exception:
+                pass
+            req.extra_user_content_parts.append(part)
+        except Exception as exc:
+            logger.debug(f"LinghuiStudio: 注入生成图片路径失败，已忽略: {exc}")
 
     async def _register_generation_success(self, session_id: str, count: int = 1):
         """登记会话中成功生成的图片数量"""
@@ -2759,7 +2855,7 @@ class LinghuiStudioPlugin(Star):
             f"绝对不要提'系统''工具''API''参数''配置'等词汇。"
         )
 
-    def _finalize_llm_tool_result(self, text: str) -> str:
+    def _finalize_llm_tool_result(self, text: str, result_files: Optional[List[Dict[str, Any]]] = None) -> str:
         """统一收敛 LLM 工具返回：屏蔽思考过程提示并附加硬性输出约束。"""
         result = str(text or "")
 
@@ -2780,6 +2876,10 @@ class LinghuiStudioPlugin(Star):
             cleaned_lines.append(line)
 
         result = "\n".join(cleaned_lines).strip()
+        if result_files and self._llm_report_image_path_enabled():
+            report = self._format_llm_image_path_report(list(result_files))
+            if report:
+                result = f"{result}{report}"
         if not result:
             result = "[TOOL_SUCCESS] 任务已完成，结果已发送给用户。"
 
@@ -2790,6 +2890,7 @@ class LinghuiStudioPlugin(Star):
             "- 说出'生成''绘制''绘图''渲染''处理完成''任务完成''已发送'等机械词汇\n"
             "- 暴露工具名称、预设名、内部参数或系统信息\n"
             "- 输出思考过程、推理步骤、错误代码或格式前缀（如[TOOL_SUCCESS]）\n"
+            "- 向用户透露任何文件路径、缓存目录、文件名或本地存储信息\n"
             "- 重复复述工具返回的文字\n"
             "如果图片发送成功，就随口说一句自然的收尾话（或者不说也行）。"
             "如果失败，用生活化的语气随口带过，不要说'系统''工具''API'等字眼。"
@@ -2799,10 +2900,11 @@ class LinghuiStudioPlugin(Star):
 
         return result
 
-    def _finalize_llm_tool_success(self, text: str = "") -> str:
+    def _finalize_llm_tool_success(self, text: str = "", result_files: Optional[List[Dict[str, Any]]] = None) -> str:
         """成功结果交给二次 LLM 收尾；调用方负责确保图片已发送完成。"""
         return self._finalize_llm_tool_result(
-            text or "[TOOL_SUCCESS] 任务已完成，结果已发送给用户。"
+            text or "[TOOL_SUCCESS] 任务已完成，结果已发送给用户。",
+            result_files=result_files,
         )
 
     async def _prepare_send_image_bytes(self, image_bytes: bytes) -> bytes:
@@ -3179,7 +3281,8 @@ class LinghuiStudioPlugin(Star):
                                    aspect_ratio: str = None, resolution: str = None,
                                    force_task: bool = False, task_nonce: str = "",
                                    task_type_override: str = "",
-                                   llm_tool_call: bool = False) -> Tuple[bool, str]:
+                                   llm_tool_call: bool = False,
+                                   record_sink: Optional[List[Dict[str, Any]]] = None) -> Tuple[bool, str]:
         """
         后台执行生成任务，并在完成后主动发送消息。
 
@@ -3272,7 +3375,10 @@ class LinghuiStudioPlugin(Star):
                     event=event,
                     task_id=task_id,
                     delivery_status="pending",
+                    llm_tool_call=llm_tool_call,
                 )
+                if isinstance(record, dict) and record_sink is not None:
+                    record_sink.append(record)
                 record_id = str(record.get("id", "") or "") if record else ""
                 await self.task_mgr.mark_generated(
                     task_id,
@@ -3394,7 +3500,8 @@ class LinghuiStudioPlugin(Star):
                                        deduction: dict, uid: str, gid: str, count: int,
                                        extra_rules: str = "", hide_text: bool = False,
                                        suppress_user_error: bool = False,
-                                       aspect_ratio: str = None, resolution: str = None) -> Dict[str, Any]:
+                                       aspect_ratio: str = None, resolution: str = None,
+                                       record_sink: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """
         批量文生图后台任务
 
@@ -3557,7 +3664,8 @@ class LinghuiStudioPlugin(Star):
                                         uid: str, gid: str, count: int,
                                         extra_rules: str = "", hide_text: bool = False,
                                         charge_quota: bool = True,
-                                        suppress_user_error: bool = False) -> Dict[str, Any]:
+                                        suppress_user_error: bool = False,
+                                        record_sink: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """
         批量图生图后台任务 - 对同一张图片生成多个不同版本
 
@@ -3880,6 +3988,7 @@ class LinghuiStudioPlugin(Star):
         await self._clear_session_image_cache_if_idle(event.unified_msg_origin)
 
         # 5. 等待生成任务完成并确认图片已发送，再把成功结果交给二次 LLM 收尾。
+        generation_records: List[Dict[str, Any]] = []
         await self._register_pending_generation(event.unified_msg_origin, count)
         if count == 1:
             generation_coro = self._run_background_task(
@@ -3888,7 +3997,7 @@ class LinghuiStudioPlugin(Star):
                 model_override=self._get_text_to_image_model(), hide_text=hide_llm_result_text,
                 use_text_to_image_api=True, suppress_user_error=True,
                 aspect_ratio=requested_aspect_ratio, resolution=requested_resolution,
-                llm_tool_call=True
+                llm_tool_call=True, record_sink=generation_records
             )
             if self._background_generation_enabled():
                 self._spawn_background_generation(generation_coro, event.unified_msg_origin, count)
@@ -3903,7 +4012,8 @@ class LinghuiStudioPlugin(Star):
             batch_coro = self._run_batch_text_to_image(
                 event, final_prompt, preset_name, deduction, uid, gid, count, extra_rules,
                 hide_llm_result_text, suppress_user_error=True,
-                aspect_ratio=requested_aspect_ratio, resolution=requested_resolution
+                aspect_ratio=requested_aspect_ratio, resolution=requested_resolution,
+                record_sink=generation_records
             )
             if self._background_generation_enabled():
                 self._spawn_background_generation(batch_coro, event.unified_msg_origin, count)
@@ -3932,16 +4042,19 @@ class LinghuiStudioPlugin(Star):
             if count_limit_reply:
                 _draw_hint += " " + count_limit_reply
             _draw_hint += rebellious_hint
-            return self._finalize_llm_tool_success(_draw_hint)
+            return self._finalize_llm_tool_success(_draw_hint, result_files=generation_records)
         else:
             if count_limit_reply:
                 return self._finalize_llm_tool_success(
-                    f"[TOOL_SUCCESS] 图片已经发给用户。{count_limit_reply} 请用自然语气随口收尾一句。")
+                    f"[TOOL_SUCCESS] 图片已经发给用户。{count_limit_reply} 请用自然语气随口收尾一句。",
+                    result_files=generation_records)
             if total_fail > 0:
                 return self._finalize_llm_tool_success(
-                    f"[TOOL_SUCCESS] 图片已经发给用户，成功 {total_success} 张，有 {total_fail} 张没弄好。请自然地随口带过。")
+                    f"[TOOL_SUCCESS] 图片已经发给用户，成功 {total_success} 张，有 {total_fail} 张没弄好。请自然地随口带过。",
+                    result_files=generation_records)
             return self._finalize_llm_tool_success(
-                "[TOOL_SUCCESS] 图片已经发给用户。请严格按照当前 AstrBot 人格与上下文自然收尾，也可以不额外说话。不要提系统、工具或生成。")
+                "[TOOL_SUCCESS] 图片已经发给用户。请严格按照当前 AstrBot 人格与上下文自然收尾，也可以不额外说话。不要提系统、工具或生成。",
+                result_files=generation_records)
 
     @filter.llm_tool(name="linghui_edit_image")
     async def image_edit_tool(self, event: AstrMessageEvent, prompt: str, use_message_images: bool = True,
@@ -4052,6 +4165,7 @@ class LinghuiStudioPlugin(Star):
         gid = norm_id(event.get_group_id())
 
         # ==== 分支：分别批量处理多张图片 ====
+        generation_records: List[Dict[str, Any]] = []
         if len(images) > 1 and not merge_multiple_images:
             total_images = len(images)
             total_cost = total_images * count
@@ -4077,7 +4191,8 @@ class LinghuiStudioPlugin(Star):
                         return await self._run_background_task(
                             event, [img], final_prompt, preset_name, deduction, uid, gid, count,
                             extra_rules, hide_text=hide_llm_result_text, charge_quota=False,
-                            suppress_user_error=True, llm_tool_call=True
+                            suppress_user_error=True, llm_tool_call=True,
+                            record_sink=generation_records
                         )
                     else:
                         return await self._run_batch_image_to_image(
@@ -4117,17 +4232,20 @@ class LinghuiStudioPlugin(Star):
             vip_hint = self._build_master_identity_hint(uid, event, explicit_master=True) if self._is_vip_user(uid,
                                                                                                                event) else ""
             rebellious_hint = vip_hint or self._get_rebellious_hint(prompt, uid, event)
+            _multi_records = generation_records if not self._background_generation_enabled() else None
             if rebellious_hint:
                 _multi_hint = "[TOOL_SUCCESS] 这批图处理完发出去了。"
                 if total_fail > 0:
                     _multi_hint = f"[TOOL_SUCCESS] 发出去了{total_success}张，有{total_fail}张没弄好。"
-                return self._finalize_llm_tool_success(_multi_hint + rebellious_hint)
+                return self._finalize_llm_tool_success(_multi_hint + rebellious_hint, result_files=_multi_records)
             else:
                 if total_fail > 0:
                     return self._finalize_llm_tool_success(
-                        f"[TOOL_SUCCESS] 发出去了{total_success}张，有{total_fail}张没弄好。用你自己的语气随口带过。")
+                        f"[TOOL_SUCCESS] 发出去了{total_success}张，有{total_fail}张没弄好。用你自己的语气随口带过。",
+                        result_files=_multi_records)
                 return self._finalize_llm_tool_success(
-                    f"[TOOL_SUCCESS] {total_images}张图都弄好发出去了。用你自己的语气随口带过，也可以什么都不说。")
+                    f"[TOOL_SUCCESS] {total_images}张图都弄好发出去了。用你自己的语气随口带过，也可以什么都不说。",
+                    result_files=_multi_records)
 
         # ==== 分支：普通单次处理（单图或合并多图） ====
         total_cost = count
@@ -4152,7 +4270,7 @@ class LinghuiStudioPlugin(Star):
             generation_coro = self._run_background_task(
                 event, images, final_prompt, preset_name, deduction, uid, gid, total_cost,
                 extra_rules, hide_text=hide_llm_result_text, suppress_user_error=True
-                , llm_tool_call=True
+                , llm_tool_call=True, record_sink=generation_records
             )
             if self._background_generation_enabled():
                 self._spawn_background_generation(generation_coro, event.unified_msg_origin, count)
@@ -4166,7 +4284,7 @@ class LinghuiStudioPlugin(Star):
         else:
             batch_coro = self._run_batch_image_to_image(
                 event, images, final_prompt, preset_name, deduction, uid, gid, count,
-                extra_rules, hide_llm_result_text, suppress_user_error=True
+                extra_rules, hide_llm_result_text, suppress_user_error=True, record_sink=generation_records
             )
             if self._background_generation_enabled():
                 self._spawn_background_generation(batch_coro, event.unified_msg_origin, count)
@@ -4189,6 +4307,7 @@ class LinghuiStudioPlugin(Star):
 
         count_limit_reply = self._build_count_limit_reply(count, "edit") if count_limited else ""
 
+        _edit_records = generation_records if not self._background_generation_enabled() else None
         if rebellious_hint:
             _edit_hint = f"[TOOL_SUCCESS] 图片已经处理好并发给用户，共成功 {total_success} 张。"
             if total_fail > 0:
@@ -4196,16 +4315,19 @@ class LinghuiStudioPlugin(Star):
             if count_limit_reply:
                 _edit_hint += " " + count_limit_reply
             _edit_hint += rebellious_hint
-            return self._finalize_llm_tool_success(_edit_hint)
+            return self._finalize_llm_tool_success(_edit_hint, result_files=_edit_records)
         else:
             if count_limit_reply:
                 return self._finalize_llm_tool_success(
-                    f"[TOOL_SUCCESS] 图片已经处理好并发给用户。{count_limit_reply} 请自然地随口收尾一句。")
+                    f"[TOOL_SUCCESS] 图片已经处理好并发给用户。{count_limit_reply} 请自然地随口收尾一句。",
+                    result_files=_edit_records)
             if total_fail > 0:
                 return self._finalize_llm_tool_success(
-                    f"[TOOL_SUCCESS] 图片已经发给用户，成功 {total_success} 张，有 {total_fail} 张没弄好。请自然地随口带过。")
+                    f"[TOOL_SUCCESS] 图片已经发给用户，成功 {total_success} 张，有 {total_fail} 张没弄好。请自然地随口带过。",
+                    result_files=_edit_records)
             return self._finalize_llm_tool_success(
-                "[TOOL_SUCCESS] 图片已经发给用户。请严格按照当前 AstrBot 人格与上下文自然收尾，也可以不额外说话。不要提系统、工具或生成。")
+                "[TOOL_SUCCESS] 图片已经发给用户。请严格按照当前 AstrBot 人格与上下文自然收尾，也可以不额外说话。不要提系统、工具或生成。",
+                result_files=_edit_records)
 
     # ================= 传统指令触发 =================
 
@@ -5490,17 +5612,19 @@ class LinghuiStudioPlugin(Star):
             # 更新冷却时间
             self._update_image_cooldown(uid)
 
+            generation_records: List[Dict[str, Any]] = []
             await self._register_pending_generation(event.unified_msg_origin, 1)
             success, error_msg = await self._run_background_task(
                 event, [], final_prompt, preset_name, deduction, uid, gid, 1, extra_rules,
                 hide_text=True, use_text_to_image_api=True, suppress_user_error=True
-                , llm_tool_call=True
+                , llm_tool_call=True, record_sink=generation_records
             )
             if not success:
                 return self._build_llm_tool_failure(error_msg)
 
             return self._finalize_llm_tool_success(
-                f"[TOOL_SUCCESS] 文生图任务已结束，预设：{preset_name}，图片已经发送给用户。你可以按原本人设自然接话，也可以不补充收尾。")
+                f"[TOOL_SUCCESS] 文生图任务已结束，预设：{preset_name}，图片已经发送给用户。你可以按原本人设自然接话，也可以不补充收尾。",
+                result_files=generation_records)
 
         elif task_type == "image_to_image":
             # 图生图
@@ -5533,17 +5657,19 @@ class LinghuiStudioPlugin(Star):
             # 更新冷却时间
             self._update_image_cooldown(uid)
 
+            generation_records: List[Dict[str, Any]] = []
             await self._register_pending_generation(event.unified_msg_origin, 1)
             success, error_msg = await self._run_background_task(
                 event, images, processed_prompt, preset_name, deduction, uid, gid, 1,
                 extra_rules, hide_text=True, suppress_user_error=True
-                , llm_tool_call=True
+                , llm_tool_call=True, record_sink=generation_records
             )
             if not success:
                 return self._build_llm_tool_failure(error_msg)
 
             return self._finalize_llm_tool_success(
-                f"[TOOL_SUCCESS] 图生图任务已结束，预设：{preset_name}，图片已经发送给用户。你可以按原本人设自然接话，也可以不补充收尾。")
+                f"[TOOL_SUCCESS] 图生图任务已结束，预设：{preset_name}，图片已经发送给用户。你可以按原本人设自然接话，也可以不补充收尾。",
+                result_files=generation_records)
 
         return "未知任务类型"
 
@@ -6254,7 +6380,8 @@ class LinghuiStudioPlugin(Star):
     async def _run_single_batch_task(self, event: AstrMessageEvent, image_bytes: bytes,
                                      prompt: str, preset_name: str, task_index: int, total_tasks: int,
                                      uid: str, gid: str, extra_rules: str = "",
-                                     image_source: str = "", hide_text: bool = False) -> Tuple[bool, str]:
+                                     image_source: str = "", hide_text: bool = False,
+                                     llm_tool_call: bool = False) -> Tuple[bool, str]:
         """
         执行单个批量任务（不扣费，由调用方统一扣费）
 
@@ -6295,6 +6422,7 @@ class LinghuiStudioPlugin(Star):
                     reference_images=images,
                     route_metrics=route_metrics,
                     event=event,
+                    llm_tool_call=llm_tool_call,
                 )
 
                 # PDF 暂存模式：不发送单张图片，用 task_index 保证顺序
@@ -6650,6 +6778,7 @@ class LinghuiStudioPlugin(Star):
                                         reference_images=images,
                                         route_metrics=route_metrics,
                                         event=event,
+                                        llm_tool_call=True,
                                     )
                                     success = True
                                     error_msg = ""
@@ -6671,7 +6800,8 @@ class LinghuiStudioPlugin(Star):
                                 gid=gid,
                                 extra_rules=extra_rules,
                                 image_source=url,
-                                hide_text=hide_llm_result_text
+                                hide_text=hide_llm_result_text,
+                                llm_tool_call=True
                             )
 
                         if success:
@@ -6959,6 +7089,7 @@ class LinghuiStudioPlugin(Star):
                                         reference_images=images,
                                         route_metrics=route_metrics,
                                         event=event,
+                                        llm_tool_call=True,
                                     )
                                     success = True
                                     error_msg = ""
@@ -6980,7 +7111,8 @@ class LinghuiStudioPlugin(Star):
                                 gid=gid,
                                 extra_rules=extra_rules,
                                 image_source=url,
-                                hide_text=hide_llm_result_text
+                                hide_text=hide_llm_result_text,
+                                llm_tool_call=True
                             )
 
                         if success:
@@ -7301,6 +7433,7 @@ class LinghuiStudioPlugin(Star):
         hide_llm_result_text = True
 
         # 10. 等待拍照任务完成并确认图片已发送，再把成功结果交给二次 LLM 收尾。
+        generation_records: List[Dict[str, Any]] = []
         await self._register_pending_generation(event.unified_msg_origin, count)
         if count == 1:
             generation_coro = self._run_background_task(
@@ -7314,7 +7447,8 @@ class LinghuiStudioPlugin(Star):
                 cost=1,
                 extra_rules=extra_request,
                 hide_text=hide_llm_result_text,
-                suppress_user_error=True, llm_tool_call=True
+                suppress_user_error=True, llm_tool_call=True,
+                record_sink=generation_records
             )
             if self._background_generation_enabled():
                 self._spawn_background_generation(generation_coro, event.unified_msg_origin, count)
@@ -7326,9 +7460,11 @@ class LinghuiStudioPlugin(Star):
                 return self._build_llm_tool_failure(error_msg)
             if count_limited:
                 return self._finalize_llm_tool_success(
-                    f"[TOOL_SUCCESS] 照片已经发给用户。{self._build_count_limit_reply(count, 'persona')} 请自然收尾一句。")
+                    f"[TOOL_SUCCESS] 照片已经发给用户。{self._build_count_limit_reply(count, 'persona')} 请自然收尾一句。",
+                    result_files=generation_records)
             return self._finalize_llm_tool_success(
-                "[TOOL_SUCCESS] 照片已经发给用户。请严格按照当前 AstrBot 人格与上下文自然接话；可以只说一句，也可以不额外说话。不要提系统、工具或生成。")
+                "[TOOL_SUCCESS] 照片已经发给用户。请严格按照当前 AstrBot 人格与上下文自然接话；可以只说一句，也可以不额外说话。不要提系统、工具或生成。",
+                result_files=generation_records)
         else:
             # 对于人设的多张生成，因为传递的是最终合并好的图片（包含人设参考+用户参考），
             # 所以使用 _run_batch_image_to_image。但是要防止该函数再次从数据库读取 "_persona_" 导致图片翻倍。
@@ -7345,7 +7481,8 @@ class LinghuiStudioPlugin(Star):
                 count=count,
                 extra_rules=extra_request,
                 hide_text=hide_llm_result_text,
-                suppress_user_error=True
+                suppress_user_error=True,
+                record_sink=generation_records
             )
             total_success = int(batch_result.get("success", 0))
             total_fail = int(batch_result.get("fail", 0))
@@ -7354,12 +7491,15 @@ class LinghuiStudioPlugin(Star):
                 return self._build_llm_tool_failure(branch_errors[0] if branch_errors else "这次没弄好，请稍后再试。")
             if count_limited:
                 return self._finalize_llm_tool_success(
-                    f"[TOOL_SUCCESS] 照片已经发给用户，成功 {total_success} 张。{self._build_count_limit_reply(count, 'persona')} 请自然收尾一句。")
+                    f"[TOOL_SUCCESS] 照片已经发给用户，成功 {total_success} 张。{self._build_count_limit_reply(count, 'persona')} 请自然收尾一句。",
+                    result_files=generation_records)
             if total_fail > 0:
                 return self._finalize_llm_tool_success(
-                    f"[TOOL_SUCCESS] 照片已经发给用户，成功 {total_success} 张，有 {total_fail} 张没弄好。请自然地随口带过。")
+                    f"[TOOL_SUCCESS] 照片已经发给用户，成功 {total_success} 张，有 {total_fail} 张没弄好。请自然地随口带过。",
+                    result_files=generation_records)
             return self._finalize_llm_tool_success(
-                f"[TOOL_SUCCESS] {total_success} 张照片已经发给用户。请严格按照当前 AstrBot 人格与上下文自然接话，不要套用固定性格，也不要提系统、工具或生成。")
+                f"[TOOL_SUCCESS] {total_success} 张照片已经发给用户。请严格按照当前 AstrBot 人格与上下文自然接话，不要套用固定性格，也不要提系统、工具或生成。",
+                result_files=generation_records)
 
     @filter.command("人设拍照", prefix_optional=True)
     @_direct_command_only

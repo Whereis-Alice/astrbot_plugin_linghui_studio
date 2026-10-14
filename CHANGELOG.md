@@ -1,3 +1,10 @@
+## v3.9.3
+
+- 新增「向模型补送生成图片的缓存路径」（`llm_report_image_path`，默认开启）：LLM 通过工具成功生成图片后，wait 模式会在工具结果里附带缓存文件的文件名与完整路径，background 模式会在下一轮模型请求中以临时上下文注入，方便 Bot 后续自行引用、改名、继续处理或发送这些本地文件。
+- 路径只对模型可见：插件会要求模型不要在回复里向用户展示路径、目录或文件名；关闭该配置后不再补送任何路径。
+- 覆盖 `linghui_draw_image`、`linghui_edit_image`、`linghui_persona_photo`、`linghui_smart_generate` 与两个批量处理工具。
+- 新增回归测试 `tests/test_llm_image_path_report.py`，并在 LLM 工具文档补充该功能的说明。
+
 ## v3.9.2
 
 - 修复 AstrBot 定时任务（cron）在群聊里调用自拍、绘图等工具时，群身份未被完整还原而被当成个人用户，导致本该命中无限群／白名单却误报“次数不足”的问题；现在会先还原真实群号与触发者身份，再校验额度。
