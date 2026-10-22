@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>灵绘工坊</title>
     <link rel="icon" type="image/svg+xml" href="./assets/linghui-logo.svg" />
-    <link rel="stylesheet" href="./style.css?v=3.9.3" />
+    <link rel="stylesheet" href="./style.css?v=3.10.0" />
   </head>
   <body>
     <main class="shell">
@@ -215,18 +215,19 @@
               <div class="form-grid">
                 <label class="field"><span>群聊访问模式</span><select id="group-access-mode"><option value="whitelist">只允许群白名单</option><option value="all">允许所有群聊</option></select><small class="field-hint">“只允许群白名单”时仅白名单内群可用；“允许所有群聊”时除群黑名单外均可用。</small></label>
                 <label class="toggle-field"><input id="allow-private" type="checkbox" /><span class="toggle-copy"><span>允许私聊生图</span><small class="field-hint">关闭时私聊一律不能生图。开启后，私聊仍受用户黑白名单限制。</small></span></label>
-                <label class="toggle-field"><input id="admins-unlimited" type="checkbox" /><span class="toggle-copy"><span>管理员额度豁免</span><small class="field-hint">管理员不扣额度，但仍必须通过黑名单、用户白名单和群聊访问校验。</small></span></label>
+                <label class="toggle-field"><input id="admins-unlimited" type="checkbox" /><span class="toggle-copy"><span>管理员额度豁免</span><small class="field-hint">管理员不扣个人/群额度，仍受全局总次数上限约束，并须通过黑名单、用户白名单和群聊访问校验。</small></span></label>
                 <label class="field full"><span>允许用户白名单</span><textarea id="allowed-users" rows="3" placeholder="每行一个用户 ID"></textarea><small class="field-hint">每行一个用户 ID。填写后，只有名单内用户可以使用；留空表示不按用户身份限制。</small></label>
                 <label class="field full"><span>禁止用户黑名单</span><textarea id="blocked-users" rows="3" placeholder="每行一个用户 ID"></textarea><small class="field-hint">每行一个用户 ID。名单内用户在私聊和所有群聊中都不能生图，优先于其他名单和额度豁免。</small></label>
                 <label class="field full"><span>允许生图的群白名单</span><textarea id="group-whitelist" rows="3" placeholder="每行一个群号"></textarea><small class="field-hint">每行一个群号。白名单模式下，名单外的群无法生图；留空时所有群都无法生图。加入本名单只授予使用资格，仍会消耗额度。</small></label>
                 <label class="field full"><span>禁止生图的群黑名单</span><textarea id="group-blacklist" rows="3" placeholder="每行一个群号"></textarea><small class="field-hint">每行一个群号。名单内群始终不能生图，优先于群白名单、群无限次数名单和管理员额度豁免。</small></label>
-                <label class="field full"><span>用户无限次数名单</span><textarea id="unlimited-users" rows="3" placeholder="每行一个用户 ID"></textarea><small class="field-hint">每行一个用户 ID。名单内用户不扣额度，但不会因此获得访问资格或绕过黑名单。</small></label>
-                <label class="field full"><span>群无限次数名单</span><textarea id="unlimited-groups" rows="3" placeholder="每行一个群号"></textarea><small class="field-hint">每行一个群号。名单内群不扣额度，但仍必须先通过群聊访问模式和黑名单校验。</small></label>
+                <label class="field full"><span>用户无限次数名单</span><textarea id="unlimited-users" rows="3" placeholder="每行一个用户 ID"></textarea><small class="field-hint">每行一个用户 ID。名单内用户不扣个人/群额度，仍受全局总次数上限约束；不会因此获得访问资格或绕过黑名单。</small></label>
+                <label class="field full"><span>群无限次数名单</span><textarea id="unlimited-groups" rows="3" placeholder="每行一个群号"></textarea><small class="field-hint">每行一个群号。名单内群不扣个人/群额度，仍受全局总次数上限约束，并须通过群聊访问与黑名单校验。</small></label>
               </div>
             </section>
             <section class="section-block">
-              <div class="section-heading"><div><h2>额度与签到</h2><p>用户额度不足时，可选用群额度作为备用。签到奖励始终发放到个人额度。</p></div></div>
+                <div class="section-heading"><div><h2>额度与签到</h2><p>所有群聊和私聊共享全局总次数。用户额度不足时，可选用群额度作为备用。</p></div></div>
               <div class="form-grid">
+                  <label class="field full"><span>全局总次数上限</span><input id="global-total-limit" type="number" min="-1" step="1" /><small class="field-hint">-1 表示不限，0 暂停所有生图。所有会话累计消耗共享此上限，批量按张计入，管理员和无限次数名单也受约束。修改上限保留已用次数，签到不增加总次数。也可发送“总次数 100”或“增加总次数 50”。</small><small id="global-quota-status" class="field-hint"></small></label>
                 <label class="toggle-field"><input id="enable-user-limit" type="checkbox" /><span class="toggle-copy"><span>启用个人额度</span><small class="field-hint">开启后优先扣除用户自己的额度；关闭后不会检查或扣除个人额度。</small></span></label>
                 <label class="toggle-field"><input id="enable-group-limit" type="checkbox" /><span class="toggle-copy"><span>启用群额度</span><small class="field-hint">仅群聊可用。个人额度关闭或不足时，才会检查并扣除群额度。</small></span></label>
                 <label class="toggle-field"><input id="enable-checkin" type="checkbox" /><span class="toggle-copy"><span>启用每日签到</span><small class="field-hint">用户每天可领取一次个人额度，签到同样受访问控制规则约束。</small></span></label>
@@ -363,7 +364,7 @@
         <div class="statusbar-right">
           <span id="status-dispatch" class="status-dispatch" title="当前主渠道">调度 · 读取中</span>
           <span id="status-breadcrumb" class="status-breadcrumb">概览</span>
-          <span id="status-version" class="status-version" title="灵绘工坊插件版本">灵绘 · v3.9.3</span>
+          <span id="status-version" class="status-version" title="灵绘工坊插件版本">灵绘 · v3.10.0</span>
         </div>
       </footer>
     </main>
@@ -400,6 +401,6 @@
       </footer>
     </dialog>
     <div id="toast" class="toast" role="status"></div>
-    <script type="module" src="./app.js?v=3.9.3"></script>
+    <script type="module" src="./app.js?v=3.10.0"></script>
   </body>
 </html>

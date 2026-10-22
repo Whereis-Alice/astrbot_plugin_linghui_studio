@@ -30,7 +30,7 @@ from .utils import is_ambiguous_message_delivery_timeout, norm_id, normalize_api
 
 
 PLUGIN_NAME = "astrbot_plugin_linghui_studio"
-PLUGIN_VERSION = "3.9.3"
+PLUGIN_VERSION = "3.10.0"
 DRAWING_CHANNEL_TEMPLATE_KEY = "drawing_channel"
 _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -482,6 +482,7 @@ class LinghuiDashboardApi:
                 "unlimited_groups": self._id_list(self.plugin.conf.get("unlimited_groups", [])),
             },
             "usage": {
+                "global_total_limit": int(self.plugin.conf.get("global_total_limit", -1)),
                 "enable_user_limit": self._as_bool(self.plugin.conf.get("enable_user_limit", True)),
                 "enable_group_limit": self._as_bool(self.plugin.conf.get("enable_group_limit", False)),
                 "enable_checkin": self._as_bool(self.plugin.conf.get("enable_checkin", False)),
@@ -672,6 +673,11 @@ class LinghuiDashboardApi:
 
     async def save_config(self):
         payload = await self._json_body()
+        usage = payload.get("usage", {})
+        if isinstance(usage, dict) and "global_total_limit" in usage:
+            value = usage["global_total_limit"]
+            if isinstance(value, bool) or not isinstance(value, int) or value < -1:
+                return jsonify({"success": False, "message": "全局总次数必须为非负整数，-1 表示不限。"}), 400
         async with self._lock:
             try:
                 # Keep the native-save fallback scoped to fields that this
@@ -807,6 +813,9 @@ class LinghuiDashboardApi:
 
                 usage = payload.get("usage", {})
                 if isinstance(usage, dict):
+                    if "global_total_limit" in usage:
+                        await self.plugin.data_mgr.adjust_global_limit(usage["global_total_limit"])
+                        changed_dynamic_keys.add("global_total_limit")
                     for key in ("enable_user_limit", "enable_group_limit", "enable_checkin", "enable_random_checkin"):
                         if key in usage:
                             self.plugin.conf[key] = self._as_bool(usage[key])
@@ -975,6 +984,7 @@ class LinghuiDashboardApi:
             "daily_stats": stats,
             "identity_labels": identity_labels,
             "references": manager.get_preset_ref_stats(),
+            "global_quota": manager.get_global_quota() if hasattr(manager, "get_global_quota") else None,
         })
 
     async def adjust_credit(self):

@@ -12,6 +12,7 @@ from PIL import Image as PILImage
 from PIL import ImageOps
 from astrbot import logger
 from .utils import norm_id
+from .quota import global_quota_status, quota_decision
 
 
 _GENERATION_PREVIEW_MAX_BYTES = 120 * 1024
@@ -31,6 +32,8 @@ class DataManager:
 
         self.user_counts_file = self.data_dir / "user_counts.json"
         self.group_counts_file = self.data_dir / "group_counts.json"
+        self.global_quota_file = self.data_dir / "global_quota.json"
+        self.global_quota: Dict[str, int] = {"used": 0}
         self.user_checkin_file = self.data_dir / "user_checkin.json"
         self.daily_stats_file = self.data_dir / "daily_stats.json"
         self.preset_images_file = self.data_dir / "preset_images.json"
@@ -102,6 +105,13 @@ class DataManager:
         self._generation_history_favorites_cache: Optional[List[Dict[str, Any]]] = None
 
     async def initialize(self):
+        # A damaged shared counter must never silently reset the total budget.
+        if self.global_quota_file.exists():
+            raw = json.loads(await asyncio.to_thread(self.global_quota_file.read_text, "utf-8"))
+            used = raw["used"]
+            if not isinstance(used, int) or isinstance(used, bool) or used < 0:
+                raise ValueError("全局次数数据无效，请修复 global_quota.json 后重载插件")
+            self.global_quota = {"used": used}
         await self._load_json(self.user_counts_file, "user_counts")
         await self._load_json(self.group_counts_file, "group_counts")
         await self._load_json(self.user_checkin_file, "user_checkin_data")
@@ -129,7 +139,7 @@ class DataManager:
         except Exception as e:
             logger.error(f"Failed to load {file_path}: {e}")
 
-    async def _save_json(self, file_path: Path, data: Any):
+    async def _save_json(self, file_path: Path, data: Any, *, strict: bool = False):
         try:
             content = json.dumps(data, indent=4, ensure_ascii=False)
             temp_path = file_path.with_suffix(f"{file_path.suffix}.tmp")
@@ -141,6 +151,8 @@ class DataManager:
             await asyncio.to_thread(_atomic_write)
         except Exception as e:
             logger.error(f"Failed to save {file_path}: {e}")
+            if strict:
+                raise
 
     @staticmethod
     def _normalize_display_name(value: Any, limit: int = 160) -> str:
@@ -368,6 +380,66 @@ class DataManager:
         self.reload_prompts()
 
     # --- 积分相关 ---
+    def get_global_quota(self) -> Dict[str, Any]:
+        return global_quota_status(self.config, self.global_quota["used"])
+
+    def check_quota(self, uid: str, gid: str, cost: int, *, unlimited: bool = False) -> Dict[str, Any]:
+        if cost <= 0:
+            raise ValueError("绘图次数必须为正整数")
+        return quota_decision(
+            self.config, uid, gid, cost, self.get_user_count(uid),
+            self.get_group_count(gid), self.global_quota["used"], unlimited=unlimited,
+        )
+
+    async def consume_quota(self, uid: str, gid: str, cost: int, *, unlimited: bool = False) -> Dict[str, Any]:
+        """Recheck and debit shared/local balances under the same lock."""
+        uid, gid = norm_id(uid), norm_id(gid)
+        async with self._state_lock:
+            decision = self.check_quota(uid, gid, cost, unlimited=unlimited)
+            if not decision["allowed"]:
+                return decision
+            next_state = {"used": self.global_quota["used"] + cost}
+            await self._save_json(self.global_quota_file, next_state, strict=True)
+            self.global_quota = next_state
+            if decision["source"] == "user":
+                self.user_counts[uid] = self.get_user_count(uid) - cost
+                await self._save_json(self.user_counts_file, self.user_counts)
+            elif decision["source"] == "group":
+                self.group_counts[gid] = self.get_group_count(gid) - cost
+                await self._save_json(self.group_counts_file, self.group_counts)
+            decision.update(charged=cost)
+            return decision
+
+    async def refund_quota(self, deduction: Dict[str, Any], uid: str, gid: str, amount: int) -> None:
+        """Refund at most this task's remaining charge, including the global cap."""
+        uid, gid = norm_id(uid), norm_id(gid)
+        async with self._state_lock:
+            amount = min(max(0, int(amount)), int(deduction.get("charged", 0)))
+            if not amount:
+                return
+            next_state = {"used": max(0, self.global_quota["used"] - amount)}
+            await self._save_json(self.global_quota_file, next_state, strict=True)
+            self.global_quota = next_state
+            deduction["charged"] -= amount
+            if deduction.get("source") == "user":
+                self.user_counts[uid] = self.get_user_count(uid) + amount
+                await self._save_json(self.user_counts_file, self.user_counts)
+            elif deduction.get("source") == "group" and gid:
+                self.group_counts[gid] = self.get_group_count(gid) + amount
+                await self._save_json(self.group_counts_file, self.group_counts)
+
+    async def adjust_global_limit(self, value: int, *, add: bool = False) -> Dict[str, Any]:
+        """Update the cap without erasing usage or touching local balances."""
+        async with self._state_lock:
+            current = int(self.config.get("global_total_limit", -1))
+            if add and current < 0:
+                raise ValueError("当前总次数不限，请先用“总次数 100”设置一个上限")
+            limit = current + value if add else value
+            if limit < -1 or (add and value <= 0):
+                raise ValueError("总次数必须为非负整数，或使用“不限”；增加次数必须大于 0")
+            self.config["global_total_limit"] = limit
+            return self.get_global_quota()
+
     def get_user_count(self, uid: str) -> int:
         return self.user_counts.get(norm_id(uid), 0)
 

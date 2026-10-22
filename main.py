@@ -17,6 +17,7 @@ from astrbot.api.provider import ProviderRequest
 from astrbot.core.agent.message import TextPart
 
 # 导入模块
+from .quota import QuotaDeniedError
 from .data_manager import DataManager
 from .image_manager import ImageManager
 from .access_control import AccessPolicy
@@ -192,6 +193,7 @@ class LinghuiStudioPlugin(Star):
         "power_gemini_api_keys",
     ]
     _DYNAMIC_CONFIG_KEYS = [
+        "global_total_limit",
         "model",
         "text_to_image_model",
         "text_to_image_api_url",
@@ -249,6 +251,8 @@ class LinghuiStudioPlugin(Star):
         "text_to_image_api_keys",
     }
     _COMMAND_ROUTES = (
+        (("总次数", "全局次数", "设置总次数"), "on_global_quota", "灵绘总次数"),
+        (("增加总次数", "加总次数"), "on_add_global_quota", "灵绘增加总次数"),
         (("预设参考图添加", "lmref添加", "添加参考图"), "on_add_preset_ref", "灵绘预设参考图添加"),
         (("预设参考图查看", "lmref查看", "查看参考图"), "on_view_preset_ref", "灵绘预设参考图查看"),
         (("预设参考图清除", "lmref清除", "清除参考图"), "on_clear_preset_ref", "灵绘预设参考图清除"),
@@ -1282,6 +1286,11 @@ class LinghuiStudioPlugin(Star):
         level = ""
         if isinstance(deduction, dict):
             level = str(deduction.get("access_level") or "")
+        if level == "global_quota_exhausted":
+            return (
+                f"[TOOL_FAILED] {deduction['msg']} "
+                "请明确告诉用户这是所有会话共享的总次数不足，并保留需要次数和全局剩余次数。"
+            )
         if level in {
             "blocked_user",
             "blocked_group",
@@ -1663,9 +1672,15 @@ class LinghuiStudioPlugin(Star):
 
         if deduction["source"] == "free":
             reason = str(deduction.get("exemption_reason", "") or "额度豁免")
-            return f"不限次数（{reason}） | 用户: {user_count} | 群组: {group_count}"
+            return f"个人/群额度豁免（{reason}） | 用户: {user_count} | 群组: {group_count} | {self._global_quota_text()}"
 
-        return f"用户: {user_count} | 群组: {group_count}"
+        return f"用户: {user_count} | 群组: {group_count} | {self._global_quota_text()}"
+
+    def _global_quota_text(self) -> str:
+        status = self.data_mgr.get_global_quota()
+        if not status["enabled"]:
+            return f"全局总次数：不限（所有会话累计已用 {status['used']} 次）"
+        return f"全局总次数：{status['limit']}，所有会话合计已用 {status['used']}，剩余 {status['remaining']} 次"
 
     def _get_generation_count_limit(self, task_type: str = "generic") -> int:
         """获取不同任务类型的数量上限"""
@@ -3014,12 +3029,17 @@ class LinghuiStudioPlugin(Star):
         if amount <= 0:
             return
         try:
-            if deduction.get("source") == "user":
-                await self.data_mgr.add_user_count(uid, amount)
-            elif deduction.get("source") == "group" and gid:
-                await self.data_mgr.add_group_count(gid, amount)
+            await self.data_mgr.refund_quota(deduction, uid, gid, amount)
         except Exception:
             logger.exception("LinghuiStudio: failed to refund quota after generation failure")
+
+    async def _charge_quota(self, deduction: Dict[str, Any], uid: str, gid: str, cost: int) -> bool:
+        result = await self.data_mgr.consume_quota(uid, gid, cost, unlimited=deduction.get("unlimited", False))
+        if not result["allowed"]:
+            deduction.update(result)
+            raise QuotaDeniedError(result["msg"])
+        deduction.update(result)
+        return True
 
     def _make_batch_guard(self) -> BatchFailureGuard:
         """Build the failure guard that governs a batch run.
@@ -3219,48 +3239,17 @@ class LinghuiStudioPlugin(Star):
 
         return False, "现在还没有图可以打包哦，先发点图或者让我帮你弄几张，然后再来打包~"
 
-    async def _check_quota(self, event, uid, gid, cost) -> dict:
+    async def _check_quota(self, event: AstrMessageEvent, uid: str, gid: str, cost: int) -> dict:
         uid, gid = self._effective_identity(event, uid, gid)
         decision = self.access_policy.evaluate(uid, gid, is_admin=self.is_admin(event))
         if not decision.allowed:
             logger.info(f"LinghuiStudio access denied: uid={uid} gid={gid} level={decision.level}")
             return {"allowed": False, "source": None, "msg": decision.message, "access_level": decision.level}
 
-        # Access and quota exemption are intentionally separate. A group in
-        # group_whitelist gains permission to draw, but still consumes its
-        # configured balance unless it is explicitly in unlimited_groups.
-        if decision.unlimited:
-            return {
-                "allowed": True,
-                "source": "free",
-                "msg": "",
-                "access_level": decision.level,
-                "exemption_reason": decision.message,
-            }
-
-        # Check credit limits only after access has been granted.
-        enable_u = self.conf.get("enable_user_limit", True)
-        enable_g = self.conf.get("enable_group_limit", False)
-        if not enable_u and not enable_g:
-            return {"allowed": True, "source": "free", "msg": "", "access_level": decision.level}
-
-        u_bal = self.data_mgr.get_user_count(uid)
-        if enable_u and u_bal >= cost:
-            return {"allowed": True, "source": "user", "msg": "", "access_level": decision.level}
-        if gid and enable_g:
-            g_bal = self.data_mgr.get_group_count(gid)
-            if g_bal >= cost:
-                return {"allowed": True, "source": "group", "msg": "", "access_level": decision.level}
-        else:
-            g_bal = 0
-
-        logger.info(f"LinghuiStudio quota exhausted: uid={uid} gid={gid} cost={cost} user_bal={u_bal} group_bal={g_bal}")
-        return {
-            "allowed": False,
-            "source": None,
-            "msg": f"额度不足（需要 {cost} 次，个人剩余 {u_bal}，群剩余 {g_bal}），请联系管理员补充。",
-            "access_level": decision.level,
-        }
+        result = self.data_mgr.check_quota(uid, gid, cost, unlimited=decision.unlimited)
+        result.setdefault("access_level", decision.level)
+        result.update(unlimited=decision.unlimited, exemption_reason=decision.message)
+        return result
 
     async def _load_preset_ref_images(self, preset_name: str) -> List[bytes]:
         """加载预设的参考图"""
@@ -3331,12 +3320,7 @@ class LinghuiStudioPlugin(Star):
                 return False, "检测到同一条消息的相同请求正在处理或刚刚完成，已避免重复执行。"
 
             if charge_quota:
-                if deduction["source"] == "user":
-                    await self.data_mgr.decrease_user_count(uid, cost)
-                    charged = True
-                elif deduction["source"] == "group":
-                    await self.data_mgr.decrease_group_count(gid, cost)
-                    charged = True
+                charged = await self._charge_quota(deduction, uid, gid, cost)
 
             start_time = datetime.now()
             res: bytes | str | None = None
@@ -3438,6 +3422,11 @@ class LinghuiStudioPlugin(Star):
                 await self._send_task_notice(event, display_msg)
             return False, str(error_msg).removeprefix("❌").strip()
 
+        except QuotaDeniedError as exc:
+            if task_id:
+                await self.task_mgr.finish_failure(task_id, str(exc))
+            await self._send_task_notice(event, str(exc))
+            return False, str(exc)
         except asyncio.CancelledError:
             if charged and record is None:
                 await self._refund_quota(deduction, uid, gid, cost)
@@ -3520,10 +3509,7 @@ class LinghuiStudioPlugin(Star):
             uid, gid = self._effective_identity(event, uid, gid)
             # 1. 统一扣费
             total_cost = count
-            if deduction["source"] == "user":
-                await self.data_mgr.decrease_user_count(uid, total_cost)
-            elif deduction["source"] == "group":
-                await self.data_mgr.decrease_group_count(gid, total_cost)
+            await self._charge_quota(deduction, uid, gid, total_cost)
 
             # 2. 加载预设参考图（如果有）
             images = []
@@ -3650,6 +3636,9 @@ class LinghuiStudioPlugin(Star):
                 await self._send_task_notice(event, summary)
             return results
 
+        except QuotaDeniedError as exc:
+            await self._send_task_notice(event, str(exc))
+            return {"success": 0, "fail": count, "errors": [str(exc)]}
         except Exception as e:
             logger.error(f"Batch text-to-image task error: {e}")
             final_error = self._resolve_debug_error_message(e, "这次没弄好，请稍后再试。")
@@ -3686,10 +3675,7 @@ class LinghuiStudioPlugin(Star):
             # 1. 统一扣费
             total_cost = count
             if charge_quota:
-                if deduction["source"] == "user":
-                    await self.data_mgr.decrease_user_count(uid, total_cost)
-                elif deduction["source"] == "group":
-                    await self.data_mgr.decrease_group_count(gid, total_cost)
+                await self._charge_quota(deduction, uid, gid, total_cost)
 
             # 2. 加载预设参考图（如果有）
             if preset_name != "自定义" and preset_name != "编辑" and self.conf.get("enable_preset_ref_images", True):
@@ -3814,13 +3800,15 @@ class LinghuiStudioPlugin(Star):
                 await self._send_task_notice(event, summary)
             return results
 
+        except QuotaDeniedError as exc:
+            await self._send_task_notice(event, str(exc))
+            return {"success": 0, "fail": count, "errors": [str(exc)]}
         except Exception as e:
             logger.error(f"Batch image-to-image task error: {e}")
             final_error = self._resolve_debug_error_message(e, "这次没弄好，请稍后再试。")
             if (not suppress_user_error) or self._should_show_debug_errors():
                 await self._send_task_notice(event, f"多版本处理出了点状况: {final_error}")
             return {"success": 0, "fail": count, "errors": [final_error]}
-
     # ================= LLM 工具调用 (Tool Calling) =================
 
     def _get_text_to_image_model(self) -> str:
@@ -4180,6 +4168,11 @@ class LinghuiStudioPlugin(Star):
                 event, "edit", preset_name=preset_name, count=count, total_images=total_images,
                 extra_request=extra_rules or prompt
             )
+
+            try:
+                await self._charge_quota(deduction, uid, gid, total_cost)
+            except QuotaDeniedError:
+                return self._finalize_llm_tool_result(self._quota_denied_tool_message(deduction))
 
             # 多张图片分别处理时也走并发，避免 LLM 识别到多图后仍然一张张串行跑
             await self._register_pending_generation(event.unified_msg_origin, total_images * count)
@@ -4553,12 +4546,12 @@ class LinghuiStudioPlugin(Star):
             return
 
         charged = False
-        if deduction["source"] == "user":
-            await self.data_mgr.decrease_user_count(uid, cost)
-            charged = True
-        elif deduction["source"] == "group":
-            await self.data_mgr.decrease_group_count(gid, cost)
-            charged = True
+        try:
+            charged = await self._charge_quota(deduction, uid, gid, cost)
+        except QuotaDeniedError as exc:
+            await self.task_mgr.finish_failure(task_id, str(exc))
+            yield event.chain_result([Plain(str(exc))])
+            return
 
         start = datetime.now()
         try:
@@ -4990,7 +4983,49 @@ class LinghuiStudioPlugin(Star):
         msg = f"👤 用户 {uid} 剩余: {u_cnt}"
         if gid := event.get_group_id():
             msg += f"\n👥 本群剩余: {self.data_mgr.get_group_count(norm_id(gid))}"
+        msg += f"\n🌐 {self._global_quota_text()}"
         yield event.chain_result([Plain(msg)])
+
+    @filter.command("总次数", alias={"全局次数", "设置总次数"}, prefix_optional=True)
+    @_direct_command_only
+    async def on_global_quota(self, event: AstrMessageEvent, ctx=None):
+        """总次数：查询；总次数 100：设置全局上限；总次数 不限：关闭上限。"""
+        args = self._command_args(event, "总次数", "全局次数", "设置总次数").strip()
+        if not args:
+            yield event.chain_result([Plain(self._global_quota_text())])
+            return
+        if not self.is_admin(event):
+            yield event.chain_result([Plain("只有 AstrBot 管理员可以调整全局总次数。")])
+            return
+        if args in {"不限", "无限", "关闭"}:
+            value = -1
+        elif args.isdecimal():
+            value = int(args)
+        else:
+            yield event.chain_result([Plain("用法：总次数 100（设置所有会话共享的总上限）；总次数 不限（关闭上限）。0 表示暂停所有生图。")])
+            return
+        await self.data_mgr.adjust_global_limit(value)
+        self._save_config(["global_total_limit"])
+        yield event.chain_result([Plain(f"已设置。{self._global_quota_text()}。历史已用次数保留，所有会话立即生效。")])
+
+    @filter.command("增加总次数", alias={"加总次数"}, prefix_optional=True)
+    @_direct_command_only
+    async def on_add_global_quota(self, event: AstrMessageEvent, ctx=None):
+        """增加总次数 50：为所有会话共享的总上限增加 50 次。"""
+        if not self.is_admin(event):
+            yield event.chain_result([Plain("只有 AstrBot 管理员可以调整全局总次数。")])
+            return
+        args = self._command_args(event, "增加总次数", "加总次数").strip()
+        if not args.isdecimal() or int(args) <= 0:
+            yield event.chain_result([Plain("用法：增加总次数 50（增加的次数必须是正整数）。")])
+            return
+        try:
+            await self.data_mgr.adjust_global_limit(int(args), add=True)
+        except ValueError as exc:
+            yield event.chain_result([Plain(str(exc))])
+            return
+        self._save_config(["global_total_limit"])
+        yield event.chain_result([Plain(f"已增加 {args} 次。{self._global_quota_text()}。所有会话立即生效。")])
 
     @filter.command("接口模式", alias={"切换API模式"}, prefix_optional=True)
     @_direct_command_only
@@ -6697,10 +6732,10 @@ class LinghuiStudioPlugin(Star):
         )
 
         # 6. 扣费
-        if deduction["source"] == "user":
-            await self.data_mgr.decrease_user_count(uid, total_cost)
-        elif deduction["source"] == "group":
-            await self.data_mgr.decrease_group_count(gid, total_cost)
+        try:
+            await self._charge_quota(deduction, uid, gid, total_cost)
+        except QuotaDeniedError as exc:
+            return self._finalize_llm_tool_result(self._quota_denied_tool_message(deduction))
 
         await self._begin_session_task(
             event.unified_msg_origin,
@@ -7002,10 +7037,10 @@ class LinghuiStudioPlugin(Star):
         )
 
         # 6. 扣费
-        if deduction["source"] == "user":
-            await self.data_mgr.decrease_user_count(uid, total_cost)
-        elif deduction["source"] == "group":
-            await self.data_mgr.decrease_group_count(gid, total_cost)
+        try:
+            await self._charge_quota(deduction, uid, gid, total_cost)
+        except QuotaDeniedError as exc:
+            return self._finalize_llm_tool_result(self._quota_denied_tool_message(deduction))
 
         await self._begin_session_task(
             event.unified_msg_origin,
@@ -7591,10 +7626,11 @@ class LinghuiStudioPlugin(Star):
         yield event.chain_result([Plain(feedback)])
 
         # 扣费
-        if deduction["source"] == "user":
-            await self.data_mgr.decrease_user_count(uid, 1)
-        elif deduction["source"] == "group":
-            await self.data_mgr.decrease_group_count(gid, 1)
+        try:
+            await self._charge_quota(deduction, uid, gid, 1)
+        except QuotaDeniedError as exc:
+            yield event.chain_result([Plain(str(exc))])
+            return
 
         # 调用 API
         model = self.conf.get("model", "nano-banana")
@@ -7630,6 +7666,7 @@ class LinghuiStudioPlugin(Star):
             info += f" | 剩余: {quota_str}"
             yield event.chain_result(self._requester_prefix_nodes(event) + [Image.fromBytes(res), Plain(info)])
         else:
+            await self._refund_quota(deduction, uid, gid, 1)
             yield event.chain_result(self._notice_nodes(event, f"没弄好: {self._resolve_debug_error_message(res, '这次没弄好，请稍后再试。')}"))
 
     @filter.command("人设参考图添加", alias={"添加人设图"}, prefix_optional=True)
@@ -7848,7 +7885,7 @@ class LinghuiStudioPlugin(Star):
         deduction = await self._check_quota(event, uid, gid, total_cost)
         if not deduction["allowed"]:
             yield event.chain_result(
-                [Plain("这会儿先帮不了你啦，今天有点忙不过来。你可以稍后再来，或者联系管理员看下配额设置。")])
+                [Plain(deduction["msg"])])
             return
 
         concurrency = max(1, self.conf.get("batch_concurrency", 3))
@@ -7864,10 +7901,11 @@ class LinghuiStudioPlugin(Star):
         yield event.chain_result([Plain(feedback)])
 
         # 扣费
-        if deduction["source"] == "user":
-            await self.data_mgr.decrease_user_count(uid, total_cost)
-        elif deduction["source"] == "group":
-            await self.data_mgr.decrease_group_count(gid, total_cost)
+        try:
+            await self._charge_quota(deduction, uid, gid, total_cost)
+        except QuotaDeniedError as exc:
+            yield event.chain_result([Plain(str(exc))])
+            return
 
         # 使用信号量控制并发
         semaphore = asyncio.Semaphore(concurrency)

@@ -1,4 +1,4 @@
-import { createImageViewer } from "./image-viewer.js?v=3.9.3";
+import { createImageViewer } from "./image-viewer.js?v=3.10.0";
 
 const bridge = window.AstrBotPluginPage || {
   ready: async () => ({}),
@@ -284,7 +284,7 @@ function updateStatusBar() {
   }
   const versionTarget = byId("status-version");
   if (versionTarget) {
-    versionTarget.textContent = `灵绘 · v${config.plugin_version || "3.9.3"}`;
+    versionTarget.textContent = `灵绘 · v${config.plugin_version || "3.10.0"}`;
   }
 }
 
@@ -1534,6 +1534,7 @@ function hydrateFields() {
   byId("admins-unlimited").checked = bool(permissions.admins_unlimited);
   ["allowed-users", "blocked-users", "group-whitelist", "group-blacklist", "unlimited-users", "unlimited-groups"].forEach((id, index) => setListValue(id, [permissions.allowed_users, permissions.blocked_users, permissions.group_whitelist, permissions.group_blacklist, permissions.unlimited_users, permissions.unlimited_groups][index]));
   byId("enable-user-limit").checked = bool(usage.enable_user_limit);
+  byId("global-total-limit").value = usage.global_total_limit ?? -1;
   byId("enable-group-limit").checked = bool(usage.enable_group_limit);
   byId("enable-checkin").checked = bool(usage.enable_checkin);
   byId("enable-random-checkin").checked = bool(usage.enable_random_checkin);
@@ -1670,6 +1671,7 @@ function buildPayload() {
       unlimited_groups: idsFromText(value("unlimited-groups")),
     },
     usage: {
+      global_total_limit: Number(value("global-total-limit")),
       enable_user_limit: checked("enable-user-limit"),
       enable_group_limit: checked("enable-group-limit"),
       enable_checkin: checked("enable-checkin"),
@@ -1724,6 +1726,10 @@ async function loadUsage() {
   const response = await bridge.apiGet("get_usage");
   if (!response?.success) throw new Error(response?.message || "无法读取用量");
   state.usage = response;
+  const total = response.global_quota;
+  byId("global-quota-status").textContent = total
+    ? `所有会话合计已用 ${total.used} 次；${total.enabled ? `上限 ${total.limit} 次，剩余 ${total.remaining} 次` : "总次数不限"}。`
+    : "";
   renderOverview();
   renderCreditTable();
   void loadOverviewRecent(true);
