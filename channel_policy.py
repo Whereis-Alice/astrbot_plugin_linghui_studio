@@ -122,6 +122,10 @@ class ChannelDailyQuota:
 
 def extract_channel_option(prompt: str) -> tuple[str, str]:
     """Only a leading option is syntax; prose and quoted prompts remain intact."""
+    text = prompt.strip()
+    match = re.match(r"^渠道([A-Za-z0-9_-]{1,48})(?:\s+|$)", text)
+    if match:
+        return text[match.end():].strip(), match.group(1)
     match = re.match(r"^--(?:渠道|channel)(?:=|\s+)([A-Za-z0-9_-]+)(?:\s+|$)", prompt.strip(), re.I)
     if match:
         return prompt.strip()[match.end():].strip(), match.group(1)

@@ -61,6 +61,18 @@ class DailyQuotaTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             extract("--渠道")
 
+    def test_plain_channel_prefix_supports_ids_and_preserves_prompt_text(self):
+        extract = self.module.extract_channel_option
+        for channel in ("m", "primary", "backup_1", "test-two", "M", "a" * 48):
+            with self.subTest(channel=channel):
+                self.assertEqual(extract(f"渠道{channel} 一只猫"), ("一只猫", channel))
+        self.assertEqual(extract("  渠道m\n一只猫  "), ("一只猫", "m"))
+        self.assertEqual(extract("渠道m 一只猫  4K 16:9"), ("一只猫  4K 16:9", "m"))
+        self.assertEqual(extract("渠道m"), ("", "m"))
+        for prompt in ("一只猫", "一只猫 渠道m", "渠道里的一只猫", "渠道 一只猫", "渠道m的一只猫", "渠道" + "a" * 49 + " 一只猫"):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(extract(prompt), (prompt, ""))
+
 
 class RouterPolicyTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
