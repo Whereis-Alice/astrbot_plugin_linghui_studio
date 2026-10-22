@@ -1,4 +1,4 @@
-import { createImageViewer } from "./image-viewer.js?v=3.10.0";
+import { createImageViewer } from "./image-viewer.js?v=3.11.0";
 
 const bridge = window.AstrBotPluginPage || {
   ready: async () => ({}),
@@ -271,20 +271,20 @@ function updateStatusBar() {
       dispatchTarget.textContent = "调度 · 兼容单接口模式";
     } else {
       const activeId = config.active_drawing_channel || "";
-      const enabledChannels = channels.filter((item) => item.enabled);
+      const enabledChannels = channels.filter((item) => item.enabled).sort((a, b) => Number(b.priority || 0) - Number(a.priority || 0));
       const active = enabledChannels.find((item) => item.id === activeId) || enabledChannels[0];
       if (!active) {
         dispatchTarget.textContent = "调度 · 无可用渠道";
       } else {
         const fallbacks = enabledChannels.filter((item) => item.id !== active.id && item.fallback_enabled).length;
-        const model = active.model || active.name || active.interface_mode || "未填模型";
+        const model = active.models?.[0] || active.model || active.name || active.interface_mode || "未填模型";
         dispatchTarget.textContent = `调度 · ${active.id} / ${model} · 备用 ${fallbacks}`;
       }
     }
   }
   const versionTarget = byId("status-version");
   if (versionTarget) {
-    versionTarget.textContent = `灵绘 · v${config.plugin_version || "3.10.0"}`;
+    versionTarget.textContent = `灵绘 · v${config.plugin_version || "3.11.0"}`;
   }
 }
 
@@ -393,6 +393,11 @@ function channelTemplate(channel = {}, index = 0) {
     image_edit_model: channel.image_edit_model || "",
     text_to_image_model: channel.text_to_image_model || "",
     timeout: channel.timeout || 120,
+    priority: channel.priority ?? 0,
+    daily_limit: channel.daily_limit ?? -1,
+    models: channel.models || [],
+    image_resolution: channel.image_resolution || "",
+    image_aspect_ratio: channel.image_aspect_ratio || "",
     api_keys_masked: channel.api_keys_masked || "",
   };
   const masked = item.api_keys_masked ? `已配置：${item.api_keys_masked}` : "每行一个 API Key";
@@ -423,12 +428,17 @@ function channelTemplate(channel = {}, index = 0) {
         <label class="field full"><span>接口地址</span><input data-channel="base_url" value="${escapeHtml(item.base_url)}" placeholder="https://api.example.com" /><small class="field-hint">OpenAI Images/New API 填站点基础地址，例如 https://example.com；程序会自动补齐 /v1/images/generations 或 /v1/images/edits。自定义接口才填写完整地址。</small></label>
         <label class="field full"><span>API Key</span><textarea data-channel="api_keys" rows="2" placeholder="${escapeHtml(masked)}"></textarea><small class="field-hint">每行一个 Key，可轮换使用。已有 Key 不会回显；留空保存会保留原值。</small></label>
         ${item.api_keys_masked ? '<label class="toggle-field full"><input data-channel="clear_api_keys" type="checkbox" /><span class="toggle-copy"><span>清除已保存的 API Key</span><small class="field-hint">保存后永久删除该渠道的所有 Key。</small></span></label>' : ""}
+        <label class="field"><span>优先级</span><input data-channel="priority" type="number" min="-1000000" max="1000000" value="${item.priority}" /><small class="field-hint">数值越大越先调用，同值按列表顺序。明确指定的主渠道仍优先。</small></label>
+        <label class="field"><span>每日总额度（次数）</span><input data-channel="daily_limit" type="number" min="-1" max="2147483647" value="${item.daily_limit}" /><small class="field-hint">全会话共用；-1 不限，0 停用。成功扣 1 次，失败退回；北京时间次日 0 点恢复。</small></label>
+        <label class="field"><span>生图分辨率</span><select data-channel="image_resolution">${["", "1K", "2K", "4K"].map(v => `<option value="${v}" ${item.image_resolution === v ? "selected" : ""}>${v || "跟随全局"}</option>`).join("")}</select><small class="field-hint">仅为本渠道默认值；显式参数及提示词尺寸优先。</small></label>
+        <label class="field"><span>默认比例</span><select data-channel="image_aspect_ratio">${["", "1:1", "16:9", "9:16", "5:4", "4:5", "4:3", "3:4", "3:2", "2:3", "21:9"].map(v => `<option value="${v}" ${item.image_aspect_ratio === v ? "selected" : ""}>${v || "跟随全局"}</option>`).join("")}</select><small class="field-hint">本渠道指定比例也适用于参考图；提示词及显式参数优先。</small></label>
+        <label class="field full"><span>模型回退顺序（每行一个）</span><textarea data-channel="models" rows="3" placeholder="model-a&#10;model-b">${escapeHtml(item.models.join("\n"))}</textarea><small class="field-hint">按顺序尝试完才换渠道。带参考图/文生图专用模型优先，然后此列表；留空沿用默认模型。手动指定模型时只用指定模型。</small></label>
         <label class="field"><span>默认模型</span><input data-channel="model" list="${modelListId}" value="${escapeHtml(item.model)}" /><small class="field-hint">图生图和未指定模型的请求使用此模型。</small></label>
         <label class="field"><span>带参考图模型（可选）</span><input data-channel="image_edit_model" list="${modelListId}" value="${escapeHtml(item.image_edit_model)}" /><small class="field-hint">人设拍照、头像图生图和参考图请求优先使用；留空时用默认模型。应填写该渠道实际支持的图片编辑/多模态模型。</small></label>
         <label class="field"><span>文生图模型（可选）</span><input data-channel="text_to_image_model" list="${modelListId}" value="${escapeHtml(item.text_to_image_model)}" /><small class="field-hint">显式文生图优先使用此模型；留空时使用默认模型。</small></label>
         <label class="toggle-field"><input data-channel="enabled" type="checkbox" ${item.enabled ? "checked" : ""} /><span class="toggle-copy"><span>启用渠道</span><small class="field-hint">关闭后该渠道不会被主路由或回退流程调用。</small></span></label>
         <label class="toggle-field"><input data-channel="reference_image_enabled" type="checkbox" ${item.reference_image_enabled ? "checked" : ""} /><span class="toggle-copy"><span>允许带参考图请求</span><small class="field-hint">关闭后渠道仍可文生图，但人设拍照、头像图生图和带参考图请求会跳过它。</small></span></label>
-        <label class="toggle-field"><input data-channel="fallback_enabled" type="checkbox" ${item.fallback_enabled ? "checked" : ""} /><span class="toggle-copy"><span>允许作为回退渠道</span><small class="field-hint">前方已尝试的渠道报错后，才会按列表顺序尝试此渠道。</small></span></label>
+        <label class="toggle-field"><input data-channel="fallback_enabled" type="checkbox" ${item.fallback_enabled ? "checked" : ""} /><span class="toggle-copy"><span>允许作为回退渠道</span><small class="field-hint">前方已尝试的渠道报错后，才会按优先级尝试此渠道。</small></span></label>
       </div>
       <datalist id="${modelListId}"></datalist>
     </article>`;
@@ -449,6 +459,11 @@ function readChannels() {
       base_url: get("base_url").value.trim(),
       api_keys: clearApiKeys ? "" : get("api_keys").value.trim(),
       clear_api_keys: clearApiKeys,
+      priority: Number(get("priority").value),
+      daily_limit: Number(get("daily_limit").value),
+      models: get("models").value.split(/\r?\n/).map(v => v.trim()).filter(Boolean),
+      image_resolution: get("image_resolution").value,
+      image_aspect_ratio: get("image_aspect_ratio").value,
       model: get("model").value.trim(),
       image_edit_model: get("image_edit_model").value.trim(),
       text_to_image_model: get("text_to_image_model").value.trim(),
@@ -464,7 +479,7 @@ function renderChannels() {
   byId("channel-list").innerHTML = channels.map(channelTemplate).join("") || '<p class="empty">尚未配置渠道。添加至少一个渠道后才能开始绘图。</p>';
   const current = state.config?.active_drawing_channel || "";
   const referenceCurrent = state.config?.reference_image_drawing_channel || "";
-  const options = ['<option value="">自动（按列表顺序）</option>'].concat(channels.map((channel) => `<option value="${escapeHtml(channel.id)}" ${channel.id === current ? "selected" : ""}>${escapeHtml(channel.id)}${channel.name ? ` - ${escapeHtml(channel.name)}` : ""}</option>`));
+  const options = ['<option value="">自动（按优先级）</option>'].concat(channels.map((channel) => `<option value="${escapeHtml(channel.id)}" ${channel.id === current ? "selected" : ""}>${escapeHtml(channel.id)}${channel.name ? ` - ${escapeHtml(channel.name)}` : ""}</option>`));
   byId("active-channel").innerHTML = options.join("");
   const referenceOptions = ['<option value="">跟随主渠道</option>'].concat(channels.map((channel) => `<option value="${escapeHtml(channel.id)}" ${channel.id === referenceCurrent ? "selected" : ""}>${escapeHtml(channel.id)}${channel.name ? ` - ${escapeHtml(channel.name)}` : ""}</option>`));
   byId("reference-image-channel").innerHTML = referenceOptions.join("");
@@ -1124,11 +1139,12 @@ function renderRouteHealth() {
     const successes = Math.max(0, Number(channel.successes) || 0);
     const failures = Math.max(0, Number(channel.failures) || 0);
     const rate = successes + failures ? `${(Number(channel.success_rate || 0) * 100).toFixed(1)}%` : "暂无样本";
-    const stateLabel = channel.cooling_down ? `冷却 ${Number(channel.cooldown_remaining || 0).toFixed(0)}s` : (channel.enabled ? "可调度" : "未启用");
-    const stateClass = channel.cooling_down ? "cooling" : (channel.enabled ? "healthy" : "disabled");
+    const stateLabel = channel.quota_exhausted ? "日额度用完，次日恢复" : channel.cooling_down ? `冷却 ${Number(channel.cooldown_remaining || 0).toFixed(0)}s` : (channel.enabled ? "可调度" : "未启用");
+    const stateClass = channel.quota_exhausted ? "disabled" : channel.cooling_down ? "cooling" : (channel.enabled ? "healthy" : "disabled");
     return `<article class="route-health-card ${stateClass}">
       <div class="route-health-title"><div><i class="status-dot ${channel.cooling_down ? "off" : "ok"}"></i><strong>${escapeHtml(channel.name || channel.id)}</strong><small>${escapeHtml(channel.id)}</small></div><span>${escapeHtml(stateLabel)}</span></div>
       <div class="route-health-metrics"><span><small>成功率</small><strong>${escapeHtml(rate)}</strong></span><span><small>成功 / 失败</small><strong>${successes} / ${failures}</strong></span><span><small>P50 / P95</small><strong>${Number(channel.p50_duration || 0).toFixed(1)}s / ${Number(channel.p95_duration || 0).toFixed(1)}s</strong></span><span><small>回退成功</small><strong>${Math.max(0, Number(channel.fallback_successes) || 0)}</strong></span></div>
+      <p>优先级 ${escapeHtml(channel.priority ?? 0)} · 今日已用 ${escapeHtml(channel.daily_used ?? 0)} / ${channel.daily_limit >= 0 ? escapeHtml(channel.daily_limit) : "不限"} · 北京时间 0 点恢复</p>
       ${channel.last_error ? `<p title="${escapeHtml(channel.last_error)}">最近异常 · ${escapeHtml(channel.last_error_category || "未分类")} · ${escapeHtml(channel.last_error)}</p>` : ""}
     </article>`;
   }).join("");
@@ -1476,6 +1492,29 @@ async function updatePersonaState(action) {
   state.personaState = response.state || {};
   renderPersonaState();
   showToast(response.message || "今日人设状态已更新");
+}
+
+async function exportChannels() {
+  const response = await bridge.apiGet("channels_export");
+  if (!response?.success) throw new Error(response?.message || "渠道导出失败");
+  const url = URL.createObjectURL(new Blob([JSON.stringify(response.document, null, 2)], { type: "application/json" }));
+  const anchor = document.createElement("a");
+  anchor.href = url; anchor.download = "linghui_channels.json";
+  document.body.appendChild(anchor); anchor.click(); anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  showToast("已导出保存的渠道配置（含 API Key）");
+}
+
+async function importChannels(file) {
+  if (!file) return;
+  if (file.size > 1024 * 1024) throw new Error("渠道文件不能超过 1 MB");
+  let document;
+  try { document = JSON.parse(await file.text()); }
+  catch { throw new Error("渠道文件不是有效 JSON"); }
+  const response = await bridge.apiPost("channels_import", { document });
+  if (!response?.success) throw new Error(response?.message || "渠道导入失败");
+  await loadConfig(); await loadRouteHealth();
+  showToast(response.message || "渠道导入完成");
 }
 
 async function exportConfig() {
@@ -2086,12 +2125,16 @@ document.addEventListener("click", async (event) => {
       await loadGenerationHistory(offset + HISTORY_PAGE_SIZE);
       return;
     }
+    if (event.target.closest("#channels-export")) { await exportChannels(); return; }
+    if (event.target.closest("#channels-import")) { byId("channels-import-file").click(); return; }
     if (event.target.closest("#add-channel")) {
+      state.config.channels = readChannels();
       state.config.channels.push({ id: `channel_${state.config.channels.length + 1}`, enabled: true, fallback_enabled: true, interface_mode: "auto", timeout: 120 });
       renderChannels(); return;
     }
     const removeChannel = event.target.closest("[data-remove-channel]");
     if (removeChannel) {
+      state.config.channels = readChannels();
       state.config.channels.splice(Number(removeChannel.dataset.removeChannel), 1);
       renderChannels(); return;
     }
@@ -2289,3 +2332,9 @@ try {
   showToast(error.message || "页面初始化失败", true);
   setSaveState("加载失败");
 }
+
+byId("channels-import-file")?.addEventListener("change", async (event) => {
+  try { await importChannels(event.target.files?.[0]); }
+  catch (error) { showToast(error.message || "渠道导入失败", true); }
+  finally { event.target.value = ""; }
+});

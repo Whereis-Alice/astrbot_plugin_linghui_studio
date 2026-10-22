@@ -401,6 +401,8 @@ class DashboardRegistrationTest(unittest.TestCase):
         self.assertEqual(
             [path for path, _, _ in registered],
             [
+                "/astrbot_plugin_linghui_studio/channels_export",
+                "/astrbot_plugin_linghui_studio/channels_import",
                 "/astrbot_plugin_linghui_studio/get_config",
                 "/astrbot_plugin_linghui_studio/dashboard_theme",
                 "/astrbot_plugin_linghui_studio/dashboard_density",

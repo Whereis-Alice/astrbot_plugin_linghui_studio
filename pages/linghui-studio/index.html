@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>灵绘工坊</title>
     <link rel="icon" type="image/svg+xml" href="./assets/linghui-logo.svg" />
-    <link rel="stylesheet" href="./style.css?v=3.10.0" />
+    <link rel="stylesheet" href="./style.css?v=3.11.0" />
   </head>
   <body>
     <main class="shell">
@@ -157,11 +157,13 @@
             <div id="route-health-list" class="route-health-list"></div>
           </section>
           <section class="section-block">
-            <div class="section-heading"><div><h2>绘图渠道</h2><p>顺序就是默认优先级。仅启用且允许回退的渠道会成为备用渠道。</p></div><button id="add-channel" class="quiet-action">添加渠道</button></div>
+            <div class="section-heading"><div><h2>绘图渠道</h2><p>优先级数值越大越先尝试，同值按列表顺序。日额度用完自动跳过，次日恢复。</p></div><button id="add-channel" class="quiet-action">添加渠道</button></div>
             <div class="channel-routing-grid">
-              <label class="field"><span>当前主渠道</span><select id="active-channel"></select><small class="field-hint">留在“自动”时按渠道列表顺序开始尝试；指定渠道后会优先使用该渠道，失败时仍可回退。</small></label>
+              <label class="field"><span>当前主渠道</span><select id="active-channel"></select><small class="field-hint">留在“自动”时按优先级开始尝试；指定渠道后会优先使用该渠道，失败时仍可回退。</small></label>
               <label class="field"><span>带参考图优先渠道</span><select id="reference-image-channel"></select><small class="field-hint">仅用于人设拍照、QQ 头像图生图、预设参考图和普通图生图。留在“跟随主渠道”时会复用当前主渠道；请为此路径选择实际支持带图请求的渠道。</small></label>
             </div>
+            <div class="config-transfer-actions"><button id="channels-export" class="quiet-action" type="button">导出渠道</button><button id="channels-import" class="quiet-action" type="button">导入渠道</button><input id="channels-import-file" type="file" accept=".json,application/json" hidden /></div>
+            <p class="field-hint">导出已保存的渠道及实际 API Key（含继承的 Key），请妥善保管。导入会替换所有渠道及主渠道选择，保留本服务器的用量和其他设置。</p>
             <div id="channel-list" class="channel-list"></div>
           </section>
           <section class="section-block route-policy-block">
@@ -364,7 +366,7 @@
         <div class="statusbar-right">
           <span id="status-dispatch" class="status-dispatch" title="当前主渠道">调度 · 读取中</span>
           <span id="status-breadcrumb" class="status-breadcrumb">概览</span>
-          <span id="status-version" class="status-version" title="灵绘工坊插件版本">灵绘 · v3.10.0</span>
+          <span id="status-version" class="status-version" title="灵绘工坊插件版本">灵绘 · v3.11.0</span>
         </div>
       </footer>
     </main>
@@ -401,6 +403,6 @@
       </footer>
     </dialog>
     <div id="toast" class="toast" role="status"></div>
-    <script type="module" src="./app.js?v=3.10.0"></script>
+    <script type="module" src="./app.js?v=3.11.0"></script>
   </body>
 </html>

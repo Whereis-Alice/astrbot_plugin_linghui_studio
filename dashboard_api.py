@@ -29,8 +29,11 @@ from .requester_tag import DEFAULT_TAG_MODE, normalize_tag_mode
 from .utils import is_ambiguous_message_delivery_timeout, norm_id, normalize_api_root
 
 
+from .channel_policy import normalize_policy as normalize_channel_policy
+
+
 PLUGIN_NAME = "astrbot_plugin_linghui_studio"
-PLUGIN_VERSION = "3.10.0"
+PLUGIN_VERSION = "3.11.0"
 DRAWING_CHANNEL_TEMPLATE_KEY = "drawing_channel"
 _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -70,6 +73,8 @@ class LinghuiDashboardApi:
 
     def register(self) -> None:
         routes = (
+            ("channels_export", self.channels_export, ["GET"], "Export drawing channels with credentials"),
+            ("channels_import", self.channels_import, ["POST"], "Import drawing channel configuration"),
             ("get_config", self.get_config, ["GET"], "Get Linghui Studio configuration"),
             ("dashboard_theme", self.save_dashboard_theme, ["POST"], "Save Linghui Studio Dashboard theme"),
             ("dashboard_density", self.save_dashboard_density, ["POST"], "Save Linghui Studio Dashboard layout density"),
@@ -204,6 +209,7 @@ class LinghuiDashboardApi:
 
     def _public_channel(self, channel: Dict[str, Any], index: int) -> Dict[str, Any]:
         result = {
+            **normalize_channel_policy(channel),
             "id": str(channel.get("id", f"channel_{index + 1}") or f"channel_{index + 1}"),
             "name": str(channel.get("name", "") or ""),
             "enabled": self._as_bool(channel.get("enabled", True)),
@@ -582,6 +588,8 @@ class LinghuiDashboardApi:
     def _normalize_channels(self, incoming: Any) -> List[Dict[str, Any]]:
         if not isinstance(incoming, list):
             raise ValueError("绘图渠道必须是列表。")
+        if len(incoming) > 8 or any(not isinstance(item, dict) for item in incoming):
+            raise ValueError("绘图渠道最多 8 个，每个渠道必须是配置对象。")
         existing = self._existing_channels()
         result: List[Dict[str, Any]] = []
         ids: set[str] = set()
@@ -608,12 +616,17 @@ class LinghuiDashboardApi:
             image_edit_transport = str(raw.get("image_edit_transport", "auto") or "auto").strip().lower()
             if image_edit_transport not in {"auto", "multipart", "json"}:
                 raise ValueError(f"渠道 {channel_id} 的图生图上传格式无效。")
-            api_keys = str(raw.get("api_keys", "") or "").strip()
+            raw_keys = raw.get("api_keys", "")
+            if not isinstance(raw_keys, (str, list)) or (isinstance(raw_keys, list) and any(not isinstance(k, str) for k in raw_keys)):
+                raise ValueError(f"渠道 {channel_id} 的 API Key 必须是文本或字符串列表。")
+            api_keys = "\n".join(raw_keys).strip() if isinstance(raw_keys, list) else raw_keys.strip()
             if not api_keys and not self._as_bool(raw.get("clear_api_keys", False)):
-                api_keys = str(old.get("api_keys", "") or "")
+                old_keys = old.get("api_keys", "") or ""
+                api_keys = "\n".join(old_keys) if isinstance(old_keys, list) else str(old_keys)
             result.append({
                 # AstrBot validates template_list entries by this internal key.
                 "__template_key": DRAWING_CHANNEL_TEMPLATE_KEY,
+                **normalize_channel_policy(raw, old),
                 "id": channel_id,
                 "name": str(raw.get("name", "") or "").strip()[:80],
                 "enabled": self._as_bool(raw.get("enabled", True)),
@@ -628,6 +641,7 @@ class LinghuiDashboardApi:
                 "image_edit_model": str(raw.get("image_edit_model", "") or "").strip()[:160],
                 "text_to_image_model": str(raw.get("text_to_image_model", "") or "").strip()[:160],
                 "timeout": self._as_int(raw.get("timeout", 120), 5, 900),
+                "use_stream": self._as_bool(raw.get("use_stream", old.get("use_stream", False))),
             })
         return result
 
@@ -2349,6 +2363,70 @@ class LinghuiDashboardApi:
             "redacted_fields": redacted_fields,
             "config": exported,
         }
+
+    def _export_channels_document(self) -> Dict[str, Any]:
+        channels = copy.deepcopy(self.plugin.conf.get("drawing_channels", []) or [])
+        router = self.plugin.api_mgr
+        for channel in channels:
+            if isinstance(channel, dict):
+                # Make inherited keys portable without exporting unrelated settings.
+                channel["api_keys"] = "\n".join(router._channel_keys(channel))
+        return {
+            "format": "linghui-studio-channels", "format_version": 1,
+            "plugin_version": PLUGIN_VERSION, "contains_secrets": True,
+            "channels": channels,
+            "active_drawing_channel": self.plugin.conf.get("active_drawing_channel", ""),
+            "reference_image_drawing_channel": self.plugin.conf.get("reference_image_drawing_channel", ""),
+        }
+
+    async def channels_export(self):
+        return jsonify({"success": True, "document": self._export_channels_document()})
+
+    async def channels_import(self):
+        payload = await self._json_body()
+        document = payload.get("document")
+        if not isinstance(document, dict) or document.get("format") != "linghui-studio-channels" or document.get("format_version") != 1:
+            return jsonify({"success": False, "message": "请选择版本 1 的灵绘工坊渠道配置 JSON。"}), 400
+        async with self._lock:
+            keys = ["drawing_channels", "active_drawing_channel", "reference_image_drawing_channel"]
+            absent_keys = {key for key in keys if key not in self.plugin.conf}
+            snapshot = {key: copy.deepcopy(self.plugin.conf.get(key)) for key in keys}
+            try:
+                raw = copy.deepcopy(document.get("channels"))
+                if not isinstance(raw, list):
+                    raise ValueError("渠道配置必须包含 channels 列表。")
+                for channel in raw:
+                    if isinstance(channel, dict):
+                        if "api_keys" not in channel or channel["api_keys"] == "__KEEP_EXISTING_SECRET__":
+                            raise ValueError("渠道迁移文件必须包含实际 API Key；请使用渠道页的导出按钮。")
+                        # Empty imported keys mean empty, never preserve destination keys.
+                        channel["clear_api_keys"] = True
+                        channel.pop("original_id", None)
+                normalized = self._normalize_channels(raw)
+                values = {"drawing_channels": normalized}
+                ids = {item["id"] for item in normalized}
+                for key in keys[1:]:
+                    selected = document.get(key, "")
+                    if not isinstance(selected, str) or (selected and selected not in ids):
+                        raise ValueError("导入的主渠道或带参考图渠道 ID 无效。")
+                    values[key] = selected
+            except (ValueError, TypeError) as exc:
+                return jsonify({"success": False, "message": str(exc)}), 400
+            try:
+                self.plugin.conf.update(values)
+                self.plugin._save_config(keys)
+                await self.plugin.api_mgr.refresh()
+            except Exception as exc:
+                self.plugin.conf.update(snapshot)
+                for key in absent_keys:
+                    self.plugin.conf.pop(key, None)
+                try:
+                    self.plugin._save_config(keys)
+                    await self.plugin.api_mgr.refresh()
+                except Exception:
+                    logger.exception("Linghui channel import rollback failed")
+                return jsonify({"success": False, "message": f"渠道导入失败，已回滚：{safe_error_summary(exc)}"}), 500
+        return jsonify({"success": True, "message": f"已导入 {len(normalized)} 个渠道。"})
 
     async def config_export(self):
         document = self._export_config_document()

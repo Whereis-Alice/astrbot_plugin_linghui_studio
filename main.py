@@ -22,6 +22,8 @@ from .data_manager import DataManager
 from .image_manager import ImageManager
 from .access_control import AccessPolicy
 from .channel_router import DrawingChannelRouter
+from .channel_policy import extract_channel_option
+from .error_classify import safe_error_summary
 from .session_overrides import SessionOverrideStore
 from .batch_policy import BatchFailureGuard, policy_label
 from .default_presets import ADDITIONAL_DEFAULT_PRESETS, DEFAULT_PRESET_PACK_VERSION
@@ -310,6 +312,7 @@ class LinghuiStudioPlugin(Star):
             ttl_minutes=config.get("session_override_ttl_minutes", 720),
         )
         self.api_mgr.bind_session_store(self.session_overrides)
+        self.api_mgr.bind_daily_quota(data_dir)
         self._generation_cache_cleanup_task: Optional[asyncio.Task] = None
 
         # 上下文管理器
@@ -2688,6 +2691,8 @@ class LinghuiStudioPlugin(Star):
 
     def _resolve_debug_error_message(self, error: Any, default_msg: str = "这边刚才有点小问题，我先缓一下，稍后再试试。") -> str:
         """调试模式下显示上游报错正文（已隐去接口地址与密钥），普通模式下继续脱敏。"""
+        if str(error or "").startswith(("指定渠道 ", "绘图渠道的每日总额度", "渠道日额度保存失败", "没有可用于带参考图请求的绘图渠道")):
+            return safe_error_summary(error, 480) or default_msg
         if self._should_show_debug_errors():
             return self._public_error_message(error, default_msg)
 
@@ -2963,6 +2968,8 @@ class LinghuiStudioPlugin(Star):
             force: bool = False,
             nonce: str = "",
             rerun_of: str = "",
+            preferred_channel_id: str = "",
+            allow_fallback: bool = True,
     ) -> Tuple[Dict[str, Any], bool]:
         user_name, group_name = self._event_identity_labels(event)
         return await self.task_mgr.begin_task(
@@ -2978,12 +2985,14 @@ class LinghuiStudioPlugin(Star):
             requested_model=model,
             images=images,
             force=force,
-            nonce=nonce,
+            nonce=f"{nonce}|channel={preferred_channel_id}" if preferred_channel_id else nonce,
             rerun_of=rerun_of,
             request={
                 "use_text_to_image_api": bool(use_text_to_image_api),
                 "aspect_ratio": str(aspect_ratio or ""),
                 "resolution": str(resolution or ""),
+                "preferred_channel_id": preferred_channel_id,
+                "allow_fallback": bool(allow_fallback),
             },
         )
 
@@ -4389,6 +4398,7 @@ class LinghuiStudioPlugin(Star):
         model_idx_override = int(match.group(1)) - 1 if match else None
         base_cmd = cmd_raw[:match.start()] if match else cmd_raw
 
+        preferred_channel_id = ""
         user_prompt = ""
         preset_name = "自定义"
 
@@ -4397,6 +4407,13 @@ class LinghuiStudioPlugin(Star):
 
         if is_custom_command:
             user_prompt = parts[1] if len(parts) > 1 else ""
+
+            try:
+                user_prompt, preferred_channel_id = extract_channel_option(user_prompt)
+            except ValueError as exc:
+                yield event.chain_result([Plain(str(exc))])
+                event.stop_event()
+                return
 
             # Custom commands never resolve a prompt preset. This preserves
             # upstream ``bnn`` behavior while allowing a configurable alias.
@@ -4538,6 +4555,8 @@ class LinghuiStudioPlugin(Star):
             model=model,
             preset_name=preset_name,
             task_type=direct_task_type,
+            preferred_channel_id=preferred_channel_id,
+            allow_fallback=not bool(preferred_channel_id),
             use_text_to_image_api=is_text_to_image,
         )
         task_id = str(task.get("id", "") or "")
@@ -4563,6 +4582,8 @@ class LinghuiStudioPlugin(Star):
                 use_text_to_image_api=is_text_to_image,
                 negative_prompt=negative_prompt,
                 final_instruction=final_instruction,
+                preferred_channel_id=preferred_channel_id or None,
+                allow_fallback=not bool(preferred_channel_id),
                 session_id=event.unified_msg_origin,
             )
         except asyncio.CancelledError:
@@ -4629,7 +4650,11 @@ class LinghuiStudioPlugin(Star):
             await self.task_mgr.finish_failure(
                 task_id, res, metrics=self._snapshot_generation_route_metrics()
             )
-            yield event.chain_result(self._notice_nodes(event, f"没弄好: {self._resolve_debug_error_message(res, '这次没弄好，请稍后再试。')}"))
+            error_message = self._resolve_debug_error_message(res, "这次没弄好，请稍后再试。")
+            if preferred_channel_id and not str(res).startswith("指定渠道 "):
+                category = str(self._snapshot_generation_route_metrics().get("error_label", "渠道错误") or "渠道错误")
+                error_message = f"指定渠道 {preferred_channel_id} 生图失败（{category}）；本次未切换其他渠道。"
+            yield event.chain_result(self._notice_nodes(event, f"没弄好: {error_message}"))
 
     @filter.command("文生图", prefix_optional=True)
     @_direct_command_only
