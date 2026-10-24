@@ -33,7 +33,7 @@ from .channel_policy import normalize_policy as normalize_channel_policy
 
 
 PLUGIN_NAME = "astrbot_plugin_linghui_studio"
-PLUGIN_VERSION = "3.11.1"
+PLUGIN_VERSION = "3.12.0"
 DRAWING_CHANNEL_TEMPLATE_KEY = "drawing_channel"
 _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -521,6 +521,9 @@ class LinghuiDashboardApi:
                 "enable_daily_state": self._as_bool(
                     self.plugin.conf.get("enable_persona_daily_state", True)
                 ),
+                "outfit_mode": str(self.plugin.conf.get("persona_outfit_mode", "llm") or "llm"),
+                "expression_mode": str(self.plugin.conf.get("persona_expression_mode", "context") or "context"),
+                "expression_history": self._as_int(self.plugin.conf.get("persona_expression_history", 3), 0, 10),
                 "daily_outfits": list(self.plugin.conf.get("persona_daily_outfits", []) or []),
                 "daily_moods": list(self.plugin.conf.get("persona_daily_moods", []) or []),
                 "time_period_prompts": list(self.plugin.conf.get("persona_time_period_prompts", []) or []),
@@ -687,6 +690,11 @@ class LinghuiDashboardApi:
 
     async def save_config(self):
         payload = await self._json_body()
+        persona = payload.get("persona", {})
+        if isinstance(persona, dict):
+            for key, options in (("outfit_mode", {"daily", "llm"}), ("expression_mode", {"fixed", "context", "diverse"})):
+                if key in persona and str(persona[key] or "").strip().lower() not in options:
+                    return jsonify({"success": False, "message": "无效的自拍穿搭或表情模式。"}), 400
         usage = payload.get("usage", {})
         if isinstance(usage, dict) and "global_total_limit" in usage:
             value = usage["global_total_limit"]
@@ -891,6 +899,19 @@ class LinghuiDashboardApi:
                     if "enable_daily_state" in persona:
                         self.plugin.conf["enable_persona_daily_state"] = self._as_bool(persona["enable_daily_state"])
                         changed_dynamic_keys.add("enable_persona_daily_state")
+                    for source, target, options in (
+                        ("outfit_mode", "persona_outfit_mode", {"daily", "llm"}),
+                        ("expression_mode", "persona_expression_mode", {"fixed", "context", "diverse"}),
+                    ):
+                        if source in persona:
+                            value = str(persona[source] or "").strip().lower()
+                            if value not in options:
+                                raise ValueError("无效的自拍穿搭或表情模式。")
+                            self.plugin.conf[target] = value
+                            changed_dynamic_keys.add(target)
+                    if "expression_history" in persona:
+                        self.plugin.conf["persona_expression_history"] = self._as_int(persona["expression_history"], 0, 10)
+                        changed_dynamic_keys.add("persona_expression_history")
                     for source, target in (
                         ("daily_outfits", "persona_daily_outfits"),
                         ("daily_moods", "persona_daily_moods"),

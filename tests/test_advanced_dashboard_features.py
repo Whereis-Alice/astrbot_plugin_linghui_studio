@@ -138,6 +138,7 @@ class PersonaProfileManagerTest(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             config = {
                 "persona_name": "Alice",
+                "persona_outfit_mode": "daily",
                 "persona_character_type": "anime",
                 "enable_persona_daily_state": True,
                 "persona_daily_outfits": ["蓝色外套", "白色针织衫"],

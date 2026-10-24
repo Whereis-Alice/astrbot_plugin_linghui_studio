@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from astrbot import logger
+from .persona_planner import expression_mode, has_expression_request, has_outfit_request, outfit_mode
 
 
 DEFAULT_OUTFITS = [
@@ -41,19 +42,6 @@ DEFAULT_TIME_PROMPTS = {
     "evening": "傍晚状态，暖色余晖或室内灯光，氛围舒缓",
     "night": "夜间状态，环境光柔和，带一点安静放松的夜晚氛围",
 }
-
-_CLOTHING_WORDS = (
-    "换衣", "换装", "穿上", "穿着", "衣服", "裙", "制服", "校服", "女仆",
-    "和服", "旗袍", "汉服", "洛丽塔", "lolita", "婚纱", "西装", "礼服",
-    "泳装", "比基尼", "水手服", "cos", "cosplay", "同款", "这件", "那件",
-    "这套", "那套", "穿这个", "穿那个", "试穿", "穿搭",
-)
-
-_MOOD_WORDS = (
-    "开心", "高兴", "难过", "伤心", "生气", "冷淡", "害羞", "脸红", "哭",
-    "微笑", "大笑", "严肃", "慵懒", "疲惫", "困", "兴奋", "俏皮", "表情",
-)
-
 
 class PersonaProfileManager:
     """Persist one outfit and mood per calendar day.
@@ -247,7 +235,12 @@ class PersonaProfileManager:
         state = await self.get_state()
         request_text = str(extra_request or "").lower()
         parts = [self.character_type_prompt()]
-        if not any(word in request_text for word in _CLOTHING_WORDS):
+        if outfit_mode(self.config) == "llm":
+            parts.append(
+                f"Today's outfit reference is: {state.get('outfit', '')}. "
+                "The per-photo clothing direction may replace this reference while keeping scene continuity."
+            )
+        elif not has_outfit_request(request_text):
             parts.append(
                 f"Today's stable outfit is: {state.get('outfit', '')}. Keep this same outfit throughout today's ordinary photos."
             )
@@ -255,8 +248,14 @@ class PersonaProfileManager:
             parts.append(
                 "The user explicitly requested clothing or cosplay, so follow that request and temporarily ignore today's default outfit."
             )
-        if not any(word in request_text for word in _MOOD_WORDS):
-            parts.append(f"Today's stable mood is: {state.get('mood', '')}.")
+        if not has_expression_request(request_text):
+            if expression_mode(self.config) == "fixed":
+                parts.append(f"Today's stable mood is: {state.get('mood', '')}.")
+            else:
+                parts.append(
+                    f"Today's mood reference is: {state.get('mood', '')}. "
+                    "It is only an emotional baseline, not a fixed facial expression; the per-photo direction takes priority."
+                )
         period_prompt = str(state.get("period_prompt", "") or "").strip()
         if period_prompt:
             parts.append(f"Current time-of-day state: {period_prompt}.")

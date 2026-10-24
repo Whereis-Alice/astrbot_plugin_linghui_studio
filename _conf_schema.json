@@ -835,8 +835,30 @@
   "enable_persona_daily_state": {
     "type": "bool",
     "description": "【人设与参考图】启用每日稳定人设状态",
-    "hint": "开启后，同一天普通人设照片会稳定使用同一套穿搭和心情，并随早晨、白天、傍晚、夜间调整氛围；用户明确换装、COS 或指定表情时优先服从用户要求。",
+    "hint": "开启后保存当日穿搭、心情及时间段状态。自拍穿搭和表情是否固定由下方模式决定；LLM 模式只把日状态作为参考。用户明确要求始终优先。",
     "default": true
+  },
+  "persona_outfit_mode": {
+    "type": "string",
+    "description": "【人设与参考图】自拍穿搭模式",
+    "hint": "llm（默认）让当前聊天模型按人格、聊天和用户要求决定穿搭，每日穿搭仅作参考；daily 固定今日穿搭。明确换装要求始终优先。直接使用调用自拍工具的 LLM 在 scene_hint、extra_request 或 photo_plan 中决定的穿搭，不额外请求 LLM；未指定时沿用日状态或参考图。",
+    "options": ["llm", "daily"],
+    "default": "llm"
+  },
+  "persona_expression_mode": {
+    "type": "string",
+    "description": "【人设与参考图】自拍表情模式",
+    "hint": "context（默认）尊重调用工具的 LLM 已结合人格和聊天决定的神态；diverse 在合适范围内主动变化；fixed 沿用今日心情。每日心情在前两种模式下只作基调，用户指定表情优先，多张逐张规划。直接使用本次工具参数中的决定，不另行请求 LLM；未提供方向时交给生图模型自然表现。",
+    "options": ["context", "diverse", "fixed"],
+    "default": "context"
+  },
+  "persona_expression_history": {
+    "type": "int",
+    "description": "【人设与参考图】自拍表情避免重复范围",
+    "hint": "参考同一会话最近多少张成功自拍的规划神态来减少重复，默认 3，0 关闭。用户明确指定表情和固定模式不受影响；历史会持久化，最多保留 100 个会话各 10 条，不保存聊天文本。",
+    "default": 3,
+    "min": 0,
+    "max": 10
   },
   "persona_daily_outfits": {
     "type": "list",

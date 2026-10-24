@@ -1,4 +1,4 @@
-import { createImageViewer } from "./image-viewer.js?v=3.11.1";
+import { createImageViewer } from "./image-viewer.js?v=3.12.0";
 
 const bridge = window.AstrBotPluginPage || {
   ready: async () => ({}),
@@ -284,7 +284,7 @@ function updateStatusBar() {
   }
   const versionTarget = byId("status-version");
   if (versionTarget) {
-    versionTarget.textContent = `灵绘 · v${config.plugin_version || "3.11.1"}`;
+    versionTarget.textContent = `灵绘 · v${config.plugin_version || "3.12.0"}`;
   }
 }
 
@@ -1601,6 +1601,9 @@ function hydrateFields() {
   byId("persona-scene-prompts").value = (persona.scene_prompts || []).join("\n");
   byId("persona-character-type").value = persona.character_type || "auto";
   byId("persona-daily-enabled").checked = bool(persona.enable_daily_state);
+  byId("persona-outfit-mode").value = persona.outfit_mode || "llm";
+  byId("persona-expression-mode").value = persona.expression_mode || "context";
+  byId("persona-expression-history").value = persona.expression_history ?? 3;
   byId("persona-daily-outfits").value = (persona.daily_outfits || []).join("\n");
   byId("persona-daily-moods").value = (persona.daily_moods || []).join("\n");
   byId("persona-time-periods").value = (persona.time_period_prompts || []).join("\n");
@@ -1740,6 +1743,9 @@ function buildPayload() {
       scene_prompts: linesFromText(value("persona-scene-prompts")),
       character_type: value("persona-character-type", "auto"),
       enable_daily_state: checked("persona-daily-enabled"),
+      outfit_mode: value("persona-outfit-mode", "llm"),
+      expression_mode: value("persona-expression-mode", "context"),
+      expression_history: Math.max(0, Math.min(10, Number(value("persona-expression-history")) || 0)),
       daily_outfits: linesFromText(value("persona-daily-outfits")),
       daily_moods: linesFromText(value("persona-daily-moods")),
       time_period_prompts: linesFromText(value("persona-time-periods")),

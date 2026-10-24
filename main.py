@@ -4,7 +4,7 @@ import asyncio
 import json
 from functools import wraps
 from datetime import datetime
-from typing import Optional, List, Tuple, Any, Dict
+from typing import Optional, List, Tuple, Any, Dict, Callable, Awaitable
 
 from astrbot import logger
 from astrbot.api.event import filter
@@ -29,6 +29,7 @@ from .batch_policy import BatchFailureGuard, policy_label
 from .default_presets import ADDITIONAL_DEFAULT_PRESETS, DEFAULT_PRESET_PACK_VERSION
 from .preset_descriptions import preset_description
 from .persona_profile import PersonaProfileManager
+from .persona_planner import PersonaPhotoPlanner, photo_plan_prompt, parse_photo_plan
 from .persona_dialogue import build_persona_progress_prompts, sanitize_persona_progress_reply
 from .studio_manager import StudioAssetManager
 from .task_manager import GenerationTaskManager
@@ -231,6 +232,9 @@ class LinghuiStudioPlugin(Star):
         "persona_time_period_prompts",
         "persona_state_timezone",
         "persona_daily_state_salt",
+        "persona_outfit_mode",
+        "persona_expression_mode",
+        "persona_expression_history",
         "task_dedup_seconds",
         "task_history_limit",
         "task_request_retention_days",
@@ -305,6 +309,7 @@ class LinghuiStudioPlugin(Star):
         data_dir = StarTools.get_data_dir()
         self.task_mgr = GenerationTaskManager(data_dir, config)
         self.persona_profile = PersonaProfileManager(data_dir, config)
+        self.persona_planner = PersonaPhotoPlanner(data_dir, config)
         self.studio_mgr = StudioAssetManager(data_dir)
         # 会话级模型/渠道覆盖：仅影响当前聊天，不改动全局默认配置。
         self.session_overrides = SessionOverrideStore(
@@ -1026,7 +1031,8 @@ class LinghuiStudioPlugin(Star):
             f"Character description: {persona_desc}",
             f"Style: {photo_style}",
             "The character identity must strictly remain the same as the persona reference image.",
-            "Preserve the original face, hairstyle, hair color, body shape, age appearance, and core character features from the persona reference.",
+            "Preserve the face shape, facial identity, hairstyle, hair color, body shape, age appearance, and core character features from the persona reference.",
+            "Identity consistency does not freeze facial expression. Eyebrows, eyelids, gaze and mouth shape may change according to the current photo direction.",
             "The output must still clearly be the same character from the persona reference, not a different girl with similar clothes.",
             "Unless the user explicitly asks for a group photo or 合影, show only this one persona character and do not add extra people, standees, posters, cards, mirrors, or reference characters.",
             "Natural pose and expression, candid moment, high quality, detailed.",
@@ -1900,6 +1906,60 @@ class LinghuiStudioPlugin(Star):
         except Exception:
             logger.exception("LinghuiStudio: failed to build persona daily-state prompt")
             return ""
+
+    async def _plan_persona_photos(self, event: AstrMessageEvent, request: str, base_prompt: str,
+                                  count: int, photos: Optional[List[Dict[str, str]]] = None,
+                                  user_request: Optional[str] = None, visual_request: str = ""):
+        """Respect the calling LLM's directions; never make another planning request."""
+        state = await self.persona_profile.get_state() if self._get_conf_bool("enable_persona_daily_state", True) else {}
+        token, directions = await self.persona_planner.plan(
+            session=event.unified_msg_origin, request=request, count=count, daily_state=state, photos=photos, visual_request=visual_request,
+        )
+        prompts = [base_prompt + " " + photo_plan_prompt(photo) +
+                   " Original request (highest priority): " + str(request if user_request is None else user_request)
+                   for photo in directions]
+        if count > 1 and photos is None:
+            prompts = [prompt + f" Photo {index + 1} of {count}: create one separate image. "
+                       "Preserve all requested clothing and expressions; vary only unspecified small pose and framing details."
+                       for index, prompt in enumerate(prompts)]
+        return token, prompts
+
+    @filter.on_llm_request()
+    async def on_llm_request_persona_directions(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
+        """Offer daily references and recent directions to the LLM already reading the chat."""
+        if not self._persona_mode or not self._get_conf_bool("enable_llm_tool", True):
+            return
+        if not self._looks_like_persona_photo_request(str(getattr(event, "message_str", "") or "")):
+            return
+        try:
+            state = await self.persona_profile.get_state() if self._get_conf_bool("enable_persona_daily_state", True) else {}
+            recent = await self.persona_planner.recent(event.unified_msg_origin)
+            hint = (
+                "\n\n[本次人设照片参考] 你已经掌握当前人格与聊天上下文，请自行安排穿搭、表情、视线和动作，"
+                "在 linghui_persona_photo 的 scene_hint / extra_request 中保留具体方向。多张可用 photo_plan 逐张安排。"
+                "用户明确要求始终优先，不机械套用温柔微笑；日状态为默认参考，不要求固定同一表情。"
+                "保持角色身份和连续场景的穿搭连贯，强烈情绪需要上下文依据。"
+                "以下历史是先前成功照片的提示方向，并非成图表情识别；仅在适合时避免重复，不改掉用户指定表情。"
+                "穿搭模式：" + str(self.conf.get("persona_outfit_mode", "llm")) +
+                "；表情模式：" + str(self.conf.get("persona_expression_mode", "context")) +
+                "（daily/fixed 表示未指定时沿用日状态）。\n" +
+                json.dumps({"daily_reference": state, "recent_photo_directions": recent}, ensure_ascii=False)
+            )
+            req.system_prompt = str(req.system_prompt or "") + hint
+        except Exception:
+            logger.debug("LinghuiStudio: 无法附加自拍状态参考，继续原有工具调用")
+
+    async def _run_persona_photo(self, token: str, index: int, coroutine):
+        success = False
+        try:
+            result = await coroutine
+            success = bool(result and result[0])
+            return result
+        finally:
+            try:
+                await self.persona_planner.complete_photo(token, index, success)
+            finally:
+                await self.persona_planner.release(token)
 
     def _extract_explicit_requested_count_from_text(self, message: str) -> Optional[int]:
         """仅提取用户文本里明确说出的数量；未明确说明时返回 None。"""
@@ -3663,7 +3723,9 @@ class LinghuiStudioPlugin(Star):
                                         extra_rules: str = "", hide_text: bool = False,
                                         charge_quota: bool = True,
                                         suppress_user_error: bool = False,
-                                        record_sink: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+                                        record_sink: Optional[List[Dict[str, Any]]] = None,
+                                        photo_prompts: Optional[List[str]] = None,
+                                        photo_completion: Optional[Callable[[int, bool], Awaitable[None]]] = None) -> Dict[str, Any]:
         """
         批量图生图后台任务 - 对同一张图片生成多个不同版本
 
@@ -3679,6 +3741,8 @@ class LinghuiStudioPlugin(Star):
             extra_rules: 追加规则
             hide_text: 是否隐藏提示文字
         """
+        if photo_prompts is not None and len(photo_prompts) != count:
+            raise ValueError("Each photo needs its own prompt")
         try:
             uid, gid = self._effective_identity(event, uid, gid)
             # 1. 统一扣费
@@ -3708,6 +3772,8 @@ class LinghuiStudioPlugin(Star):
             # 4. 并发逐张生成（每次调用API都会产生不同的结果）
             async def process_single(index: int):
                 async with semaphore:
+                    success = False
+                    photo_prompt = photo_prompts[index - 1] if photo_prompts is not None else prompt
                     try:
                         if guard.aborted:
                             await guard.note_skip()
@@ -3721,7 +3787,7 @@ class LinghuiStudioPlugin(Star):
                         while retry_count <= max_retries:
                             start_time = datetime.now()
                             res = await self.api_mgr.call_api(
-                                images, prompt, model, False, self.img_mgr.proxy,
+                                images, photo_prompt, model, False, self.img_mgr.proxy,
                                 session_id=event.unified_msg_origin,
                             )
 
@@ -3734,7 +3800,7 @@ class LinghuiStudioPlugin(Star):
                                     res,
                                     user_id=uid,
                                     group_id=gid,
-                                    prompt=prompt,
+                                    prompt=photo_prompt,
                                     model=model,
                                     preset_name=preset_name,
                                     task_type="批量图生图版本",
@@ -3790,6 +3856,8 @@ class LinghuiStudioPlugin(Star):
                         if (not suppress_user_error) or self._should_show_debug_errors():
                             await self._send_task_notice(event, f"第{index}个版本出了点问题: {error_msg}")
                     finally:
+                        if photo_completion is not None:
+                            await photo_completion(index - 1, success)
                         await self._complete_pending_generation(event.unified_msg_origin, 1)
 
             tasks = [process_single(i) for i in range(1, count + 1)]
@@ -7294,7 +7362,7 @@ class LinghuiStudioPlugin(Star):
 
     @filter.llm_tool(name="linghui_persona_photo")
     async def persona_photo_tool(self, event: AstrMessageEvent, scene_hint: str = "", extra_request: str = "",
-                                 count: int = 1):
+                                 count: int = 1, photo_plan: str = ""):
         '''生成Bot人设角色（你自己）的日常照片或写真。
 
         【唯一指定用途】
@@ -7319,6 +7387,10 @@ class LinghuiStudioPlugin(Star):
         2. 用户只是问"你在干嘛"、"你在做什么"、"闲聊" → 用文字回答即可，不要发照片
         3. 没有明确表达想看照片意愿 → 不要主动发照片
 
+        【穿搭与表情由你决定】
+        用户未指定时，根据当前人格与聊天情境，自主在 scene_hint / extra_request 描述适合的穿搭、表情、视线和动作。
+        不要每次机械写温柔微笑；明确的换装和表情要求必须保留。插件直接尊重你在本次工具调用中已选好的方向，不再另行调用 LLM 规划。多张可以用 photo_plan 逐张安排。
+
         【调用前与完成后发言】
         识别到请求后请直接调用本工具，不要先在同一条回复中套用“嗯嗯，稍等”等固定等待语。插件会按配置使用当前 AstrBot 人格单独生成开始前承接话；工具完成后的最终回复也必须继续使用同一个 AstrBot 人格、称呼习惯和上下文关系。
 
@@ -7332,6 +7404,7 @@ class LinghuiStudioPlugin(Star):
             scene_hint(string): 场景提示（可选），如"咖啡店"、"公园"等，用于匹配预设场景
             extra_request(string): 用户的额外要求（可选），如"穿红色衣服"、"微笑"等
             count(int): 生成图片的数量，默认1张，最大10张。只有用户明确要求多张时才增大。
+            photo_plan(string): 可选的逐张方向 JSON 字符串。格式 {"photos":[{"outfit":"蓝色外套","expression":"认真专注","gaze":"看镜头","pose":"倚栏杆"}]}，每张一项，项数须与 count 一致。通常保持同一套衣服，神态按上下文变化；用户指定统一表情时全部服从。
         '''
         # 0. 检查功能开关
         if not self._persona_mode:
@@ -7361,7 +7434,7 @@ class LinghuiStudioPlugin(Star):
         # 默认只取当前消息/已展开的引用图片，避免把上一轮生成图误当成“用户补充参考图”。
         user_images = []
         bot_id = self._get_bot_id(event)
-        requested_text = " ".join([str(scene_hint or ""), str(extra_request or "")]).strip()
+        requested_text = " ".join([str(getattr(event, "message_str", "") or ""), str(scene_hint or ""), str(extra_request or "")]).strip()
         _ref_intent_keywords = [
             "同款", "这件", "那件", "这套", "那套", "这身", "那身",
             "穿这个", "穿那个", "照着", "参考", "参考图", "模仿",
@@ -7420,7 +7493,7 @@ class LinghuiStudioPlugin(Star):
 
         # 4. 构建完整提示词
         full_prompt = self._build_persona_prompt(scene_prompt, extra_request)
-        full_prompt += " " + await self._build_current_time_persona_hint(extra_request)
+        full_prompt += " " + await self._build_current_time_persona_hint(requested_text + " " + str(photo_plan or ""))
         if user_images:
             persona_ref_text = " ".join([str(scene_hint or ""), str(extra_request or "")])
             if "合影" in persona_ref_text:
@@ -7471,6 +7544,13 @@ class LinghuiStudioPlugin(Star):
         # 6. 限制数量（必须先做，避免错误批量参数影响配额检查和分支选择）
         count, count_limited = self._normalize_generation_count(requested_count, "persona")
 
+        directions = None
+        if photo_plan:
+            try:
+                directions = parse_photo_plan(photo_plan, requested_count)[:count]
+            except (ValueError, TypeError):
+                return self._finalize_llm_tool_result("[TOOL_INVALID_ARGUMENT] photo_plan 必须为 JSON，photos 项数与请求数量一致，每项包含 outfit 和 expression。请保留原要求修正参数。")
+
         # 7. 检查配额
         gid = norm_id(event.get_group_id())
         deduction = await self._check_quota(event, uid, gid, count)
@@ -7494,12 +7574,19 @@ class LinghuiStudioPlugin(Star):
 
         # 10. 等待拍照任务完成并确认图片已发送，再把成功结果交给二次 LLM 收尾。
         generation_records: List[Dict[str, Any]] = []
+        if scene_hint:
+            full_prompt += " Requested scene and visual requirements: " + scene_hint
+        plan_token, photo_prompts = await self._plan_persona_photos(
+            event, requested_text, full_prompt, count, directions,
+            user_request=str(getattr(event, "message_str", "") or ""),
+            visual_request=" ".join([scene_hint, extra_request])
+        )
         await self._register_pending_generation(event.unified_msg_origin, count)
         if count == 1:
             generation_coro = self._run_background_task(
                 event=event,
                 images=final_images,
-                prompt=full_prompt,
+                prompt=photo_prompts[0],
                 preset_name=f"人设-{scene_name}",
                 deduction=deduction,
                 uid=uid,
@@ -7510,6 +7597,7 @@ class LinghuiStudioPlugin(Star):
                 suppress_user_error=True, llm_tool_call=True,
                 record_sink=generation_records
             )
+            generation_coro = self._run_persona_photo(plan_token, 0, generation_coro)
             if self._background_generation_enabled():
                 self._spawn_background_generation(generation_coro, event.unified_msg_origin, count)
                 return self._finalize_llm_tool_success(
@@ -7530,20 +7618,27 @@ class LinghuiStudioPlugin(Star):
             # 所以使用 _run_batch_image_to_image。但是要防止该函数再次从数据库读取 "_persona_" 导致图片翻倍。
             # _run_batch_image_to_image 中有逻辑：如果不是“自定义”，就去取预设图片叠加。
             # "人设-xxx" 是不会在预设里查到的，所以不会产生重复！这是完美的。
-            batch_result = await self._run_batch_image_to_image(
-                event=event,
-                images=final_images,
-                prompt=full_prompt,
-                preset_name=f"人设-{scene_name}",
-                deduction=deduction,
-                uid=uid,
-                gid=gid,
-                count=count,
-                extra_rules=extra_request,
-                hide_text=hide_llm_result_text,
-                suppress_user_error=True,
-                record_sink=generation_records
-            )
+            async def completed(index: int, success: bool):
+                await self.persona_planner.complete_photo(plan_token, index, success)
+
+            try:
+                batch_result = await self._run_batch_image_to_image(
+                    event=event,
+                    images=final_images,
+                    prompt=full_prompt,
+                    preset_name=f"人设-{scene_name}",
+                    deduction=deduction,
+                    uid=uid,
+                    gid=gid,
+                    count=count,
+                    extra_rules=extra_request,
+                    hide_text=hide_llm_result_text,
+                    suppress_user_error=True,
+                    record_sink=generation_records,
+                    photo_prompts=photo_prompts, photo_completion=completed
+                )
+            finally:
+                await self.persona_planner.release(plan_token)
             total_success = int(batch_result.get("success", 0))
             total_fail = int(batch_result.get("fail", 0))
             branch_errors = batch_result.get("errors", [])
@@ -7613,7 +7708,7 @@ class LinghuiStudioPlugin(Star):
 
         # 构建提示词
         full_prompt = self._build_persona_prompt(scene_prompt, extra_request)
-        full_prompt += " " + await self._build_current_time_persona_hint(extra_request)
+        full_prompt += " " + await self._build_current_time_persona_hint(ref_text)
         if user_images:
             if "合影" in ref_text:
                 full_prompt += (
@@ -7657,13 +7752,24 @@ class LinghuiStudioPlugin(Star):
             yield event.chain_result([Plain(str(exc))])
             return
 
+        if scene_hint:
+            full_prompt += " Requested scene and visual requirements: " + scene_hint
+        plan_token, photo_prompts = await self._plan_persona_photos(
+            event, ref_text, full_prompt, 1, visual_request=ref_text
+        )
+        full_prompt = photo_prompts[0]
+
         # 调用 API
         model = self.conf.get("model", "nano-banana")
         start = datetime.now()
-        res = await self.api_mgr.call_api(
-            final_images, full_prompt, model, False, self.img_mgr.proxy,
-            session_id=event.unified_msg_origin,
-        )
+        try:
+            res = await self.api_mgr.call_api(
+                final_images, full_prompt, model, False, self.img_mgr.proxy,
+                session_id=event.unified_msg_origin,
+            )
+            await self.persona_planner.complete_photo(plan_token, 0, isinstance(res, bytes))
+        finally:
+            await self.persona_planner.release(plan_token)
 
         if isinstance(res, bytes):
             route_metrics = self._snapshot_generation_route_metrics()

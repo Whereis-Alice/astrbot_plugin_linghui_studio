@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>灵绘工坊</title>
     <link rel="icon" type="image/svg+xml" href="./assets/linghui-logo.svg" />
-    <link rel="stylesheet" href="./style.css?v=3.11.1" />
+    <link rel="stylesheet" href="./style.css?v=3.12.0" />
   </head>
   <body>
     <main class="shell">
@@ -294,7 +294,11 @@
                 <label class="field full"><span>默认场景提示词</span><textarea id="persona-default-prompt" rows="3"></textarea><small class="field-hint">未指定场景时使用的默认环境与构图要求。</small></label>
                 <label class="field full"><span>场景预设</span><textarea id="persona-scene-prompts" rows="5" placeholder="每行一个：场景名:提示词"></textarea><small class="field-hint">每行一个“场景名:提示词”，例如“咖啡馆:窗边自然光人像”。</small></label>
                 <label class="field"><span>形象类型</span><select id="persona-character-type"><option value="auto">自动识别真人 / 动漫</option><option value="real">真人形象</option><option value="anime">动漫 / 插画形象</option></select><small class="field-hint">用于稳定保留素材的视觉类型，避免真人与动漫互相转换。</small></label>
-                <label class="toggle-field"><input id="persona-daily-enabled" type="checkbox" /><span class="toggle-copy"><span>启用每日稳定状态</span><small class="field-hint">普通自拍在同一天维持稳定穿搭与心情；明确换装或 COS 时服从用户要求。</small></span></label>
+                <label class="toggle-field"><input id="persona-daily-enabled" type="checkbox" /><span class="toggle-copy"><span>启用每日稳定状态</span><small class="field-hint">保存今天的穿搭和心情基调；是否固定由下方模式决定，明确要求优先。</small></span></label>
+                <label class="field"><span>自拍穿搭</span><select id="persona-outfit-mode"><option value="llm">LLM 按聊天决定</option><option value="daily">每日固定穿搭</option></select><small class="field-hint">LLM 模式结合人格与聊天安排，保持连续场景的衣服连贯；日穿搭只作参考。</small></label>
+                <label class="field"><span>自拍表情</span><select id="persona-expression-mode"><option value="context">随聊天变化</option><option value="diverse">多样化</option><option value="fixed">固定今日心情</option></select><small class="field-hint">直接使用 LLM 在工具参数里决定的神态，日心情仅作基调；明确要求优先。</small></label>
+                <label class="field"><span>避免重复的最近张数</span><input id="persona-expression-history" type="number" min="0" max="10" value="3" /><small class="field-hint">参考同一会话最近 3 张成功自拍的规划神态，0 关闭；固定或指定表情不受影响。</small></label>
+                <p class="field-hint full">沿用 LLM 调用工具时已有的聊天上下文和决定，不增加规划请求。多张可用 photo_plan 分别指定；本次拍照不会修改今日状态。</p>
                 <label class="field full"><span>每日穿搭候选</span><textarea id="persona-daily-outfits" rows="4" placeholder="每行一套穿搭"></textarea></label>
                 <label class="field full"><span>每日心情候选</span><textarea id="persona-daily-moods" rows="4" placeholder="每行一种心情状态"></textarea></label>
                 <label class="field full"><span>时间段状态</span><textarea id="persona-time-periods" rows="4" placeholder="早晨:提示词&#10;白天:提示词&#10;傍晚:提示词&#10;夜间:提示词"></textarea></label>
@@ -366,7 +370,7 @@
         <div class="statusbar-right">
           <span id="status-dispatch" class="status-dispatch" title="当前主渠道">调度 · 读取中</span>
           <span id="status-breadcrumb" class="status-breadcrumb">概览</span>
-          <span id="status-version" class="status-version" title="灵绘工坊插件版本">灵绘 · v3.11.1</span>
+          <span id="status-version" class="status-version" title="灵绘工坊插件版本">灵绘 · v3.12.0</span>
         </div>
       </footer>
     </main>
@@ -403,6 +407,6 @@
       </footer>
     </dialog>
     <div id="toast" class="toast" role="status"></div>
-    <script type="module" src="./app.js?v=3.11.1"></script>
+    <script type="module" src="./app.js?v=3.12.0"></script>
   </body>
 </html>

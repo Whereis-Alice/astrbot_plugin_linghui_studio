@@ -124,6 +124,30 @@ class DashboardChannelModesTest(unittest.IsolatedAsyncioTestCase):
         self.plugin._save_config.assert_not_called()
         self.plugin.api_mgr.refresh.assert_not_awaited()
 
+    async def test_persona_modes_save_with_scoped_persistence(self):
+        self.api._json_body = AsyncMock(return_value={"persona": {
+            "outfit_mode": "llm", "expression_mode": "diverse", "expression_history": 4,
+        }})
+        with patch.object(self.module, "jsonify", side_effect=lambda payload: payload):
+            response = await self.api.save_config()
+        self.assertTrue(response["success"])
+        self.assertEqual(self.plugin.conf["persona_outfit_mode"], "llm")
+        self.assertEqual(self.plugin.conf["persona_expression_mode"], "diverse")
+        self.assertEqual(self.plugin.conf["persona_expression_history"], 4)
+        self.plugin._save_config.assert_called_once_with([
+            "persona_expression_history", "persona_expression_mode", "persona_outfit_mode",
+        ])
+
+    async def test_bad_persona_mode_is_rejected_before_other_mutations(self):
+        self.api._json_body = AsyncMock(return_value={"settings": {"model": "unexpected"},
+            "persona": {"expression_mode": "unknown"}})
+        with patch.object(self.module, "jsonify", side_effect=lambda payload: payload):
+            response, status = await self.api.save_config()
+        self.assertEqual(status, 400)
+        self.assertFalse(response["success"])
+        self.assertNotIn("model", self.plugin.conf)
+        self.plugin._save_config.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
