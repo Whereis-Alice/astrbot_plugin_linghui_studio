@@ -403,26 +403,31 @@ class LinghuiStudioPlugin(Star):
             return value.strip().lower() not in {"0", "false", "no", "off"}
         return bool(value)
 
-    def _wake_prefix_candidates(self) -> List[str]:
+    def _wake_prefix_candidates(self, event: Optional[AstrMessageEvent] = None) -> List[str]:
         """读取 AstrBot 当前配置的唤醒前缀，长的在前。"""
         try:
-            context_config = self.context.get_config() or {}
+            umo = getattr(event, "unified_msg_origin", None)
+            try:
+                context_config = self.context.get_config(umo) if umo else self.context.get_config()
+            except TypeError:
+                context_config = self.context.get_config()
+            context_config = context_config or {}
         except Exception:
             context_config = {}
         return normalize_wake_prefixes(context_config.get("wake_prefix", []))
 
-    def _wake_prefix_display(self) -> str:
+    def _wake_prefix_display(self, event: Optional[AstrMessageEvent] = None) -> str:
         """示例命令与用法提示里应该显示的前缀；为空表示只能 @机器人 或私聊触发。"""
-        return pick_display_wake_prefix(self._wake_prefix_candidates())
+        return pick_display_wake_prefix(self._wake_prefix_candidates(event))
 
-    def _strip_command_marker(self, text: str) -> str:
-        return strip_command_marker(text, self._wake_prefix_candidates())
+    def _strip_command_marker(self, text: str, event: Optional[AstrMessageEvent] = None) -> str:
+        return strip_command_marker(text, self._wake_prefix_candidates(event))
 
     def _namespaced_command_text(self, event: AstrMessageEvent, source_text: Optional[str] = None) -> Optional[str]:
         namespace = self._command_namespace()
         if not namespace:
             return None
-        compact = self._strip_command_marker(event.message_str if source_text is None else source_text)
+        compact = self._strip_command_marker(event.message_str if source_text is None else source_text, event)
         if compact == namespace:
             return ""
         if not compact.startswith(namespace):
@@ -449,7 +454,7 @@ class LinghuiStudioPlugin(Star):
         supplied = getattr(event, "_linghui_command_args", None)
         if supplied is not None:
             return str(supplied).strip()
-        raw = self._strip_command_marker(event.message_str)
+        raw = self._strip_command_marker(event.message_str, event)
         for command_name in sorted(command_names, key=len, reverse=True):
             if raw == command_name:
                 return ""
@@ -457,8 +462,8 @@ class LinghuiStudioPlugin(Star):
                 return raw[len(command_name):].strip()
         return ""
 
-    def _command_example(self, command: str) -> str:
-        marker = self._wake_prefix_display()
+    def _command_example(self, command: str, event: Optional[AstrMessageEvent] = None) -> str:
+        marker = self._wake_prefix_display(event)
         namespace = self._command_namespace()
         return f"{marker}{namespace} {command}" if namespace else f"{marker}{command}"
 
@@ -4438,11 +4443,11 @@ class LinghuiStudioPlugin(Star):
         else:
             if not self._direct_commands_enabled():
                 return
-            text = self._strip_command_marker(text)
+            text = self._strip_command_marker(text, event)
         if not text:
             yield event.chain_result([Plain(
-                f"用法：{self._command_example(self.conf.get('extra_prefix', '画'))} <提示词>，"
-                f"或 {self._command_example('<预设名> [追加要求]')}。"
+                f"用法：{self._command_example(self.conf.get('extra_prefix', '画'), event)} <提示词>，"
+                f"或 {self._command_example('<预设名> [追加要求]', event)}。"
             )])
             event.stop_event()
             return
@@ -4530,16 +4535,28 @@ class LinghuiStudioPlugin(Star):
         await event.send(event.chain_result([Plain(feedback)]))
 
         bot_id = self._get_bot_id(event)
-        mentioned_user_ids = self.img_mgr.extract_mentioned_user_ids(event, ignore_id=bot_id)
-        # 传递 bot_id 给 image manager 以过滤，并传入 context 支持 message_id
-        # #bnn/#画 accept every mentioned user's QQ avatar as an input image.
-        # The image manager preserves mention order and ignores duplicate/bot mentions.
+        mentioned_user_ids = self.img_mgr.extract_mentioned_user_ids(
+            event, wake_bot_id=bot_id,
+            command_markers=self._wake_prefix_candidates(event) + [self._command_namespace()],
+        )
+        # A leading bot mention wakes the command. A bot mention after the
+        # command deliberately selects its avatar, just like any other user.
+        failed_avatar_ids: List[str] = []
         images = await self.img_mgr.extract_images_from_event(
             event,
             ignore_id=bot_id,
             context=self.context,
             include_at_avatar=True,
+            avatar_user_ids=mentioned_user_ids,
+            failed_avatar_ids=failed_avatar_ids,
         )
+        if failed_avatar_ids:
+            failed_targets = "、".join(failed_avatar_ids)
+            yield event.chain_result([Plain(
+                f"QQ 头像获取失败：{failed_targets}。本次未生成，也未扣除次数。"
+                "请稍后重试，或直接发送这些头像作为参考图。"
+            )])
+            return
         if images:
             await self._remember_session_image_context(
                 event.unified_msg_origin,
@@ -4829,7 +4846,7 @@ class LinghuiStudioPlugin(Star):
             marker in txt for marker in ("预设效果说明", "效果说明", "预设列表 说明")
         ):
             txt += (
-                f"\n\n预设效果说明：{self._command_example('预设列表')} 说明 [关键词]"
+                f"\n\n预设效果说明：{self._command_example('预设列表', event)} 说明 [关键词]"
                 "；大多数内置预设需要附带图片进行图生图。"
             )
         bot_id = self._get_bot_id(event) or "2854196310"
@@ -4867,9 +4884,9 @@ class LinghuiStudioPlugin(Star):
             rows = [r for r in rows if all(k in r["name"].lower() for k in keywords)]
         if not rows:
             if total:
-                hint = f"没有符合条件的预设，直接发 {self._command_example('预设列表')} 可以看全部 {total} 个。"
+                hint = f"没有符合条件的预设，直接发 {self._command_example('预设列表', event)} 可以看全部 {total} 个。"
             else:
-                hint = f"暂无预设，管理员可用 {self._command_example('预设添加')} 名称:提示词 添加。"
+                hint = f"暂无预设，管理员可用 {self._command_example('预设添加', event)} 名称:提示词 添加。"
             yield event.chain_result([Plain(hint)])
             return
         marker_map = {"default": "📌", "modified": "✏️", "custom": "✨"}
@@ -4886,7 +4903,7 @@ class LinghuiStudioPlugin(Star):
                 if names:
                     groups.append(f"{source_title}（{len(names)}）：" + "、".join(names))
             body = "\n\n".join(groups)
-            tip = f"\n\n看完整提示词：{self._command_example('预设查看')} <预设名>"
+            tip = f"\n\n看完整提示词：{self._command_example('预设查看', event)} <预设名>"
             yield event.chain_result([Plain(f"📋 {summary}\n\n{body}{tip}")])
             return
         if description_mode:
@@ -4896,17 +4913,17 @@ class LinghuiStudioPlugin(Star):
                 for row in rows
             )
             tip = (
-                f"\n\n查看完整提示词：{self._command_example('预设查看')} <预设名>"
-                f"\n图生图预设需附带图片；文生图请使用 {self._command_example('文生图')} 或无图的 {self._command_example('画')}。"
+                f"\n\n查看完整提示词：{self._command_example('预设查看', event)} <预设名>"
+                f"\n图生图预设需附带图片；文生图请使用 {self._command_example('文生图', event)} 或无图的 {self._command_example('画', event)}。"
             )
             yield event.chain_result([Plain(f"📋 {summary}\n\n{body}{tip}")])
             return
         header = (
             f"📋 {summary}\n"
             f"📌 自带　✏️ 自带·已改　✨ 自定义\n"
-            f"筛选：{self._command_example('预设列表')} 我的 / 自带 / 关键词\n"
-            f"效果说明：{self._command_example('预设列表')} 说明 [关键词]\n"
-            f"纯文字清单：{self._command_example('预设列表')} 文字　看提示词：{self._command_example('预设查看')} <预设名>"
+            f"筛选：{self._command_example('预设列表', event)} 我的 / 自带 / 关键词\n"
+            f"效果说明：{self._command_example('预设列表', event)} 说明 [关键词]\n"
+            f"纯文字清单：{self._command_example('预设列表', event)} 文字　看提示词：{self._command_example('预设查看', event)} <预设名>"
         )
         table_rows = [(r["name"], marker_map.get(r["source"], "✨")) for r in rows]
         img_data = await self.img_mgr.create_preset_table(table_rows, self.data_mgr)
@@ -4950,7 +4967,7 @@ class LinghuiStudioPlugin(Star):
         ).lstrip(":：").strip()
 
         if not name:
-            command = self._command_example("预设删除")
+            command = self._command_example("预设删除", event)
             yield event.chain_result([Plain(f"用法: {command} <预设名>\n例如: {command} 手办化新版")])
             return
 
@@ -4972,7 +4989,7 @@ class LinghuiStudioPlugin(Star):
 
         if exists and not in_user_prompts and not in_prompt_list:
             yield event.chain_result([Plain(
-                f"预设 [{name}] 是内置或配置文件固定预设，不能用 {self._command_example('预设删除')} 删除。"
+                f"预设 [{name}] 是内置或配置文件固定预设，不能用 {self._command_example('预设删除', event)} 删除。"
             )])
             return
 
@@ -5007,8 +5024,8 @@ class LinghuiStudioPlugin(Star):
         kw = self._command_args(event, "预设查看", "lm查看", "lmv", "lm预览")
         if not kw:
             yield event.chain_result([Plain(
-                f"用法: {self._command_example('预设查看')} <预设名>\n"
-                f"不记得名字就先发 {self._command_example('预设列表')} 看清单"
+                f"用法: {self._command_example('预设查看', event)} <预设名>\n"
+                f"不记得名字就先发 {self._command_example('预设列表', event)} 看清单"
             )])
             return
         source_label = {"default": "自带", "modified": "自带（已改过）", "custom": "自定义"}
@@ -5038,7 +5055,7 @@ class LinghuiStudioPlugin(Star):
             more = f"（共 {len(matches)} 个，只列前 12 个）" if len(matches) > 12 else ""
             yield event.chain_result([Plain(f"🔍 [{kw}] 匹配到多个预设{more}：\n{shown}\n\n写完整名称再查一次即可。")])
             return
-        yield event.chain_result([Plain(f"没找到 [{kw}]，发 {self._command_example('预设列表')} 看看有哪些预设。")])
+        yield event.chain_result([Plain(f"没找到 [{kw}]，发 {self._command_example('预设列表', event)} 看看有哪些预设。")])
 
     @filter.command("签到", alias={"手办化签到"}, prefix_optional=True)
     @_direct_command_only
@@ -5222,7 +5239,7 @@ class LinghuiStudioPlugin(Star):
             msg += f"\n\n🌐 全局默认: {global_model}"
             if session_enabled:
                 msg += f"\n💬 本会话: {session_model or '跟随全局'}"
-            model_command = self._command_example("模型")
+            model_command = self._command_example("模型", event)
             msg += f"\n\n💡 用法: {model_command} <序号|模型名> —— 只改当前会话"
             if session_enabled:
                 msg += f"\n　　　 {model_command} 全局 <序号|模型名> —— 改全局默认"
@@ -5242,7 +5259,7 @@ class LinghuiStudioPlugin(Star):
             idx = int(target) - 1
             if not (0 <= idx < len(all_m)):
                 yield event.chain_result(
-                    [Plain(f"❌ 模型序号超出范围，请先发送 {self._command_example('模型')} 查看列表。")]
+                    [Plain(f"❌ 模型序号超出范围，请先发送 {self._command_example('模型', event)} 查看列表。")]
                 )
                 return
             resolved_model = all_m[idx]
@@ -5268,7 +5285,7 @@ class LinghuiStudioPlugin(Star):
         yield event.chain_result([Plain(
             f"✅ 本会话{kind}已设为: {resolved_model}{ttl_text}\n"
             f"（全局默认仍是 {self.conf.get('model', 'nano-banana')}；"
-            f"要改全局请用 {self._command_example('模型')} 全局 {resolved_model}）"
+            f"要改全局请用 {self._command_example('模型', event)} 全局 {resolved_model}）"
         )])
 
     @filter.command("通道", alias={"渠道"}, prefix_optional=True)
@@ -5308,7 +5325,7 @@ class LinghuiStudioPlugin(Star):
                 protocol = str(channel.get("protocol", "") or "auto")
                 protocol_text = "" if protocol in {"", "auto"} else f"，{protocol}"
                 rows.append(f"{index}. {channel_id}（{label}，{fallback}{protocol_text}）{marker}")
-            channel_command = self._command_example("通道")
+            channel_command = self._command_example("通道", event)
             rows.append(f"用法：{channel_command} <渠道ID|序号> —— 只改当前会话")
             if session_enabled:
                 rows.append(f"　　　{channel_command} 全局 <渠道ID> —— 改全局默认")
@@ -5345,7 +5362,7 @@ class LinghuiStudioPlugin(Star):
                 selected = channels[idx]["id"]
         if selected not in known:
             yield event.chain_result(
-                [Plain(f"未找到该渠道，请先发送 {self._command_example('通道')} 查看列表。")]
+                [Plain(f"未找到该渠道，请先发送 {self._command_example('通道', event)} 查看列表。")]
             )
             return
 
@@ -5368,7 +5385,7 @@ class LinghuiStudioPlugin(Star):
         global_active = str(self.conf.get("active_drawing_channel", "") or "").strip() or "自动"
         yield event.chain_result([Plain(
             f"本会话主渠道已设为 {selected}{ttl_text}；失败时仍会按回退顺序尝试其他渠道。\n"
-            f"（全局默认仍是 {global_active}；要改全局请用 {self._command_example('通道')} 全局 {selected}）"
+            f"（全局默认仍是 {global_active}；要改全局请用 {self._command_example('通道', event)} 全局 {selected}）"
         )])
 
     @filter.command("统计", alias={"手办化今日统计"}, prefix_optional=True)
@@ -5429,8 +5446,8 @@ class LinghuiStudioPlugin(Star):
         else:
             yield event.chain_result(
                 [Plain(
-                    f"用法: {self._command_example('加用户额度')} <QQ号> <次数>\n"
-                    f"或: {self._command_example('加用户额度')} @用户 <次数>"
+                    f"用法: {self._command_example('加用户额度', event)} <QQ号> <次数>\n"
+                    f"或: {self._command_example('加用户额度', event)} @用户 <次数>"
                 )])
 
     @filter.command("加群额度", alias={"手办化增加群组次数"}, prefix_optional=True)
@@ -5451,8 +5468,8 @@ class LinghuiStudioPlugin(Star):
         else:
             yield event.chain_result(
                 [Plain(
-                    f"用法: {self._command_example('加群额度')} <群号> <次数>\n"
-                    f"或在群内: {self._command_example('加群额度')} <次数>"
+                    f"用法: {self._command_example('加群额度', event)} <群号> <次数>\n"
+                    f"或在群内: {self._command_example('加群额度', event)} <次数>"
                 )])
             return
 
@@ -5498,7 +5515,7 @@ class LinghuiStudioPlugin(Star):
     async def on_delete_key(self, event: AstrMessageEvent, ctx=None):
         if not self.is_admin(event): return
         parts = event.message_str.split()
-        if len(parts) < 2: yield event.chain_result([Plain(f"用法: {self._command_example('删除密钥')} <all/序号>")]); return
+        if len(parts) < 2: yield event.chain_result([Plain(f"用法: {self._command_example('删除密钥', event)} <all/序号>")]); return
 
         idx_str = parts[1]
 
@@ -5895,7 +5912,7 @@ class LinghuiStudioPlugin(Star):
         parts = event.message_str.split()
         if len(parts) < 2:
             yield event.chain_result([Plain(
-                f"用法: {self._command_example('预设参考图添加')} <预设名> [图片]\n请同时发送或引用图片"
+                f"用法: {self._command_example('预设参考图添加', event)} <预设名> [图片]\n请同时发送或引用图片"
             )])
             return
 
@@ -5904,7 +5921,7 @@ class LinghuiStudioPlugin(Star):
         # 检查预设是否存在
         if preset_name not in self.data_mgr.prompt_map:
             yield event.chain_result([Plain(
-                f"预设 [{preset_name}] 不存在，先用 {self._command_example('预设添加')} 创建一个吧"
+                f"预设 [{preset_name}] 不存在，先用 {self._command_example('预设添加', event)} 创建一个吧"
             )])
             return
 
@@ -7926,7 +7943,7 @@ class LinghuiStudioPlugin(Star):
             else:
                 if not self._direct_commands_enabled():
                     return
-                text = self._strip_command_marker(event.message_str)
+                text = self._strip_command_marker(event.message_str, event)
         text = str(text or "").strip()
         if not text:
             return
@@ -7944,8 +7961,8 @@ class LinghuiStudioPlugin(Star):
             # 单独的 "批量" 或 "全部"
             if re.match(r"^(批量|全部)$", text):
                 yield event.chain_result([Plain(
-                    f"用法: {self._command_example('批量<预设名> [追加规则]')}\n"
-                    f"示例: {self._command_example('批量手办化 皮肤白一点')}"
+                    f"用法: {self._command_example('批量<预设名> [追加规则]', event)}\n"
+                    f"示例: {self._command_example('批量手办化 皮肤白一点', event)}"
                 )])
                 event.stop_event()
             return
@@ -7957,8 +7974,8 @@ class LinghuiStudioPlugin(Star):
             parts = text.split(maxsplit=1)
             if len(parts) < 2:
                 yield event.chain_result([Plain(
-                    f"用法: {self._command_example('批量<预设名> [追加规则]')}\n"
-                    f"示例: {self._command_example('批量手办化 皮肤白一点')}"
+                    f"用法: {self._command_example('批量<预设名> [追加规则]', event)}\n"
+                    f"示例: {self._command_example('批量手办化 皮肤白一点', event)}"
                 )])
                 event.stop_event()
                 return

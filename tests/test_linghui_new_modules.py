@@ -296,10 +296,15 @@ class WakePrefixHelpersTests(unittest.TestCase):
 
     def test_strip_marker_keeps_unknown_prefix_and_handles_defaults(self):
         self.assertEqual(self.mod.strip_command_marker("，画 猫"), "，画 猫")
-        self.assertEqual(self.mod.strip_command_marker("#画 猫"), "画 猫")
-        self.assertEqual(self.mod.strip_command_marker("!!画 猫"), "画 猫")
+        self.assertEqual(self.mod.strip_command_marker("#画 猫"), "#画 猫")
+        self.assertEqual(self.mod.strip_command_marker("!!画 猫"), "!!画 猫")
         self.assertEqual(self.mod.strip_command_marker("画 猫", ["，"]), "画 猫")
         self.assertEqual(self.mod.strip_command_marker(None), "")
+
+    def test_only_configured_markers_are_removed_once(self):
+        self.assertEqual(self.mod.strip_command_marker("/bnn 猫", ["#"]), "/bnn 猫")
+        self.assertEqual(self.mod.strip_command_marker("#bnn 猫", ["#"]), "bnn 猫")
+        self.assertEqual(self.mod.strip_command_marker("##bnn 猫", ["#"]), "#bnn 猫")
 
 
 if __name__ == "__main__":

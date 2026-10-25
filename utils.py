@@ -297,7 +297,7 @@ def pick_display_wake_prefix(raw: Any) -> str:
 
 
 def strip_command_marker(text: Any, wake_prefixes: Any = None) -> str:
-    """去掉开头的唤醒前缀和残留的命令标记。
+    """只去掉 AstrBot 配置中的一个唤醒前缀。
 
     普通消息触发时 AstrBot 已经把唤醒前缀从 ``message_str`` 里剥掉了，但
     ``@机器人 <前缀><命令>`` 这条路径不会剥。这里再剥一次，唤醒前缀不是 ``#``
@@ -308,4 +308,4 @@ def strip_command_marker(text: Any, wake_prefixes: Any = None) -> str:
         if compact.startswith(prefix):
             compact = compact[len(prefix):].strip()
             break
-    return re.sub(r"^[#/！!]+", "", compact).strip()
+    return compact

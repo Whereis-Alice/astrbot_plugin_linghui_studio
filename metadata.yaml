@@ -22,9 +22,10 @@ help: |
   需要与其他插件共存时，在 Dashboard 设置命名空间并关闭直接命令；例如 #绘图 文生图 <提示词>、#绘图 bnn <提示词>。
 
   上面示例里的 # 是 AstrBot 顶层设置里的“唤醒词”(wake_prefix)，不是插件自带的前缀。
-  若你的唤醒词不是 #，请把示例中的 # 换成你的唤醒词，或在 Dashboard 的唤醒词列表里追加一个 #（可与原有唤醒词并存）。
-  也可以直接 @机器人 后接命令，或在私聊里不带唤醒词使用。
-version: v3.12.0
+  若你的唤醒词不是 #，请把示例中的 # 换成当前会话的唤醒词。/ 也不是必需前缀。
+  也可以直接 @机器人 后接命令；私聊默认可不带唤醒词，若 AstrBot 开启“私聊需要唤醒词”则遵循该设置。
+  bnn 后的 @机器人与 @用户都会读取 QQ 头像；指令前用于唤醒的 @机器人不会成为参考图。
+version: v3.12.1
 author: Whereis-Alice
 repo: https://github.com/Whereis-Alice/astrbot_plugin_linghui_studio
 astrbot_version: ">=4.16,<5"

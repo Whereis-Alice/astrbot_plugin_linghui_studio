@@ -445,8 +445,27 @@ class ImageManager:
         return None
 
     async def get_avatar(self, user_id: str) -> bytes | None:
-        if not user_id.isdigit(): return None
-        return await self._download_image(f"https://q1.qlogo.cn/g?b=qq&nk={user_id}&s=640")
+        user_id = str(user_id or "").strip()
+        if not re.fullmatch(r"[0-9]{1,20}", user_id) or int(user_id) == 0:
+            return None
+        for url in (
+            f"https://q1.qlogo.cn/g?b=qq&nk={user_id}&s=640",
+            f"https://q.qlogo.cn/headimg_dl?dst_uin={user_id}&spec=640&img_type=jpg",
+        ):
+            raw = await self._download_image(url)
+            if raw and await asyncio.to_thread(self._is_readable_image, raw):
+                return await asyncio.to_thread(self._extract_first_frame_sync, raw)
+        return None
+
+    @staticmethod
+    def _is_readable_image(raw: bytes) -> bool:
+        """Reject error pages even when the avatar endpoint returns HTTP 200."""
+        try:
+            with PILImage.open(io.BytesIO(raw)) as image:
+                image.verify()
+            return True
+        except Exception:
+            return False
 
     def images_to_pdf(self, images_bytes: List[bytes]) -> bytes:
         """将多张图片字节打包为单个 PDF"""
@@ -644,49 +663,108 @@ class ImageManager:
                 " ",
                 text,
             )
-        if not plain_parts:
-            text = re.sub(r"@\s*\d{5,20}\b", " ", text)
+        text = re.sub(r"@\s*[0-9]{1,20}(?!\w)", " ", text)
 
         return re.sub(r"\s+", " ", text).strip()
 
     @staticmethod
-    def extract_mentioned_user_ids(event: AstrMessageEvent, ignore_id: str = None) -> List[str]:
+    def extract_mentioned_user_ids(event: AstrMessageEvent, ignore_id: str = None,
+                                   *, wake_bot_id: str = None,
+                                   command_markers: Optional[List[str]] = None) -> List[str]:
         """Return mentioned account IDs in message order, excluding duplicates."""
         ignored = str(ignore_id or "").strip()
+        wake_bot = str(wake_bot_id or "").strip()
         users: List[str] = []
         seen = set()
+        before_command = True
+        leading_bot_skipped = False
 
         def add(raw_user_id) -> None:
+            nonlocal leading_bot_skipped
             user_id = str(raw_user_id or "").strip()
-            if not user_id or user_id == ignored or user_id in seen:
+            if not re.fullmatch(r"[0-9]{1,20}", user_id) or int(user_id) == 0:
+                return
+            if before_command and user_id == wake_bot:
+                leading_bot_skipped = True
+                return
+            if user_id == ignored or user_id in seen:
                 return
             seen.add(user_id)
             users.append(user_id)
 
         message_obj = getattr(event, "message_obj", None)
-        for component in list(getattr(message_obj, "message", []) or []):
+        chain = list(getattr(message_obj, "message", []) or [])
+        # OneBot adapters can drop an At component when group-card lookup
+        # fails. The raw message still contains its exact account and order.
+        raw = getattr(message_obj, "raw_message", None)
+        raw_chain = raw.get("message") if isinstance(raw, dict) else getattr(raw, "message", None)
+        if isinstance(raw_chain, list) and any(
+            isinstance(item, dict) and item.get("type") == "at" for item in raw_chain
+        ):
+            chain = []
+            for item in raw_chain:
+                if not isinstance(item, dict) or not isinstance(item.get("data"), dict):
+                    continue
+                if item.get("type") == "at":
+                    chain.append(At(qq=str(item["data"].get("qq", ""))))
+                elif item.get("type") == "text":
+                    chain.append(Plain(text=str(item["data"].get("text", ""))))
+
+        token_pattern = re.compile(
+            r"\[CQ:at,[^\]]*?qq=([0-9]{1,20})[^\]]*\]"
+            r"|@[^\s@()（）]{1,80}[（(]\s*([0-9]{1,20})\s*[)）]"
+            r"|@\s*([0-9]{1,20})(?!\w)",
+            re.IGNORECASE,
+        )
+
+        def read_text(text: str) -> None:
+            nonlocal before_command
+            def has_command_text(fragment: str) -> bool:
+                fragment = fragment.strip()
+                if before_command:
+                    for marker in command_markers or []:
+                        if marker and fragment.startswith(marker):
+                            fragment = fragment[len(marker):].strip()
+                return bool(fragment)
+            offset = 0
+            for match in token_pattern.finditer(text):
+                if has_command_text(text[offset:match.start()]):
+                    before_command = False
+                add(next(value for value in match.groups() if value is not None))
+                offset = match.end()
+            if has_command_text(text[offset:]):
+                before_command = False
+
+        for component in chain:
             if isinstance(component, At):
                 add(getattr(component, "qq", None) or getattr(component, "user_id", None))
+            elif isinstance(component, Plain):
+                read_text(str(getattr(component, "text", "") or ""))
 
-        # Text-only adapters may not expose At components.  Structured At
-        # components win ordering, while any additional literal IDs are
-        # appended in their textual order.
-        for user_id in re.findall(
-            r"@[^\s@()（）]{1,80}[（(]\s*(\d{1,20})\s*[)）]",
-            str(getattr(event, "message_str", "") or ""),
-        ):
-            add(user_id)
-        for user_id in re.findall(r"@\s*(\d{1,20})\b", str(getattr(event, "message_str", "") or "")):
-            add(user_id)
+        # Preserve compatibility with adapters that expose extra mentions
+        # only in message_str; do not re-add a leading bot wake mention.
+        display_text = str(getattr(event, "message_str", "") or "")
+        if not chain:
+            read_text(display_text)
+        else:
+            before_command = False
+            for match in token_pattern.finditer(display_text):
+                user_id = next(value for value in match.groups() if value is not None)
+                if leading_bot_skipped and user_id == wake_bot and user_id not in users:
+                    continue
+                add(user_id)
         return users
 
     async def extract_images_from_event(self, event: AstrMessageEvent, ignore_id: str = None, context=None,
-                                        include_at_avatar: bool = True) -> List[bytes]:
+                                        include_at_avatar: bool = True, *,
+                                        avatar_user_ids: Optional[List[str]] = None,
+                                        failed_avatar_ids: Optional[List[str]] = None) -> List[bytes]:
         """从消息事件中提取所有图片 - 并发加速"""
         tasks = []
         # Keep mention order stable: multi-person reference prompts rely on the
         # image order matching the order in which users were mentioned.
-        at_users = self.extract_mentioned_user_ids(event, ignore_id=ignore_id)
+        at_users = (self.extract_mentioned_user_ids(event, ignore_id=ignore_id)
+                    if avatar_user_ids is None else list(dict.fromkeys(avatar_user_ids)))
 
         # 1. 规范化 ignore_id，确保是字符串且去除空白
         if ignore_id:
@@ -731,6 +809,7 @@ class ImageManager:
                 elif self._is_probably_valid_source(getattr(seg, "file", None)):
                     tasks.append(self.load_bytes(seg.file))
         # 3. 头像任务（按艾特顺序有序去重）
+        avatar_start = len(tasks)
         if include_at_avatar and at_users:
             logger.debug(f"At users to fetch avatars: {at_users}")
             for uid in at_users:
@@ -742,11 +821,14 @@ class ImageManager:
 
         # 5. 过滤有效结果
         img_bytes = []
-        for res in results:
-            if isinstance(res, bytes):
+        for index, res in enumerate(results):
+            if isinstance(res, bytes) and res:
                 img_bytes.append(res)
-            elif isinstance(res, Exception):
-                logger.warning(f"Image extraction error: {res}")
+            else:
+                if include_at_avatar and index >= avatar_start and failed_avatar_ids is not None:
+                    failed_avatar_ids.append(at_users[index - avatar_start])
+                if isinstance(res, Exception):
+                    logger.warning(f"Image extraction error: {res}")
 
         return img_bytes
 
