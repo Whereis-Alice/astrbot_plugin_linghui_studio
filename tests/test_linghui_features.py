@@ -412,6 +412,8 @@ class DashboardRegistrationTest(unittest.TestCase):
                 "/astrbot_plugin_linghui_studio/reset_credit",
                 "/astrbot_plugin_linghui_studio/reference",
                 "/astrbot_plugin_linghui_studio/asset",
+                "/astrbot_plugin_linghui_studio/reference_full_image",
+                "/astrbot_plugin_linghui_studio/reference_download",
                 "/astrbot_plugin_linghui_studio/generation_history",
                 "/astrbot_plugin_linghui_studio/generation_preview",
                 "/astrbot_plugin_linghui_studio/generation_full_image",

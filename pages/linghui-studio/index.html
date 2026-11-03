@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>灵绘工坊</title>
     <link rel="icon" type="image/svg+xml" href="./assets/linghui-logo.svg" />
-    <link rel="stylesheet" href="./style.css?v=3.13.0" />
+    <link rel="stylesheet" href="./style.css?v=3.13.1" />
   </head>
   <body>
     <main class="shell">
@@ -306,6 +306,7 @@
                 <label class="field full"><span>时间段状态</span><textarea id="persona-time-periods" rows="4" placeholder="早晨:提示词&#10;白天:提示词&#10;傍晚:提示词&#10;夜间:提示词"></textarea></label>
               </div>
               <div class="asset-toolbar"><label class="upload-action">上传人设图<input id="persona-upload" type="file" accept="image/*" multiple /></label><button class="quiet-action" type="button" data-clear-ref="_persona_">清空人设图</button></div>
+              <p class="field-hint">点击参考图或“查看”可放大、缩放；“下载”保留上传的原始文件。</p>
               <div id="persona-images" class="image-grid"></div>
             </section>
             <section class="section-block">
@@ -409,6 +410,6 @@
       </footer>
     </dialog>
     <div id="toast" class="toast" role="status"></div>
-    <script type="module" src="./app.js?v=3.13.0"></script>
+    <script type="module" src="./app.js?v=3.13.1"></script>
   </body>
 </html>

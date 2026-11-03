@@ -13,7 +13,7 @@ import re
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 import aiohttp
 from astrbot import logger
@@ -33,7 +33,7 @@ from .channel_policy import normalize_policy as normalize_channel_policy
 
 
 PLUGIN_NAME = "astrbot_plugin_linghui_studio"
-PLUGIN_VERSION = "3.13.0"
+PLUGIN_VERSION = "3.13.1"
 DRAWING_CHANNEL_TEMPLATE_KEY = "drawing_channel"
 _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -84,6 +84,8 @@ class LinghuiDashboardApi:
             ("reset_credit", self.reset_credit, ["POST"], "Reset Linghui Studio credits"),
             ("reference", self.reference, ["POST"], "Manage Linghui Studio reference images"),
             ("asset", self.asset, ["GET"], "Preview Linghui Studio reference image"),
+            ("reference_full_image", self.reference_full_image, ["GET"], "View one Linghui Studio persona or preset reference image"),
+            ("reference_download", self.reference_download, ["GET"], "Download one Linghui Studio persona or preset reference image"),
             ("generation_history", self.generation_history, ["GET"], "Get Linghui Studio successful generation history"),
             ("generation_preview", self.generation_preview, ["GET"], "Preview one Linghui Studio successful image"),
             ("generation_full_image", self.generation_full_image, ["GET"], "View one Linghui Studio result or input image"),
@@ -1101,6 +1103,59 @@ class LinghuiDashboardApi:
             return jsonify({"success": False, "message": "参考图路径无效。"}), 404
         return await send_file(path, mimetype=mimetypes.guess_type(path.name)[0] or "application/octet-stream")
 
+    def _requested_reference_image(self) -> tuple[str, int, Path]:
+        """Resolve a registered reference; never accept a caller-supplied path."""
+        preset = str(request.args.get("preset", "") or "").strip()
+        raw_index = str(request.args.get("index", ""))
+        if not preset or len(preset) > 160 or not re.fullmatch(r"(?:0|[1-9][0-9]{0,2})", raw_index):
+            raise ValueError("请提供有效的参考图名称和序号（0 至 999）。")
+        index = int(raw_index)
+        paths = self.plugin.data_mgr.get_preset_ref_image_paths(preset)
+        path = self._safe_reference_path(paths[index]) if index < len(paths) else None
+        if path is None:
+            raise FileNotFoundError("该参考图已不可用，请刷新页面后重试。")
+        return preset, index, path
+
+    async def reference_full_image(self):
+        """Load a reference on demand using the gallery's bounded image decoder."""
+        headers = {"Cache-Control": "no-store"}
+        try:
+            preset, index, path = self._requested_reference_image()
+            image = await self._read_gallery_image(lambda: build_gallery_image(path))
+        except GalleryPreviewError as exc:
+            return jsonify({"success": False, "message": str(exc)}), exc.status, headers
+        except ValueError as exc:
+            return jsonify({"success": False, "message": str(exc)}), 400, headers
+        except OSError:
+            return jsonify({"success": False, "message": "该参考图已不可用，请刷新页面后重试。"}), 404, headers
+        return jsonify({"success": True, "preset": preset, "index": index, **image}), 200, headers
+
+    async def reference_download(self):
+        """Download the stored original, including formats converted for viewing."""
+        headers = {"Cache-Control": "no-store"}
+        try:
+            preset, index, path = self._requested_reference_image()
+        except ValueError as exc:
+            return jsonify({"success": False, "message": str(exc)}), 400, headers
+        except OSError:
+            return jsonify({"success": False, "message": "该参考图已不可用，请刷新页面后重试。"}), 404, headers
+        suffix = path.suffix.lower()
+        if not re.fullmatch(r"\.[a-z0-9]{1,8}", suffix):
+            suffix = ".img"
+        kind = "persona" if preset == "_persona_" else "reference"
+        try:
+            response = await send_file(
+                path,
+                mimetype=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+                as_attachment=True,
+                attachment_filename=f"linghui_{kind}_{index + 1}{suffix}",
+                cache_timeout=0,
+            )
+        except OSError:
+            return jsonify({"success": False, "message": "该参考图已不可用，请刷新页面后重试。"}), 404, headers
+        response.headers["Cache-Control"] = "no-store"
+        return response, 200, headers
+
     @staticmethod
     def _generation_source_status(manager: Any, record: Dict[str, Any]) -> tuple[str, int, int]:
         """Return an availability state without reading image bytes into memory."""
@@ -1416,6 +1471,18 @@ class LinghuiDashboardApi:
             )
             return build_gallery_image(image_path) if image_path is not None else None
 
+        try:
+            image = await self._read_gallery_image(read_image)
+        except GalleryPreviewError as exc:
+            return respond({"success": False, "message": str(exc)}, exc.status)
+        except OSError:
+            return respond({"success": False, "message": "该图片缓存已不可用，请刷新记录后重试。"}, 404)
+        if image is None:
+            return respond({"success": False, "message": "该图片缓存已不可用。"}, 404)
+        return respond({"success": True, "id": record_id, "source_index": source_index, **image})
+
+    async def _read_gallery_image(self, read_image: Callable[[], Dict[str, Any] | None]) -> Dict[str, Any] | None:
+        """Share off-loop decoder slots across result and reference viewers."""
         await self._gallery_image_semaphore.acquire()
         worker = asyncio.create_task(asyncio.to_thread(read_image))
 
@@ -1427,15 +1494,7 @@ class LinghuiDashboardApi:
                 completed.exception()
 
         worker.add_done_callback(release_worker)
-        try:
-            image = await asyncio.shield(worker)
-        except GalleryPreviewError as exc:
-            return respond({"success": False, "message": str(exc)}, exc.status)
-        except OSError:
-            return respond({"success": False, "message": "该图片缓存已不可用，请刷新记录后重试。"}, 404)
-        if image is None:
-            return respond({"success": False, "message": "该图片缓存已不可用。"}, 404)
-        return respond({"success": True, "id": record_id, "source_index": source_index, **image})
+        return await asyncio.shield(worker)
 
     async def generation_prompt(self):
         """Return a single prompt on demand so list pages stay lightweight."""

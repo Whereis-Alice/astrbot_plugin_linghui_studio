@@ -63,14 +63,14 @@ export function createImageViewer({ loadImage, downloadImage }) {
     retry.hidden = false;
   }
 
-  async function open(id, sourceIndex = 0) {
+  async function open(id, sourceIndex = 0, options = {}) {
     if (!id) return;
     const token = ++requestToken;
     clearImage();
-    current = { id, sourceIndex };
-    title.textContent = sourceIndex > 0 ? `输入原图 ${sourceIndex}` : "生成结果";
-    info.textContent = "正在读取缓存原图…";
-    image.alt = sourceIndex > 0 ? `本次请求的输入原图 ${sourceIndex}` : "生成结果大图";
+    current = { id, sourceIndex, options };
+    title.textContent = options.title || (sourceIndex > 0 ? `输入原图 ${sourceIndex}` : "生成结果");
+    info.textContent = "正在读取原图…";
+    image.alt = options.title || (sourceIndex > 0 ? `本次请求的输入原图 ${sourceIndex}` : "生成结果大图");
     notice.hidden = false;
     retry.hidden = true;
     download.disabled = false;
@@ -83,7 +83,7 @@ export function createImageViewer({ loadImage, downloadImage }) {
     }
     let pendingUrl = "";
     try {
-      const response = await loadImage(id, sourceIndex);
+      const response = await loadImage(id, sourceIndex, options);
       if (token !== requestToken || !dialog.open) return;
       if (!response?.success) throw new Error(response?.message || "原图缓存不可用，请刷新记录后重试。");
       const match = /^data:image\/(png|jpeg|webp|gif|bmp);base64,([A-Za-z0-9+/=\s]+)$/.exec(response.image || "");
@@ -135,13 +135,13 @@ export function createImageViewer({ loadImage, downloadImage }) {
     if (action === "actual") setZoom(1);
     if (action === "in") setZoom(zoom * 1.25);
     if (action === "out") setZoom(zoom / 1.25);
-    if (action === "retry" && current) void open(current.id, current.sourceIndex);
+    if (action === "retry" && current) void open(current.id, current.sourceIndex, current.options);
     if (action === "download" && current && !download.disabled) {
       const token = requestToken;
       download.disabled = true;
       hint.textContent = "正在准备原图下载…";
       try {
-        await downloadImage(current.id, current.sourceIndex);
+        await downloadImage(current.id, current.sourceIndex, current.options);
         if (token === requestToken) hint.textContent = "已请求下载原图";
       } catch (error) {
         if (token === requestToken) hint.textContent = error?.message || "下载失败，请稍后重试。";

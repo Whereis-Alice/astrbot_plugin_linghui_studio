@@ -110,7 +110,7 @@ test("older response cannot overwrite a newly opened source image", async () => 
     assert.equal(f.node("image-viewer-title").textContent, "输入原图 2");
     assert.equal(f.node("image-viewer-notice").hidden, true);
     await f.click("download");
-    assert.deepEqual(f.downloads, [["new", 2]]);
+    assert.deepEqual(f.downloads, [["new", 2, {}]]);
     assert.deepEqual(args, [["old", 0], ["new", 2]]);
   } finally { await f.click("close"); f.restore(); }
 });
@@ -156,5 +156,27 @@ test("converted previews are labelled and refit on a viewport resize", async () 
     assert.equal(f.node("image-viewer-scale").textContent, "25%");
     await f.dialog.emit("keydown", { key: "1", preventDefault() {} });
     assert.equal(f.node("image-viewer-scale").textContent, "100%");
+  } finally { await f.click("close"); f.restore(); }
+});
+
+test("reference kind and label survive retries and original downloads", async () => {
+  const calls = [];
+  let first = true;
+  const options = { kind: "reference", title: "人设参考图 1" };
+  const f = fixture(async (...args) => {
+    calls.push(args);
+    if (first) { first = false; return { success: false, message: "请重试" }; }
+    return success;
+  });
+  try {
+    await f.viewer.open("_persona_", 0, options);
+    assert.equal(f.node("image-viewer-title").textContent, "人设参考图 1");
+    await f.click("retry");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(f.node("image-viewer-image").alt, "人设参考图 1");
+    assert.equal(f.node("image-viewer-image").hidden, false);
+    await f.click("download");
+    assert.deepEqual(calls, [["_persona_", 0, options], ["_persona_", 0, options]]);
+    assert.deepEqual(f.downloads, [["_persona_", 0, options]]);
   } finally { await f.click("close"); f.restore(); }
 });

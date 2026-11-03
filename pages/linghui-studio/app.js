@@ -1,4 +1,4 @@
-import { createImageViewer } from "./image-viewer.js?v=3.13.0";
+import { createImageViewer } from "./image-viewer.js?v=3.13.1";
 
 const bridge = window.AstrBotPluginPage || {
   ready: async () => ({}),
@@ -85,8 +85,12 @@ const titles = {
 
 const byId = (id) => document.getElementById(id);
 const imageViewer = createImageViewer({
-  loadImage: (id, sourceIndex) => bridge.apiGet("generation_full_image", { id, source_index: sourceIndex }),
-  downloadImage: (id, sourceIndex) => sourceIndex > 0
+  loadImage: (id, sourceIndex, options) => options.kind === "reference"
+    ? bridge.apiGet("reference_full_image", { preset: id, index: sourceIndex })
+    : bridge.apiGet("generation_full_image", { id, source_index: sourceIndex }),
+  downloadImage: (id, sourceIndex, options) => options.kind === "reference"
+    ? downloadReferenceImage(id, sourceIndex)
+    : sourceIndex > 0
     ? downloadGenerationSource(id, sourceIndex)
     : downloadGenerationImage(id),
 });
@@ -1661,7 +1665,8 @@ function imageTiles(images, preset) {
     const preview = source
       ? `<img src="${escapeHtml(source)}" alt="参考图 ${index + 1}" loading="lazy" />`
       : "";
-    return `<div class="image-tile${failed ? " failed" : ""}">${preview}<span class="image-index">${index + 1}</span><span class="image-failure">预览不可用</span><button type="button" data-delete-reference="${escapeHtml(preset)}" data-index="${index}" title="删除参考图" aria-label="删除参考图">×</button></div>`;
+    const referenceAttrs = `data-reference-view="${escapeHtml(preset)}" data-index="${index}"`;
+    return `<div class="image-tile${failed ? " failed" : ""}">${preview}<button type="button" class="reference-image-view" ${referenceAttrs} title="点击查看大图" aria-label="查看${preset === "_persona_" ? "人设" : "预设"}参考图 ${index + 1} 大图"></button><span class="image-index">${index + 1}</span><span class="image-failure">预览不可用</span><div class="reference-image-actions"><button type="button" ${referenceAttrs}>查看</button><button type="button" data-reference-download="${escapeHtml(preset)}" data-index="${index}">下载</button></div><button type="button" data-delete-reference="${escapeHtml(preset)}" data-index="${index}" title="删除参考图" aria-label="删除参考图">×</button></div>`;
   }).join("");
 }
 
@@ -1816,6 +1821,35 @@ async function updateGenerationRecord(action, id, nextValue) {
   const mustRestartFavoritePage = state.historyFavoriteOnly && action === "favorite" && !nextValue;
   invalidateGenerationHistoryCache();
   await loadGenerationHistory(mustRestartFavoritePage ? 0 : (state.history?.pagination?.offset || 0));
+}
+
+async function downloadReferenceImage(preset, index) {
+  const imageIndex = Number(index);
+  if (!preset || !Number.isInteger(imageIndex) || imageIndex < 0) throw new Error("缺少参考图信息");
+  const params = { preset, index: imageIndex };
+  const fallbackName = `linghui_${preset === "_persona_" ? "persona" : "reference"}_${imageIndex + 1}`;
+  if (typeof bridge.download === "function") {
+    await bridge.download("reference_download", params, fallbackName);
+    return;
+  }
+  const response = await fetch(`${PLUGIN_API_BASE}/reference_download?${new URLSearchParams(params)}`, { credentials: "same-origin" });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload?.message || "参考图下载失败");
+  }
+  const image = await response.blob();
+  if (!image.size) throw new Error("参考图文件为空");
+  const header = response.headers.get("content-disposition") || "";
+  const filename = /filename="?([^";]+)"?/i.exec(header)?.[1] || fallbackName;
+  const url = URL.createObjectURL(image);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }
 
 async function downloadGenerationImage(id) {
@@ -2172,6 +2206,20 @@ document.addEventListener("click", async (event) => {
     const clearButton = event.target.closest("[data-clear-ref]");
     if (clearButton) { await clearReference(clearButton.dataset.clearRef); return; }
     if (event.target.closest("#reference-clear")) { await clearReference(value("reference-preset")); return; }
+    const referenceViewerButton = event.target.closest("[data-reference-view]");
+    if (referenceViewerButton) {
+      const preset = referenceViewerButton.dataset.referenceView;
+      const index = Number(referenceViewerButton.dataset.index);
+      await imageViewer.open(preset, index, {
+        kind: "reference", title: `${preset === "_persona_" ? "人设" : "预设"}参考图 ${index + 1}`,
+      });
+      return;
+    }
+    const referenceDownloadButton = event.target.closest("[data-reference-download]");
+    if (referenceDownloadButton) {
+      await downloadReferenceImage(referenceDownloadButton.dataset.referenceDownload, referenceDownloadButton.dataset.index);
+      return;
+    }
     const viewerButton = event.target.closest("[data-image-viewer-id]");
     if (viewerButton) {
       await imageViewer.open(viewerButton.dataset.imageViewerId, Number(viewerButton.dataset.imageViewerSource) || 0);
