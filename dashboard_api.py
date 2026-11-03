@@ -33,7 +33,7 @@ from .channel_policy import normalize_policy as normalize_channel_policy
 
 
 PLUGIN_NAME = "astrbot_plugin_linghui_studio"
-PLUGIN_VERSION = "3.12.1"
+PLUGIN_VERSION = "3.13.0"
 DRAWING_CHANNEL_TEMPLATE_KEY = "drawing_channel"
 _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -513,6 +513,7 @@ class LinghuiDashboardApi:
                 "name": str(self.plugin.conf.get("persona_name", "") or ""),
                 "description": str(self.plugin.conf.get("persona_description", "") or ""),
                 "photo_style": str(self.plugin.conf.get("persona_photo_style", "") or ""),
+                "negative_prompt": str(self.plugin.conf.get("persona_negative_prompt", "") or ""),
                 "trigger_keywords": persona_keywords,
                 "default_prompt": str(self.plugin.conf.get("persona_default_prompt", "") or ""),
                 "scene_prompts": persona_scenes,
@@ -881,6 +882,9 @@ class LinghuiDashboardApi:
                     for source, target in field_map.items():
                         if source in persona:
                             self.plugin.conf[target] = str(persona[source] or "").strip()
+                    if "negative_prompt" in persona:
+                        self.plugin.conf["persona_negative_prompt"] = str(persona["negative_prompt"] or "").strip()[:12_000]
+                        changed_dynamic_keys.add("persona_negative_prompt")
                     if "trigger_keywords" in persona:
                         self.plugin.conf["persona_trigger_keywords"] = [
                             str(item).strip()[:80] for item in persona["trigger_keywords"]

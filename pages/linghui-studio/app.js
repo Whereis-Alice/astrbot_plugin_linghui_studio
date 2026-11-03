@@ -1,4 +1,4 @@
-import { createImageViewer } from "./image-viewer.js?v=3.12.0";
+import { createImageViewer } from "./image-viewer.js?v=3.13.0";
 
 const bridge = window.AstrBotPluginPage || {
   ready: async () => ({}),
@@ -1596,6 +1596,7 @@ function hydrateFields() {
   byId("persona-name").value = persona.name || "";
   byId("persona-description").value = persona.description || "";
   byId("persona-style").value = persona.photo_style || "";
+  byId("persona-negative-prompt").value = persona.negative_prompt || "";
   byId("persona-keywords").value = (persona.trigger_keywords || []).join(", ");
   byId("persona-default-prompt").value = persona.default_prompt || "";
   byId("persona-scene-prompts").value = (persona.scene_prompts || []).join("\n");
@@ -1738,6 +1739,7 @@ function buildPayload() {
       name: value("persona-name").trim(),
       description: value("persona-description").trim(),
       photo_style: value("persona-style").trim(),
+      negative_prompt: value("persona-negative-prompt").trim(),
       trigger_keywords: idsFromText(value("persona-keywords")),
       default_prompt: value("persona-default-prompt").trim(),
       scene_prompts: linesFromText(value("persona-scene-prompts")),

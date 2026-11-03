@@ -53,6 +53,16 @@ class DashboardChannelModesTest(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.module, "jsonify", side_effect=lambda payload: payload):
             return await self.api.save_config()
 
+    async def test_persona_negative_prompt_saves_and_can_be_cleared(self):
+        for text, expected in (("  lowres, watermark\nextra people  ", "lowres, watermark\nextra people"), ("", "")):
+            self.plugin._save_config.reset_mock()
+            self.api._json_body = AsyncMock(return_value={"persona": {"negative_prompt": text}})
+            with patch.object(self.module, "jsonify", side_effect=lambda payload: payload):
+                response = await self.api.save_config()
+            self.assertTrue(response["success"])
+            self.assertEqual(self.plugin.conf["persona_negative_prompt"], expected)
+            self.plugin._save_config.assert_called_once_with(["persona_negative_prompt"])
+
     async def test_auto_mode_saves_and_round_trips_without_reentering_key(self):
         response = await self.save_channels([{
             "id": "primary",

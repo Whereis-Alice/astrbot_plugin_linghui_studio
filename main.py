@@ -207,6 +207,7 @@ class LinghuiStudioPlugin(Star):
         "api_mode",
         "prompt_list",
         "custom_drawing_negative_prompt",
+        "persona_negative_prompt",
         "generation_cache_retention_days",
         "generation_cache_max_mb",
         "generation_cache_trim_ratio",
@@ -1625,6 +1626,10 @@ class LinghuiStudioPlugin(Star):
         """Return the optional cross-channel negative clause for #bnn/#画."""
         return str(self.conf.get("custom_drawing_negative_prompt", "") or "").strip()
 
+    def _get_persona_negative_prompt(self) -> str:
+        """Shared constraints for tool selfies and command photos."""
+        return str(self.conf.get("persona_negative_prompt", "") or "").strip()
+
     def _log_prompt_preview(self, scene: str, prompt: str):
         """输出更完整的提示词日志，避免默认日志不完整"""
         if not self.conf.get("enable_verbose_prompt_log", True):
@@ -1942,6 +1947,7 @@ class LinghuiStudioPlugin(Star):
             hint = (
                 "\n\n[本次人设照片参考] 你已经掌握当前人格与聊天上下文，请自行安排穿搭、表情、视线和动作，"
                 "在 linghui_persona_photo 的 scene_hint / extra_request 中保留具体方向。多张可用 photo_plan 逐张安排。"
+                "根据构图自主选择 aspect_ratio；用户指定比例时严格遵守，无法判断时用 auto 沿用渠道默认比例。"
                 "用户明确要求始终优先，不机械套用温柔微笑；日状态为默认参考，不要求固定同一表情。"
                 "保持角色身份和连续场景的穿搭连贯，强烈情绪需要上下文依据。"
                 "以下历史是先前成功照片的提示方向，并非成图表情识别；仅在适合时避免重复，不改掉用户指定表情。"
@@ -3076,6 +3082,7 @@ class LinghuiStudioPlugin(Star):
             preferred_channel_id: str = None,
             allow_fallback: bool = True,
             session_id: str = "",
+            prefer_config_aspect_ratio: bool = False,
     ) -> bytes | str:
         runtime_task = asyncio.create_task(self.api_mgr.call_api(
             images,
@@ -3091,6 +3098,7 @@ class LinghuiStudioPlugin(Star):
             preferred_channel_id=preferred_channel_id,
             allow_fallback=allow_fallback,
             session_id=session_id,
+            prefer_config_aspect_ratio=prefer_config_aspect_ratio,
         ))
         await self.task_mgr.attach_runtime_task(task_id, runtime_task)
         try:
@@ -3345,7 +3353,9 @@ class LinghuiStudioPlugin(Star):
                                    force_task: bool = False, task_nonce: str = "",
                                    task_type_override: str = "",
                                    llm_tool_call: bool = False,
-                                   record_sink: Optional[List[Dict[str, Any]]] = None) -> Tuple[bool, str]:
+                                   record_sink: Optional[List[Dict[str, Any]]] = None,
+                                   negative_prompt: str = "",
+                                   prefer_config_aspect_ratio: bool = False) -> Tuple[bool, str]:
         """
         后台执行生成任务，并在完成后主动发送消息。
 
@@ -3376,10 +3386,11 @@ class LinghuiStudioPlugin(Star):
             task_type = task_type_override or ("文生图" if use_text_to_image_api else (
                 "人设拍照" if preset_name.startswith("人设-") else "图生图"
             ))
+            stored_prompt = append_negative_prompt(prompt, negative_prompt)
             task, duplicate = await self._begin_generation_task(
                 event,
                 images=images,
-                prompt=prompt,
+                prompt=stored_prompt,
                 model=model,
                 preset_name=preset_name,
                 task_type=task_type,
@@ -3408,6 +3419,8 @@ class LinghuiStudioPlugin(Star):
                     aspect_ratio=aspect_ratio,
                     resolution=resolution,
                     session_id=event.unified_msg_origin,
+                    negative_prompt=negative_prompt,
+                    prefer_config_aspect_ratio=prefer_config_aspect_ratio,
                 )
                 if isinstance(res, bytes) or not self._is_transient_generation_error(res) or attempt == 1:
                     break
@@ -3424,7 +3437,7 @@ class LinghuiStudioPlugin(Star):
                     res,
                     user_id=uid,
                     group_id=gid,
-                    prompt=prompt,
+                    prompt=stored_prompt,
                     model=actual_model,
                     preset_name=preset_name,
                     task_type=task_type,
@@ -3730,7 +3743,9 @@ class LinghuiStudioPlugin(Star):
                                         suppress_user_error: bool = False,
                                         record_sink: Optional[List[Dict[str, Any]]] = None,
                                         photo_prompts: Optional[List[str]] = None,
-                                        photo_completion: Optional[Callable[[int, bool], Awaitable[None]]] = None) -> Dict[str, Any]:
+                                        photo_completion: Optional[Callable[[int, bool], Awaitable[None]]] = None,
+                                        aspect_ratio: str = None, negative_prompt: str = "",
+                                        prefer_config_aspect_ratio: bool = False) -> Dict[str, Any]:
         """
         批量图生图后台任务 - 对同一张图片生成多个不同版本
 
@@ -3794,6 +3809,8 @@ class LinghuiStudioPlugin(Star):
                             res = await self.api_mgr.call_api(
                                 images, photo_prompt, model, False, self.img_mgr.proxy,
                                 session_id=event.unified_msg_origin,
+                                aspect_ratio=aspect_ratio, negative_prompt=negative_prompt,
+                                prefer_config_aspect_ratio=prefer_config_aspect_ratio,
                             )
 
                             if isinstance(res, bytes):
@@ -3805,7 +3822,7 @@ class LinghuiStudioPlugin(Star):
                                     res,
                                     user_id=uid,
                                     group_id=gid,
-                                    prompt=photo_prompt,
+                                    prompt=append_negative_prompt(photo_prompt, negative_prompt),
                                     model=model,
                                     preset_name=preset_name,
                                     task_type="批量图生图版本",
@@ -3994,8 +4011,9 @@ class LinghuiStudioPlugin(Star):
         你不需要提前调用 check_user_status_tool，直接调用本工具即可。
 
         【画面参数】
-        - 用户写了比例或 1K/2K/4K 时，可传入对应参数；不确定时保持 auto，插件会直接从 prompt 识别。
-        - 用户没写时不要擅自猜测：文生图会使用后台配置的默认比例和分辨率。
+        - 用户指定比例时必须遵守；未指定时可根据主体、场景和构图自主选择 aspect_ratio，例如全身人像用 2:3、横向场景用 16:9。
+        - 无法判断合适比例时保持 auto，插件会从 prompt 识别明确比例，否则使用渠道默认比例，渠道留空时使用全局配置。
+        - 分辨率仍按用户要求或后台默认设置，不为自行选择比例而擅自提高分辨率。
 
         Args:
             prompt(string): 图片生成的提示词，可以是预设名+追加规则。
@@ -4017,6 +4035,7 @@ class LinghuiStudioPlugin(Star):
                 scene_hint="",
                 extra_request=persona_request_text,
                 count=inferred_count,
+                aspect_ratio=aspect_ratio,
             )
 
         # 0.1 检查图片生成冷却时间
@@ -7379,7 +7398,7 @@ class LinghuiStudioPlugin(Star):
 
     @filter.llm_tool(name="linghui_persona_photo")
     async def persona_photo_tool(self, event: AstrMessageEvent, scene_hint: str = "", extra_request: str = "",
-                                 count: int = 1, photo_plan: str = ""):
+                                 count: int = 1, photo_plan: str = "", aspect_ratio: str = "auto"):
         '''生成Bot人设角色（你自己）的日常照片或写真。
 
         【唯一指定用途】
@@ -7408,6 +7427,10 @@ class LinghuiStudioPlugin(Star):
         用户未指定时，根据当前人格与聊天情境，自主在 scene_hint / extra_request 描述适合的穿搭、表情、视线和动作。
         不要每次机械写温柔微笑；明确的换装和表情要求必须保留。插件直接尊重你在本次工具调用中已选好的方向，不再另行调用 LLM 规划。多张可以用 photo_plan 逐张安排。
 
+        【比例由你按构图决定】
+        用户指定比例时必须遵守；未指定时可按主体和场景自主选择 aspect_ratio，例如全身照用 2:3、横向合影用 16:9。
+        无法判断时保持 auto；提示词中也未指定比例时使用渠道默认比例，渠道留空则用全局配置，不沿用人设参考图比例。
+
         【调用前与完成后发言】
         识别到请求后请直接调用本工具，不要先在同一条回复中套用“嗯嗯，稍等”等固定等待语。插件会按配置使用当前 AstrBot 人格单独生成开始前承接话；工具完成后的最终回复也必须继续使用同一个 AstrBot 人格、称呼习惯和上下文关系。
 
@@ -7422,6 +7445,7 @@ class LinghuiStudioPlugin(Star):
             extra_request(string): 用户的额外要求（可选），如"穿红色衣服"、"微笑"等
             count(int): 生成图片的数量，默认1张，最大10张。只有用户明确要求多张时才增大。
             photo_plan(string): 可选的逐张方向 JSON 字符串。格式 {"photos":[{"outfit":"蓝色外套","expression":"认真专注","gaze":"看镜头","pose":"倚栏杆"}]}，每张一项，项数须与 count 一致。通常保持同一套衣服，神态按上下文变化；用户指定统一表情时全部服从。
+            aspect_ratio(string): 本批照片的比例，用户明确要求优先，否则可按构图选择 1:1、16:9、9:16、5:4、4:5、4:3、3:4、3:2、2:3、21:9；不确定用 auto 沿用配置。
         '''
         # 0. 检查功能开关
         if not self._persona_mode:
@@ -7598,6 +7622,8 @@ class LinghuiStudioPlugin(Star):
             user_request=str(getattr(event, "message_str", "") or ""),
             visual_request=" ".join([scene_hint, extra_request])
         )
+        requested_aspect_ratio = None if str(aspect_ratio).strip().lower() in {"", "auto"} else aspect_ratio
+        negative_prompt = self._get_persona_negative_prompt()
         await self._register_pending_generation(event.unified_msg_origin, count)
         if count == 1:
             generation_coro = self._run_background_task(
@@ -7612,7 +7638,9 @@ class LinghuiStudioPlugin(Star):
                 extra_rules=extra_request,
                 hide_text=hide_llm_result_text,
                 suppress_user_error=True, llm_tool_call=True,
-                record_sink=generation_records
+                record_sink=generation_records,
+                aspect_ratio=requested_aspect_ratio, negative_prompt=negative_prompt,
+                prefer_config_aspect_ratio=True,
             )
             generation_coro = self._run_persona_photo(plan_token, 0, generation_coro)
             if self._background_generation_enabled():
@@ -7652,7 +7680,9 @@ class LinghuiStudioPlugin(Star):
                     hide_text=hide_llm_result_text,
                     suppress_user_error=True,
                     record_sink=generation_records,
-                    photo_prompts=photo_prompts, photo_completion=completed
+                    photo_prompts=photo_prompts, photo_completion=completed,
+                    aspect_ratio=requested_aspect_ratio, negative_prompt=negative_prompt,
+                    prefer_config_aspect_ratio=True,
                 )
             finally:
                 await self.persona_planner.release(plan_token)
@@ -7775,6 +7805,7 @@ class LinghuiStudioPlugin(Star):
             event, ref_text, full_prompt, 1, visual_request=ref_text
         )
         full_prompt = photo_prompts[0]
+        negative_prompt = self._get_persona_negative_prompt()
 
         # 调用 API
         model = self.conf.get("model", "nano-banana")
@@ -7783,6 +7814,7 @@ class LinghuiStudioPlugin(Star):
             res = await self.api_mgr.call_api(
                 final_images, full_prompt, model, False, self.img_mgr.proxy,
                 session_id=event.unified_msg_origin,
+                negative_prompt=negative_prompt, prefer_config_aspect_ratio=True,
             )
             await self.persona_planner.complete_photo(plan_token, 0, isinstance(res, bytes))
         finally:
@@ -7797,7 +7829,7 @@ class LinghuiStudioPlugin(Star):
                 res,
                 user_id=uid,
                 group_id=gid,
-                prompt=full_prompt,
+                prompt=append_negative_prompt(full_prompt, negative_prompt),
                 model=model,
                 preset_name=scene_name or "人设",
                 task_type="人设拍照",

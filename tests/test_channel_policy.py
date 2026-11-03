@@ -114,6 +114,34 @@ class RouterPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(router.close)
         return router
 
+    async def test_photo_ratio_uses_config_and_ignores_negative_dimensions(self):
+        self.config.update(image_aspect_ratio="9:16", image_resolution="1K")
+        router = self.router()
+        await router.call_api([b"square-reference"], "portrait", "default",
+            prefer_config_aspect_ratio=True, negative_prompt="avoid 1:1, 4K")
+        self.assertEqual(self.calls[-1][2]["aspect_ratio"], "9:16")
+        self.assertEqual(self.calls[-1][2]["resolution"], "1K")
+        self.assertIn("Negative prompt: avoid 1:1, 4K", self.calls[-1][3])
+        await router.call_api([b"reference"], "portrait 3:2", "default", prefer_config_aspect_ratio=True)
+        self.assertEqual(self.calls[-1][2]["aspect_ratio"], "3:2")
+        await router.call_api([b"reference"], "portrait 3:2", "default",
+            aspect_ratio="2:3", prefer_config_aspect_ratio=True)
+        self.assertEqual(self.calls[-1][2]["aspect_ratio"], "2:3")
+
+    async def test_photo_ratio_follows_each_fallback_channel_and_legacy_default(self):
+        self.config["drawing_channels"][0]["image_aspect_ratio"] = "4:5"
+        self.config["drawing_channels"][1]["image_aspect_ratio"] = "16:9"
+        self.outcomes[("a", "default")] = "API Error 503"
+        router = self.router()
+        await router.call_api([b"reference"], "photo", "default", prefer_config_aspect_ratio=True)
+        self.assertEqual([call[2]["aspect_ratio"] for call in self.calls], ["4:5", "16:9"])
+        self.config.update(drawing_channels=[], image_aspect_ratio="4:3", base_url="legacy", api_keys="one")
+        self.calls.clear()
+        await router.call_api([b"reference"], "photo", "default", prefer_config_aspect_ratio=True)
+        self.assertEqual(self.calls[-1][2]["aspect_ratio"], "4:3")
+        await router.call_api([b"reference"], "ordinary edit", "default")
+        self.assertIsNone(self.calls[-1][2]["aspect_ratio"])
+
     async def test_priority_then_stable_order_and_explicit_primary(self):
         self.config["drawing_channels"] += [{"id": "c", "base_url": "c", "api_keys": "three", "priority": 8}]
         self.config["drawing_channels"][1]["priority"] = 8

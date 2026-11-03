@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>灵绘工坊</title>
     <link rel="icon" type="image/svg+xml" href="./assets/linghui-logo.svg" />
-    <link rel="stylesheet" href="./style.css?v=3.12.0" />
+    <link rel="stylesheet" href="./style.css?v=3.13.0" />
   </head>
   <body>
     <main class="shell">
@@ -290,6 +290,8 @@
                 <label class="field"><span>人设名称</span><input id="persona-name" /><small class="field-hint">用于人设提示词中的称呼，不会修改插件名称。</small></label>
                 <label class="field full"><span>人设描述</span><textarea id="persona-description" rows="5"></textarea><small class="field-hint">描述角色外观、身份和特征，作为生成人设照片时的基础信息。</small></label>
                 <label class="field full"><span>照片风格</span><input id="persona-style" /><small class="field-hint">附加到人设拍照请求的视觉风格，例如自然光、胶片或棚拍风格。</small></label>
+                <label class="field full"><span>人设照片反向提示词</span><textarea id="persona-negative-prompt" rows="4" placeholder="例如：水印、字幕、多余人物、模糊、畸形手指"></textarea><small class="field-hint">仅用于人设自拍、写真和合影，工具调用、指令拍照及多张照片均生效；留空关闭。</small></label>
+                <p class="field-hint full">LLM 可按构图自主选择照片比例；用户指定优先，未选择则用绘图渠道的默认比例，渠道留空时用全局配置。</p>
                 <label class="field full"><span>触发关键词</span><input id="persona-keywords" placeholder="用逗号分隔" /><small class="field-hint">用逗号分隔。用于智能识别与人设相关的拍照意图。</small></label>
                 <label class="field full"><span>默认场景提示词</span><textarea id="persona-default-prompt" rows="3"></textarea><small class="field-hint">未指定场景时使用的默认环境与构图要求。</small></label>
                 <label class="field full"><span>场景预设</span><textarea id="persona-scene-prompts" rows="5" placeholder="每行一个：场景名:提示词"></textarea><small class="field-hint">每行一个“场景名:提示词”，例如“咖啡馆:窗边自然光人像”。</small></label>
@@ -407,6 +409,6 @@
       </footer>
     </dialog>
     <div id="toast" class="toast" role="status"></div>
-    <script type="module" src="./app.js?v=3.12.0"></script>
+    <script type="module" src="./app.js?v=3.13.0"></script>
   </body>
 </html>

@@ -372,12 +372,14 @@ class DrawingChannelRouter:
         preferred_channel_id: str | None = None,
         allow_fallback: bool = True,
         session_id: str = "",
+        prefer_config_aspect_ratio: bool = False,
     ) -> bytes | str:
         self._set_last_metrics({})
         explicit_channel = str(preferred_channel_id or "").strip()
         if explicit_channel and not any(c["id"] == explicit_channel for c in self._raw_channels()):
             return f"指定渠道 {explicit_channel} 不存在或已被手动禁用，请检查 WebUI 的渠道 ID。"
         prepared_prompt = await self.prompt_processor.prepare(prompt)
+        parameter_prompt = prepared_prompt
         prepared_prompt = append_negative_prompt(prepared_prompt, negative_prompt)
         # Hard constraints are appended after translation/optimization and
         # after the optional negative prompt. Every fallback receives this
@@ -420,6 +422,13 @@ class DrawingChannelRouter:
         if not channels:
             client = await self._client_for({"id": "legacy"})
             started = time.monotonic()
+            if prefer_config_aspect_ratio:
+                params = resolve_image_generation_params(
+                    parameter_prompt, self.config.get("image_resolution", "1K"),
+                    self.config.get("image_aspect_ratio", "1:1"),
+                    resolution=resolution, aspect_ratio=aspect_ratio,
+                )
+                aspect_ratio, resolution = params["aspect_ratio"], params["resolution"]
             result = await client.call_api(
                 images, prepared_prompt, model, legacy_use_power_or_proxy, proxy,
                 use_text_to_image_api=use_text_to_image_api,
@@ -475,12 +484,12 @@ class DrawingChannelRouter:
                 failures.append(f"{channel['id']}：每日总额度已用完（北京时间次日 00:00 恢复）")
                 continue
             succeeded = False
-            params = resolve_image_generation_params(prepared_prompt,
+            params = resolve_image_generation_params(parameter_prompt,
                 channel.get("image_resolution") or self.config.get("image_resolution", "1K"),
                 channel.get("image_aspect_ratio") or self.config.get("image_aspect_ratio", "1:1"),
                 resolution=resolution, aspect_ratio=aspect_ratio)
-            effective_ratio = params["aspect_ratio"] if channel.get("image_aspect_ratio") else aspect_ratio
-            effective_resolution = params["resolution"] if channel.get("image_resolution") else resolution
+            effective_ratio = params["aspect_ratio"] if channel.get("image_aspect_ratio") or prefer_config_aspect_ratio else aspect_ratio
+            effective_resolution = params["resolution"] if channel.get("image_resolution") or prefer_config_aspect_ratio else resolution
             try:
                 for resolved_model in self._models_for(model, channel, use_text_to_image_api, bool(images)):
                     for key_attempt in range(1, key_attempt_limit + 1):

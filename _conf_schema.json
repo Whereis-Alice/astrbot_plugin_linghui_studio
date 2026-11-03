@@ -794,6 +794,12 @@
     "hint": "附加到人设拍照请求的视觉风格，例如自然光、胶片或棚拍风格。",
     "default": "natural lifestyle photography, soft daylight, detailed"
   },
+  "persona_negative_prompt": {
+    "type": "text",
+    "description": "【人设与参考图】人设照片反向提示词",
+    "hint": "填写自拍、写真和人设合影中不要出现的元素。工具自拍、指令拍照和多张照片均生效；留空关闭，不影响普通绘图或图片编辑。",
+    "default": ""
+  },
   "persona_trigger_keywords": {
     "type": "list",
     "description": "【人设与参考图】人设触发关键词",
