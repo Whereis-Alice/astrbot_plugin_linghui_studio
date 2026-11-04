@@ -1,4 +1,5 @@
-import { createImageViewer } from "./image-viewer.js?v=3.13.1";
+import { createImageViewer } from "./image-viewer.js?v=3.14.0";
+import { capturePresetDrafts, createPresetDialog, sortedPresetEntries } from "./preset-editor.js?v=3.14.0";
 
 const bridge = window.AstrBotPluginPage || {
   ready: async () => ({}),
@@ -42,6 +43,7 @@ const state = {
   sessionOverrides: {},
   presetKeyword: "",
   presetSource: "all",
+  presetSort: "grouped",
 };
 
 const THEME_STORAGE_KEY = "linghui-studio-theme";
@@ -84,6 +86,27 @@ const titles = {
 };
 
 const byId = (id) => document.getElementById(id);
+const PRESET_SORT_KEY = "linghui-studio-preset-sort";
+const PRESET_SORTS = new Set(["grouped", "name_asc", "name_desc"]);
+try {
+  const storedSort = window.localStorage.getItem(PRESET_SORT_KEY);
+  if (PRESET_SORTS.has(storedSort)) state.presetSort = storedSort;
+} catch { /* 使用默认排序 */ }
+const presetDialog = createPresetDialog({
+  getPresets: () => { syncPresetDrafts(); return state.config?.presets || []; },
+  createPreset: (preset) => bridge.apiPost("preset_create", preset),
+  onCreated: (preset) => {
+    syncPresetDrafts();
+    state.config.presets.push(preset);
+    state.presetKeyword = "";
+    state.presetSource = "all";
+    byId("preset-filter").value = "";
+    renderPresets();
+    renderReferenceSelector();
+    byId("metric-presets").textContent = String(state.config.presets.length);
+    showToast(`预设“${preset.name}”已保存`);
+  },
+});
 const imageViewer = createImageViewer({
   loadImage: (id, sourceIndex, options) => options.kind === "reference"
     ? bridge.apiGet("reference_full_image", { preset: id, index: sourceIndex })
@@ -509,7 +532,7 @@ function renderPresets() {
   const wanted = state.presetSource || "all";
   let visible = 0;
   const counts = { default: 0, modified: 0, custom: 0 };
-  const markup = presets.map((preset, index) => {
+  const markup = sortedPresetEntries(presets, state.presetSort).map(({ preset, index }) => {
     const source = presetSourceOf(preset);
     counts[source] += 1;
     const badge = PRESET_SOURCE_BADGES[source];
@@ -529,6 +552,7 @@ function renderPresets() {
     byId("preset-list").insertAdjacentHTML("beforeend", '<p class="empty">没有符合筛选条件的预设。</p>');
   }
   const counter = byId("preset-count");
+  byId("preset-sort").value = state.presetSort;
   if (counter) {
     counter.textContent = presets.length
       ? `${visible}/${presets.length} 个 · 📌 ${counts.default} ✏️ ${counts.modified} ✨ ${counts.custom}`
@@ -541,11 +565,14 @@ function renderPresets() {
   });
 }
 
+function syncPresetDrafts() {
+  capturePresetDrafts(state.config?.presets || [], document);
+}
+
 function readPresets() {
-  return [...document.querySelectorAll(".preset-row[data-preset-index]")].map((row) => ({
-    name: row.querySelector('[data-preset="name"]').value.trim(),
-    prompt: row.querySelector('[data-preset="prompt"]').value.trim(),
-    source: row.dataset.presetSource || "custom",
+  syncPresetDrafts();
+  return (state.config?.presets || []).map((preset) => ({
+    ...preset, name: preset.name.trim(), prompt: preset.prompt.trim(),
   })).filter((item) => item.name || item.prompt);
 }
 
@@ -2184,19 +2211,19 @@ document.addEventListener("click", async (event) => {
     if (refreshModels) { await refreshChannelModels(refreshModels.dataset.refreshChannelModels); return; }
     const presetChip = event.target.closest(".preset-chip[data-preset-source]");
     if (presetChip) {
+      syncPresetDrafts();
       state.presetSource = presetChip.dataset.presetSource || "all";
       renderPresets();
       return;
     }
     if (event.target.closest("#add-preset")) {
-      state.presetKeyword = "";
-      state.presetSource = "all";
-      const filterInput = byId("preset-filter");
-      if (filterInput) filterInput.value = "";
-      state.config.presets.push({ name: "", prompt: "", source: "custom" }); renderPresets(); return;
+      if (!state.config) { showToast("配置尚未加载，请刷新页面后重试。", true); return; }
+      presetDialog.open();
+      return;
     }
     const removePreset = event.target.closest("[data-remove-preset]");
     if (removePreset) {
+      syncPresetDrafts();
       state.config.presets.splice(Number(removePreset.dataset.removePreset), 1); renderPresets(); return;
     }
     if (event.target.closest("#credit-add")) { await updateCredit(false); return; }
@@ -2316,7 +2343,14 @@ document.addEventListener("error", (event) => {
 }, true);
 
 byId("preset-filter")?.addEventListener("input", (event) => {
+  syncPresetDrafts();
   state.presetKeyword = event.target.value || "";
+  renderPresets();
+});
+byId("preset-sort").addEventListener("change", (event) => {
+  syncPresetDrafts();
+  state.presetSort = PRESET_SORTS.has(event.target.value) ? event.target.value : "grouped";
+  try { window.localStorage.setItem(PRESET_SORT_KEY, state.presetSort); } catch { /* 忽略存储不可用 */ }
   renderPresets();
 });
 byId("reference-preset").addEventListener("change", renderReferenceImages);

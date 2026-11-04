@@ -407,6 +407,7 @@ class DashboardRegistrationTest(unittest.TestCase):
                 "/astrbot_plugin_linghui_studio/dashboard_theme",
                 "/astrbot_plugin_linghui_studio/dashboard_density",
                 "/astrbot_plugin_linghui_studio/save_config",
+                "/astrbot_plugin_linghui_studio/preset_create",
                 "/astrbot_plugin_linghui_studio/get_usage",
                 "/astrbot_plugin_linghui_studio/adjust_credit",
                 "/astrbot_plugin_linghui_studio/reset_credit",

@@ -33,7 +33,7 @@ from .channel_policy import normalize_policy as normalize_channel_policy
 
 
 PLUGIN_NAME = "astrbot_plugin_linghui_studio"
-PLUGIN_VERSION = "3.13.1"
+PLUGIN_VERSION = "3.14.0"
 DRAWING_CHANNEL_TEMPLATE_KEY = "drawing_channel"
 _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -79,6 +79,7 @@ class LinghuiDashboardApi:
             ("dashboard_theme", self.save_dashboard_theme, ["POST"], "Save Linghui Studio Dashboard theme"),
             ("dashboard_density", self.save_dashboard_density, ["POST"], "Save Linghui Studio Dashboard layout density"),
             ("save_config", self.save_config, ["POST"], "Save Linghui Studio configuration"),
+            ("preset_create", self.preset_create, ["POST"], "Create and persist one Linghui Studio prompt preset"),
             ("get_usage", self.get_usage, ["GET"], "Get Linghui Studio usage and credits"),
             ("adjust_credit", self.adjust_credit, ["POST"], "Adjust Linghui Studio credits"),
             ("reset_credit", self.reset_credit, ["POST"], "Reset Linghui Studio credits"),
@@ -985,6 +986,37 @@ class LinghuiDashboardApi:
                 logger.exception("Linghui dashboard configuration save failed")
                 return jsonify({"success": False, "message": f"保存失败：{exc}"}), 500
         return jsonify({"success": True, "message": "配置已保存。"})
+
+    async def preset_create(self):
+        """Save a validated preset without submitting unrelated Dashboard edits."""
+        payload = await self._json_body()
+        name = str(payload.get("name", "") or "").strip()
+        prompt = str(payload.get("prompt", "") or "").strip()
+        if not name or len(name) > 48 or re.search(r"[\x00-\x1f\x7f:：]", name):
+            return jsonify({"success": False, "message": "预设名称不能为空、不能包含冒号或换行，且最多 48 个字符。"}), 400
+        if not prompt or len(prompt) > 12_000:
+            return jsonify({"success": False, "message": "提示词不能为空且最多 12000 个字符。"}), 400
+        async with self._lock:
+            rows = self._preset_rows()
+            if any(row["name"] == name for row in rows):
+                return jsonify({"success": False, "message": f"预设名称已存在：{name}"}), 409
+            if len(rows) >= 200:
+                return jsonify({"success": False, "message": "最多支持 200 个预设，请先删除不需要的预设。"}), 400
+            previous = copy.deepcopy(self.plugin.conf.get("prompt_list", []))
+            try:
+                await self.plugin.data_mgr.add_user_prompt(name, prompt)
+                self.plugin.conf["prompt_list"] = [*previous, f"{name}:{prompt}"]
+                self.plugin._save_config(["prompt_list"])
+            except Exception:
+                self.plugin.conf["prompt_list"] = previous
+                try:
+                    await self.plugin.data_mgr.remove_user_prompt(name)
+                except Exception:
+                    logger.exception("Linghui preset creation rollback failed")
+                logger.exception("Linghui preset creation failed")
+                return jsonify({"success": False, "message": "预设保存失败，请重试。"}), 500
+            preset = next(row for row in self._preset_rows() if row["name"] == name)
+        return jsonify({"success": True, "message": "预设已保存。", "preset": preset})
 
     async def get_usage(self):
         manager = self.plugin.data_mgr

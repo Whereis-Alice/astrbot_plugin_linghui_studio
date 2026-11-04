@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>灵绘工坊</title>
     <link rel="icon" type="image/svg+xml" href="./assets/linghui-logo.svg" />
-    <link rel="stylesheet" href="./style.css?v=3.13.1" />
+    <link rel="stylesheet" href="./style.css?v=3.14.0" />
   </head>
   <body>
     <main class="shell">
@@ -258,6 +258,7 @@
                   <button type="button" class="preset-chip" data-preset-source="modified">✏️ 改过</button>
                   <button type="button" class="preset-chip" data-preset-source="custom">✨ 自定义</button>
                 </div>
+                <label class="preset-sort"><span>排序</span><select id="preset-sort" aria-label="预设排序"><option value="grouped">自定义 / 改过优先</option><option value="name_asc">名称 A → Z</option><option value="name_desc">名称 Z → A</option></select></label>
                 <span id="preset-count" class="preset-count"></span>
               </div>
               <div id="preset-list" class="preset-list"></div>
@@ -377,6 +378,15 @@
         </div>
       </footer>
     </main>
+    <dialog id="preset-create-dialog" class="preset-create-dialog" aria-labelledby="preset-create-title" aria-describedby="preset-create-help">
+      <form id="preset-create-form" class="preset-create-panel" novalidate>
+        <div><h2 id="preset-create-title">添加预设</h2><p id="preset-create-help" class="field-hint">填写后点“确认添加”即可保存。</p></div>
+        <label class="field"><span>预设名称</span><input id="preset-create-name" placeholder="例如：雨夜街景" maxlength="48" autocomplete="off" /><small class="field-hint">最多 48 个字符，不能包含冒号或换行，也不能与已有预设重名。</small></label>
+        <label class="field"><span>提示词</span><textarea id="preset-create-prompt" rows="8" maxlength="12000" placeholder="描述画面、风格、构图和需要保留的要求"></textarea></label>
+        <p id="preset-create-error" class="preset-create-error" role="alert" hidden></p>
+        <div class="confirm-actions"><button id="preset-create-cancel" class="quiet-action" type="button">取消</button><button id="preset-create-submit" class="primary-action" type="submit">确认添加</button></div>
+      </form>
+    </dialog>
     <dialog id="action-confirm" class="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message">
       <section class="confirm-panel">
         <span class="confirm-eyebrow">请确认</span>
@@ -410,6 +420,6 @@
       </footer>
     </dialog>
     <div id="toast" class="toast" role="status"></div>
-    <script type="module" src="./app.js?v=3.13.1"></script>
+    <script type="module" src="./app.js?v=3.14.0"></script>
   </body>
 </html>

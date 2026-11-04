@@ -750,6 +750,16 @@ h3 { color: var(--subtle); font-size: 14px; }
 .preset-chip:hover { border-color: var(--line-strong); color: var(--subtle); background: var(--surface-hover); }
 .preset-chip.is-active { border-color: var(--cyan); color: var(--cyan-bright); background: var(--accent-soft); box-shadow: 0 0 12px var(--cyan-wash); }
 .preset-count { margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
+#add-preset { flex: 0 0 auto; white-space: nowrap; }
+.preset-sort { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; }
+.preset-sort select { min-height: 32px; padding: 4px 7px; border: 1px solid var(--line); border-radius: 4px; color: var(--ink); background: var(--input); font-size: 11px; }
+.preset-create-dialog { width: min(640px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); margin: auto; padding: 0; overflow: auto; border: 1px solid var(--line-strong); border-radius: 12px; color: var(--ink); background: var(--surface-raised); box-shadow: var(--panel-shadow); }
+.preset-create-dialog::backdrop { background: rgba(3, 6, 18, .78); backdrop-filter: blur(6px); }
+.preset-create-dialog [hidden] { display: none !important; }
+.preset-create-panel { display: grid; gap: 16px; padding: 22px; }
+.preset-create-panel h2 { margin: 0 0 6px; color: var(--ink); font-size: 18px; }
+.preset-create-panel textarea { min-height: 180px; max-height: 45dvh; resize: vertical; }
+.preset-create-error { margin: 0; color: var(--red); font-size: 13px; overflow-wrap: anywhere; }
 .preset-row { display: grid; grid-template-columns: 82px 150px minmax(0, 1fr) 28px; align-items: start; gap: 8px; }
 .preset-row.is-filtered { display: none; }
 .preset-row textarea { min-height: 36px; resize: vertical; line-height: 1.4; }
