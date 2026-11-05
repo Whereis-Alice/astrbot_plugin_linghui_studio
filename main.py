@@ -3017,6 +3017,42 @@ class LinghuiStudioPlugin(Star):
             )
             return "possibly_sent"
 
+    async def _finalize_generated_delivery(
+            self, task_id: str, record_id: str, delivery_status: str,
+            *, metrics: Optional[Dict[str, Any]] = None,
+            resend: bool = False) -> Optional[Dict[str, Any]]:
+        """Save a known send outcome without turning storage errors into send failures."""
+        updated = None
+        # Finish the task first: history persistence must not leave a sent
+        # image in a retryable state. Each store is attempted independently.
+        try:
+            if resend:
+                # Resending does not change the original generation timing or route.
+                updated = await self.task_mgr.update_task(
+                    task_id, delivery_status=delivery_status,
+                    status="possibly_sent" if delivery_status == "possibly_sent" else "succeeded",
+                    error="", error_category="",
+                )
+            else:
+                updated = await self.task_mgr.finish_success(
+                    task_id, metrics=metrics, result_record_id=record_id,
+                    delivery_status=delivery_status,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Linghui task delivery bookkeeping failed (task=%s, delivery=%s): %s",
+                task_id, delivery_status, safe_error_summary(exc, 240),
+            )
+        if record_id:
+            try:
+                await self.data_mgr.update_generation_record_delivery(record_id, delivery_status)
+            except Exception as exc:
+                logger.warning(
+                    "Linghui image delivery bookkeeping failed (record=%s, delivery=%s): %s",
+                    record_id, delivery_status, safe_error_summary(exc, 240),
+                )
+        return updated
+
     @staticmethod
     def _event_request_id(event: Optional[AstrMessageEvent]) -> str:
         try:
@@ -3483,13 +3519,8 @@ class LinghuiStudioPlugin(Star):
                     chain_nodes.append(Plain(f"\n{self._requester_prefix_text(event)}✅ 图片完成"))
 
                 delivery_status = await self._send_generated_result(event, event.chain_result(chain_nodes))
-                if record_id:
-                    await self.data_mgr.update_generation_record_delivery(record_id, delivery_status)
-                await self.task_mgr.finish_success(
-                    task_id,
-                    metrics=route_metrics,
-                    result_record_id=record_id,
-                    delivery_status=delivery_status,
+                await self._finalize_generated_delivery(
+                    task_id, record_id, delivery_status, metrics=route_metrics,
                 )
                 return True, ""
 
@@ -4731,15 +4762,8 @@ class LinghuiStudioPlugin(Star):
                 delivery_status = await self._send_generated_result(
                     event, event.chain_result([Image.fromBytes(res), Plain(info)])
                 )
-                if record_id:
-                    await self.data_mgr.update_generation_record_delivery(record_id, delivery_status)
-                await self.task_mgr.finish_success(
-                    task_id,
-                    metrics=route_metrics,
-                    result_record_id=record_id,
-                    delivery_status=delivery_status,
-                )
             except Exception as exc:
+                logger.warning("Linghui image send failed (task=%s): %s", task_id, safe_error_summary(exc, 240))
                 await self.task_mgr.finish_failure(
                     task_id,
                     exc,
@@ -4748,6 +4772,10 @@ class LinghuiStudioPlugin(Star):
                     delivery_status="failed",
                 )
                 yield event.chain_result(self._notice_nodes(event, "图片已经做好并缓存，但这次发送失败了，可以到 Dashboard 任务中心重发。"))
+            else:
+                await self._finalize_generated_delivery(
+                    task_id, record_id, delivery_status, metrics=route_metrics,
+                )
         else:
             if charged:
                 await self._refund_quota(deduction, uid, gid, cost)

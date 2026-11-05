@@ -33,7 +33,7 @@ from .channel_policy import normalize_policy as normalize_channel_policy
 
 
 PLUGIN_NAME = "astrbot_plugin_linghui_studio"
-PLUGIN_VERSION = "3.14.0"
+PLUGIN_VERSION = "3.14.1"
 DRAWING_CHANNEL_TEMPLATE_KEY = "drawing_channel"
 _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -2049,13 +2049,15 @@ class LinghuiDashboardApi:
             image_bytes = await asyncio.to_thread(image_path.read_bytes)
             delivery_status = "sent"
             try:
-                await self.plugin.context.send_message(
+                found_platform = await self.plugin.context.send_message(
                     session_id,
                     MessageChain([
                         MessageImage.fromBytes(image_bytes),
                         Plain("\nDashboard 已重发这张成功图片。"),
                     ]),
                 )
+                if found_platform is False:
+                    raise ValueError("未找到任务会话对应的平台")
             except Exception as exc:
                 if not is_ambiguous_message_delivery_timeout(exc):
                     return jsonify({
@@ -2063,19 +2065,18 @@ class LinghuiDashboardApi:
                         "message": f"重发失败：{safe_error_summary(exc, 240)}",
                     }), 502
                 delivery_status = "possibly_sent"
-            await self.plugin.data_mgr.update_generation_record_delivery(record_id, delivery_status)
-            updated = await self.plugin.task_mgr.update_task(
-                task_id,
-                status="possibly_sent" if delivery_status == "possibly_sent" else "succeeded",
-                delivery_status=delivery_status,
-                error="",
-                error_category="",
+            updated = await self.plugin._finalize_generated_delivery(
+                task_id, record_id, delivery_status, resend=True,
             )
             return jsonify({
                 "success": True,
                 "message": "平台回执较慢，图片可能已经送达；不会自动重复发送。"
                 if delivery_status == "possibly_sent" else "图片已重发。",
-                "task": self._public_task(updated or task),
+                "task": self._public_task(updated or {
+                    **task, "delivery_status": delivery_status,
+                    "status": "possibly_sent" if delivery_status == "possibly_sent" else "succeeded",
+                    "error": "", "error_category": "",
+                }),
             })
 
         return jsonify({"success": False, "message": "未知任务操作。"}), 400
