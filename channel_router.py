@@ -208,6 +208,7 @@ class DrawingChannelRouter:
             "protocol",
             "image_resolution",
             "image_aspect_ratio",
+            "image_quality",
         ):
             value = channel.get(key)
             if value not in (None, "", []):

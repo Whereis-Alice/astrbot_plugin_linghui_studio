@@ -176,6 +176,13 @@
             ],
             "default": ""
           },
+          "image_quality": {
+            "type": "string",
+            "description": "本渠道 Images API 质量",
+            "hint": "留空继承全局。仅用于 gpt-image-* 的 Images 请求，质量与分辨率独立；高质量通常增加耗时与用量。xhigh/max 仅在模型与渠道支持时使用，不会自动降级。",
+            "options": ["", "auto", "low", "medium", "high", "xhigh", "max"],
+            "default": ""
+          },
           "image_aspect_ratio": {
             "type": "string",
             "description": "本渠道默认比例",
@@ -345,6 +352,13 @@
       "4K"
     ],
     "default": "1K"
+  },
+  "image_quality": {
+    "type": "string",
+    "description": "【绘图渠道与回退】Images API 默认质量",
+    "hint": "仅用于 gpt-image-* 的 Images API。auto 交给模型选择；high 适合较精细的成图，耗时与用量通常更高。xhigh/max 需要对应模型与渠道支持。渠道可单独覆盖，与 1K/2K/4K 分辨率独立。",
+    "options": ["auto", "low", "medium", "high", "xhigh", "max"],
+    "default": "auto"
   },
   "image_aspect_ratio": {
     "type": "string",
@@ -784,9 +798,15 @@
   },
   "persona_description": {
     "type": "text",
-    "description": "【人设与参考图】人设描述",
-    "hint": "描述角色的外观、身份和特征，作为生成人设照片时的基础信息。",
+    "description": "【人设与参考图】外观描述",
+    "hint": "仅描述脸型、发型、发色、身份等稳定外观特征。默认服装请填到独立衣着字段；旧描述保留原样，由你自行整理。",
     "default": "一个友好、自然的虚拟角色。"
+  },
+  "persona_default_outfit": {
+    "type": "text",
+    "description": "【人设与参考图】默认衣着描述",
+    "hint": "优先级最低。仅在用户、LLM 本次方向和今日穿搭都未决定衣着时兜底；明确服装出现后不会加入提示词。留空由模型参考人物图选择。",
+    "default": ""
   },
   "persona_photo_style": {
     "type": "string",

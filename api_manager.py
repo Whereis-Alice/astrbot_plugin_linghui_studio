@@ -629,6 +629,22 @@ class ApiManager:
     def _is_gpt_image_model(model: str) -> bool:
         return str(model or "").strip().lower().startswith("gpt-image")
 
+    def _images_request_options(self, model: str) -> Dict[str, str]:
+        """Quality controls rendering; dimensions remain a separate size parameter."""
+        if not self._is_gpt_image_model(model):
+            return {}
+        quality = str(self.config.get("image_quality", "auto") or "auto").strip().lower()
+        if quality not in {"auto", "low", "medium", "high", "xhigh", "max"}:
+            raise ValueError("无效的 Images API 质量设置")
+        # GPT Image 2+ uses high input fidelity automatically. Sending an
+        # input_fidelity override to those models is unsupported.
+        return {"quality": quality}
+
+    def _images_prompt(self, prompt: str, model: str, resolution: str) -> str:
+        if self._is_gpt_image_model(model) or resolution == "1K":
+            return prompt
+        return f"(Masterpiece, Best Quality, {resolution} Resolution), {prompt}"
+
     def _normalize_gpt_image_edit_generation_params(
             self,
             generation_params: Dict,
@@ -809,7 +825,7 @@ class ApiManager:
             has_input_image,
         )
         res_set = request_params["resolution"]
-        final_prompt = f"(Masterpiece, Best Quality, {res_set} Resolution), {prompt}" if res_set != "1K" else prompt
+        final_prompt = self._images_prompt(prompt, model, res_set)
 
         timeout_val = self.config.get("timeout", 120)
         timeout = aiohttp.ClientTimeout(total=timeout_val)
@@ -822,6 +838,8 @@ class ApiManager:
                 form.add_field("prompt", final_prompt)
                 form.add_field("n", "1")
                 form.add_field("size", request_params["size"])
+                for option, value in self._images_request_options(model).items():
+                    form.add_field(option, value)
                 if not self._is_gpt_image_model(model):
                     form.add_field("response_format", "b64_json")
 
@@ -963,7 +981,7 @@ class ApiManager:
             prompt, self.config.get("image_resolution", "1K")
         )
         res_set = generation_params["resolution"]
-        final_prompt = f"(Masterpiece, Best Quality, {res_set} Resolution), {prompt}" if res_set != "1K" else prompt
+        final_prompt = self._images_prompt(prompt, model, res_set)
 
         # 构造 Images API 请求
         payload = {
@@ -972,6 +990,7 @@ class ApiManager:
             "n": 1,
             "size": generation_params["size"],
         }
+        payload.update(self._images_request_options(model))
         if not str(model).lower().startswith("gpt-image"):
             payload["response_format"] = "b64_json"
 
@@ -1533,7 +1552,7 @@ class ApiManager:
             )
         # 画质强化 Prompt
         res_set = generation_params["resolution"]
-        final_prompt = f"(Masterpiece, Best Quality, {res_set} Resolution), {prompt}" if res_set != "1K" else prompt
+        final_prompt = self._images_prompt(prompt, model, res_set)
 
         if mode == "gemini_official":
             if interface_mode != "custom_endpoint":

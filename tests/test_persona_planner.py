@@ -44,8 +44,9 @@ class PersonaPlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(photos[0]["expression"], self.state["mood"])
         await self.planner.release(token)
         token, photos = await self.plan(request="穿红色连衣裙，wink", visual_request="穿红色连衣裙，wink")
-        self.assertEqual(photos[0]["outfit"], "穿红色连衣裙，wink")
-        self.assertEqual(photos[0]["expression"], "穿红色连衣裙，wink")
+        self.assertEqual(photos[0]["outfit"], "")
+        self.assertEqual(photos[0]["expression"], "")
+        self.assertNotIn("白色针织衫", module.photo_plan_prompt(photos[0]))
         await self.planner.release(token)
 
     async def test_repetition_uses_successful_same_session_photos_and_survives_reload(self):
@@ -72,7 +73,7 @@ class PersonaPlannerTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_batch_explicit_expression_remains_uniform(self):
         token, photos = await self.plan(request="拍三张眨眼的自拍", visual_request="眨眼", count=3)
-        self.assertEqual({photo["expression"] for photo in photos}, {"眨眼"})
+        self.assertEqual({photo["expression"] for photo in photos}, {""})
         for index, success in enumerate((True, False, True)):
             await self.planner.complete_photo(token, index, success)
         self.assertEqual(len(self.planner._history["group-a"]), 2)
@@ -107,10 +108,13 @@ class PersonaPlannerTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_unusual_free_text_direction_is_preserved_in_context_mode(self):
         self.config["persona_expression_mode"] = "context"
-        token, photos = await self.plan(request="窗边 cobalt-blue utility overalls; lifted brows with lips pressed",
+        token, photos = await self.plan(request="来张窗边的照片",
             visual_request="cobalt-blue utility overalls; lifted brows with lips pressed")
-        self.assertIn("utility overalls", photos[0]["outfit"])
-        self.assertIn("lips pressed", photos[0]["expression"])
+        self.assertIn("utility overalls", photos[0]["details"])
+        self.assertIn("lips pressed", photos[0]["details"])
+        self.assertEqual(module.photo_plan_prompt(photos[0]).count("utility overalls"), 1)
+        self.assertEqual(photos[0]["outfit"], "")
+        self.assertEqual(photos[0]["expression"], "")
         self.assertEqual(photos[0]["gaze"], "")
         await self.planner.release(token)
 

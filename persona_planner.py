@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 from typing import Any
 import uuid
+from .persona_prompt import has_gaze_request, has_pose_request, keep_unspecified_suggestions
 
 
 def outfit_mode(config: Any) -> str:
@@ -23,18 +24,18 @@ def expression_mode(config: Any) -> str:
 
 def has_outfit_request(text: str) -> bool:
     return bool(re.search(
-        r"换衣|换装|穿|衣服|裙|制服|校服|女仆|和服|旗袍|汉服|婚纱|西装|礼服|泳装|同款|这件|那件|这套|那套|"
-        r"\b(?:cos(?:play)?|wear(?:ing)?|outfit|dress|shirt|jacket|hoodie|suit|costume|uniform|skirt|clothes)\b",
+        r"换衣|换装|穿|衣服|裙|制服|校服|外套|卫衣|夹克|毛衣|针织|衬衫|裤|女仆|和服|旗袍|汉服|婚纱|西装|礼服|泳装|同款|这件|那件|这套|那套|"
+        r"\b(?:cos(?:play)?|wear(?:ing)?|outfit|dress|shirt|jacket|hoodie|coat|sweater|overalls|trousers|pants|suit|costume|uniform|skirt|clothes)\b",
         str(text or ""), re.I,
     ))
 
 
 def has_expression_request(text: str) -> bool:
     return bool(re.search(
-        r"开心|高兴|难过|伤心|悲伤|忧郁|失落|沮丧|生气|冷淡|害羞|脸红|哭|笑|严肃|慵懒|疲惫|困|兴奋|俏皮|表情|"
+        r"开心|高兴|快乐|愉快|难过|伤心|悲伤|忧郁|失落|沮丧|生气|冷淡|害羞|脸红|哭|笑|严肃|慵懒|疲惫|困|兴奋|俏皮|表情|"
         r"眨眼|闭眼|惊讶|吃惊|嘟嘴|疑惑|认真|无表情|面无表情|咬唇|挑眉|吐舌|委屈|傲娇|不满|眉眼|眼神|嘴角|神态|目光|"
         r"\b(?:wink(?:ing)?|smil(?:e|ing)|laugh(?:ing)?|cry(?:ing)?|angry|sad|shy|surprised|pout(?:ing)?|"
-        r"expression|neutral|serious|sleepy|confused|eyebrows?|lips|gaze|blush(?:ing)?)\b",
+        r"expression|neutral|serious|sleepy|confused|happy|joyful|eyebrows?|brows|lips|gaze|blush(?:ing)?)\b",
         str(text or ""), re.I,
     ))
 
@@ -80,13 +81,13 @@ def parse_photo_plan(value: Any, count: int) -> list[dict[str, str]]:
 
 
 def photo_plan_prompt(photo: dict[str, str]) -> str:
-    details = " ".join(f"{key}: {value}." for key, value in photo.items() if value)
-    return (
-        "Photo-specific visual direction: " + details + " "
-        "The original user's explicit requirements override this suggested direction. "
-        "Preserve facial identity and proportions; eyebrows, gaze, eyelids and mouth shape may change naturally. "
-        "Do not copy the reference image's frozen expression or an automatic smile."
-    )
+    seen = set()
+    parts = []
+    for key, value in photo.items():
+        if value and value not in seen:
+            seen.add(value)
+            parts.append(f"{key}: {value}.")
+    return "Per-photo direction (fills unspecified user details): " + " ".join(parts)
 
 
 class PersonaPhotoPlanner:
@@ -151,7 +152,7 @@ class PersonaPhotoPlanner:
 
     async def plan(
         self, *, session: str, request: str, count: int, daily_state: dict[str, Any], visual_request: str = "",
-        photos: list[dict[str, str]] | None = None,
+        photos: list[dict[str, str]] | None = None, user_request: str | None = None, scene_request: str = "",
     ) -> tuple[str, list[dict[str, str]]]:
         """Use directions already chosen by the calling LLM; no second LLM request."""
         session = str(session or "default")[:300]
@@ -160,23 +161,32 @@ class PersonaPhotoPlanner:
             raise ValueError("Each photo needs its own direction")
         outfit_policy = outfit_mode(self.config)
         expression_policy = expression_mode(self.config)
-        explicit_outfit = has_outfit_request(request) or photos is not None
-        explicit_expression = has_expression_request(request) or photos is not None
-        if visual_request:
-            explicit_outfit = explicit_outfit or outfit_policy == "llm"
-            explicit_expression = explicit_expression or expression_policy == "context"
+        original = str(request if user_request is None else user_request)
+        user_outfit = has_outfit_request(original)
+        user_expression = has_expression_request(original)
+        suggestions = keep_unspecified_suggestions(visual_request, original,
+            outfit_check=has_outfit_request, expression_check=has_expression_request)
         async with self._lock:
             await self._load_locked()
             recent = self._recent_locked(session)
             used = {_clean(photo.get("expression")) for photo in recent}
             result = []
             for index in range(count):
-                photo = dict(photos[index]) if photos is not None else {
-                    "outfit": (_clean(visual_request) or "遵循本次请求中的穿搭要求") if explicit_outfit else str(daily_state.get("outfit") or "沿用参考图中适合当前场景的穿搭"),
-                    "expression": (_clean(visual_request) or "遵循本次请求中的表情要求") if explicit_expression else "",
-                    "gaze": "" if visual_request else _GAZES[index % len(_GAZES)],
-                    "pose": "" if visual_request else "服从用户指定动作；未指定时自然放松",
-                }
+                photo = dict(photos[index]) if photos is not None else {key: "" for key in ("outfit", "expression", "gaze", "pose")}
+                for key, overridden in (("outfit", user_outfit), ("expression", user_expression),
+                    ("gaze", has_gaze_request(original)), ("pose", has_pose_request(original))):
+                    if overridden:
+                        photo[key] = ""  # The original request is kept once in the final prompt.
+                details = keep_unspecified_suggestions(suggestions, " ".join(photo.values()),
+                    outfit_check=has_outfit_request, expression_check=has_expression_request)
+                explicit_outfit = user_outfit or bool(photo.get("outfit")) or has_outfit_request(details) or has_outfit_request(scene_request)
+                explicit_expression = user_expression or bool(photo.get("expression")) or has_expression_request(details) or has_expression_request(scene_request)
+                if details:
+                    photo["details"] = _clean(details, 3000)
+                if not explicit_outfit:
+                    photo["outfit"] = str(daily_state.get("outfit") or self.config.get("persona_default_outfit") or "")
+                if not visual_request and not photo.get("gaze") and not has_gaze_request(original + " " + scene_request):
+                    photo["gaze"] = _GAZES[index % len(_GAZES)]
                 if not explicit_expression and expression_policy == "context":
                     photo["expression"] = "根据本次场景与心情自然表现，眉眼和嘴角不固定微笑"
                     if recent or index:

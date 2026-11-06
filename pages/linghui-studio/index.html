@@ -289,7 +289,8 @@
               <div class="form-grid">
                 <label class="toggle-field"><input id="enable-persona" type="checkbox" /><span class="toggle-copy"><span>启用人设拍照</span><small class="field-hint">关闭后不会响应人设拍照入口，也不会使用人设参考图。</small></span></label>
                 <label class="field"><span>人设名称</span><input id="persona-name" /><small class="field-hint">用于人设提示词中的称呼，不会修改插件名称。</small></label>
-                <label class="field full"><span>人设描述</span><textarea id="persona-description" rows="5"></textarea><small class="field-hint">描述角色外观、身份和特征，作为生成人设照片时的基础信息。</small></label>
+                <label class="field full"><span>外观描述</span><textarea id="persona-description" rows="5"></textarea><small class="field-hint">只填写脸型、发型、发色和身份等稳定特征。现有描述保留原样，请将其中的默认服装自行移到下方。</small></label>
+                <label class="field full"><span>默认衣着描述</span><textarea id="persona-default-outfit" rows="4"></textarea><small class="field-hint">优先级最低，只在用户、LLM 本次方向和今日穿搭都未决定衣着时兜底。明确服装出现后不会追加这段描述。</small></label>
                 <label class="field full"><span>照片风格</span><input id="persona-style" /><small class="field-hint">附加到人设拍照请求的视觉风格，例如自然光、胶片或棚拍风格。</small></label>
                 <label class="field full"><span>人设照片反向提示词</span><textarea id="persona-negative-prompt" rows="4" placeholder="例如：水印、字幕、多余人物、模糊、畸形手指"></textarea><small class="field-hint">仅用于人设自拍、写真和合影，工具调用、指令拍照及多张照片均生效；留空关闭。</small></label>
                 <p class="field-hint full">LLM 可按构图自主选择照片比例；用户指定优先，未选择则用绘图渠道的默认比例，渠道留空时用全局配置。</p>
@@ -332,6 +333,7 @@
               <label class="field"><span>兼容默认模型</span><input id="default-model" /><small class="field-hint">仅在未配置绘图渠道时使用，主要用于图生图和通用请求。</small></label>
               <label class="field"><span>兼容文生图模型</span><input id="default-t2i-model" /><small class="field-hint">仅在未配置绘图渠道时使用；留空则沿用兼容默认模型。</small></label>
               <label class="field"><span>默认分辨率</span><select id="resolution"><option>1K</option><option>2K</option><option>4K</option></select><small class="field-hint">发送给支持该参数的文生图接口；不支持时由渠道服务端自行处理。</small></label>
+              <label class="field"><span>Images API 默认质量</span><select id="image-quality"><option>auto</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select><small class="field-hint">gpt-image-* 的质量参数，与分辨率独立；渠道可单独覆盖。high 适合精细成图，xhigh/max 需要模型和渠道支持。</small></label>
               <label class="field"><span>默认比例</span><select id="aspect-ratio"><option>1:1</option><option>16:9</option><option>9:16</option><option>4:3</option><option>3:4</option><option>3:2</option><option>2:3</option></select><small class="field-hint">文生图的默认画面比例，可在具体请求中被渠道能力限制。</small></label>
               <label class="field"><span>兼容超时（秒）</span><input id="default-timeout" type="number" min="5" /><small class="field-hint">仅在未配置绘图渠道时使用，超过时间后请求会失败并返回错误。</small></label>
               <label class="field"><span>手动指令生图冷却（秒）</span><input id="command-image-cooldown" type="number" min="0" max="3600" /><small class="field-hint">仅限制手动绘图指令和预设指令；按“QQ 用户 ID + 群号”独立计时，不同群互不影响。私聊按用户单独计时；0 表示关闭，不影响 LLM 工具。</small></label>
@@ -420,6 +422,6 @@
       </footer>
     </dialog>
     <div id="toast" class="toast" role="status"></div>
-    <script type="module" src="./app.js?v=3.14.0"></script>
+    <script type="module" src="./app.js?v=3.15.0"></script>
   </body>
 </html>

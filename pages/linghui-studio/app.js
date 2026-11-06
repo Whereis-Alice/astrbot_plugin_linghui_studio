@@ -424,6 +424,7 @@ function channelTemplate(channel = {}, index = 0) {
     daily_limit: channel.daily_limit ?? -1,
     models: channel.models || [],
     image_resolution: channel.image_resolution || "",
+    image_quality: channel.image_quality || "",
     image_aspect_ratio: channel.image_aspect_ratio || "",
     api_keys_masked: channel.api_keys_masked || "",
   };
@@ -458,6 +459,7 @@ function channelTemplate(channel = {}, index = 0) {
         <label class="field"><span>优先级</span><input data-channel="priority" type="number" min="-1000000" max="1000000" value="${item.priority}" /><small class="field-hint">数值越大越先调用，同值按列表顺序。明确指定的主渠道仍优先。</small></label>
         <label class="field"><span>每日总额度（次数）</span><input data-channel="daily_limit" type="number" min="-1" max="2147483647" value="${item.daily_limit}" /><small class="field-hint">全会话共用；-1 不限，0 停用。成功扣 1 次，失败退回；北京时间次日 0 点恢复。</small></label>
         <label class="field"><span>生图分辨率</span><select data-channel="image_resolution">${["", "1K", "2K", "4K"].map(v => `<option value="${v}" ${item.image_resolution === v ? "selected" : ""}>${v || "跟随全局"}</option>`).join("")}</select><small class="field-hint">仅为本渠道默认值；显式参数及提示词尺寸优先。</small></label>
+        <label class="field"><span>Images API 质量</span><select data-channel="image_quality">${["", "auto", "low", "medium", "high", "xhigh", "max"].map(v => `<option value="${v}" ${item.image_quality === v ? "selected" : ""}>${v || "跟随全局"}</option>`).join("")}</select><small class="field-hint">仅用于 gpt-image-* 的 Images 请求；质量与分辨率独立，高质量通常增加耗时与用量。xhigh/max 需要模型与渠道支持。</small></label>
         <label class="field"><span>默认比例</span><select data-channel="image_aspect_ratio">${["", "1:1", "16:9", "9:16", "5:4", "4:5", "4:3", "3:4", "3:2", "2:3", "21:9"].map(v => `<option value="${v}" ${item.image_aspect_ratio === v ? "selected" : ""}>${v || "跟随全局"}</option>`).join("")}</select><small class="field-hint">本渠道指定比例也适用于参考图；提示词及显式参数优先。</small></label>
         <label class="field full"><span>模型回退顺序（每行一个）</span><textarea data-channel="models" rows="3" placeholder="model-a&#10;model-b">${escapeHtml(item.models.join("\n"))}</textarea><small class="field-hint">按顺序尝试完才换渠道。带参考图/文生图专用模型优先，然后此列表；留空沿用默认模型。手动指定模型时只用指定模型。</small></label>
         <label class="field"><span>默认模型</span><input data-channel="model" list="${modelListId}" value="${escapeHtml(item.model)}" /><small class="field-hint">图生图和未指定模型的请求使用此模型。</small></label>
@@ -490,6 +492,7 @@ function readChannels() {
       daily_limit: Number(get("daily_limit").value),
       models: get("models").value.split(/\r?\n/).map(v => v.trim()).filter(Boolean),
       image_resolution: get("image_resolution").value,
+      image_quality: get("image_quality").value,
       image_aspect_ratio: get("image_aspect_ratio").value,
       model: get("model").value.trim(),
       image_edit_model: get("image_edit_model").value.trim(),
@@ -1626,6 +1629,7 @@ function hydrateFields() {
   byId("enable-direct-commands").checked = bool(commands.enable_direct_commands);
   byId("persona-name").value = persona.name || "";
   byId("persona-description").value = persona.description || "";
+  byId("persona-default-outfit").value = persona.default_outfit || "";
   byId("persona-style").value = persona.photo_style || "";
   byId("persona-negative-prompt").value = persona.negative_prompt || "";
   byId("persona-keywords").value = (persona.trigger_keywords || []).join(", ");
@@ -1643,6 +1647,7 @@ function hydrateFields() {
   byId("default-model").value = settings.model || "";
   byId("default-t2i-model").value = settings.text_to_image_model || "";
   byId("resolution").value = settings.image_resolution || "1K";
+  byId("image-quality").value = settings.image_quality || "auto";
   byId("aspect-ratio").value = settings.image_aspect_ratio || "1:1";
   byId("default-timeout").value = settings.timeout ?? 120;
   byId("generation-cache-retention").value = settings.generation_cache_retention_days ?? 7;
@@ -1714,6 +1719,7 @@ function buildPayload() {
       model: value("default-model").trim(),
       text_to_image_model: value("default-t2i-model").trim(),
       image_resolution: value("resolution"),
+      image_quality: value("image-quality"),
       image_aspect_ratio: value("aspect-ratio"),
       timeout: Number(value("default-timeout")) || 120,
       command_cooldown_seconds: Math.max(0, Math.min(3600, Number(value("command-image-cooldown")) || 0)),
@@ -1770,6 +1776,7 @@ function buildPayload() {
     persona: {
       name: value("persona-name").trim(),
       description: value("persona-description").trim(),
+      default_outfit: value("persona-default-outfit").trim(),
       photo_style: value("persona-style").trim(),
       negative_prompt: value("persona-negative-prompt").trim(),
       trigger_keywords: idsFromText(value("persona-keywords")),

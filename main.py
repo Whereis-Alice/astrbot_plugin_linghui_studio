@@ -29,7 +29,8 @@ from .batch_policy import BatchFailureGuard, policy_label
 from .default_presets import ADDITIONAL_DEFAULT_PRESETS, DEFAULT_PRESET_PACK_VERSION
 from .preset_descriptions import preset_description
 from .persona_profile import PersonaProfileManager
-from .persona_planner import PersonaPhotoPlanner, photo_plan_prompt, parse_photo_plan
+from .persona_planner import PersonaPhotoPlanner, photo_plan_prompt, parse_photo_plan, has_outfit_request, has_expression_request
+from .persona_prompt import build_persona_base_prompt, resolve_persona_scene, keep_unspecified_suggestions
 from .persona_dialogue import build_persona_progress_prompts, sanitize_persona_progress_reply
 from .studio_manager import StudioAssetManager
 from .task_manager import GenerationTaskManager
@@ -208,6 +209,9 @@ class LinghuiStudioPlugin(Star):
         "prompt_list",
         "custom_drawing_negative_prompt",
         "persona_negative_prompt",
+        "persona_description",
+        "persona_default_outfit",
+        "image_quality",
         "generation_cache_retention_days",
         "generation_cache_max_mb",
         "generation_cache_trim_ratio",
@@ -964,7 +968,7 @@ class LinghuiStudioPlugin(Star):
                 self._persona_scene_map[key.strip()] = prompt.strip()
         logger.debug(f"LinghuiStudio: 已加载 {len(self._persona_scene_map)} 个场景提示词")
 
-    def _match_persona_scene(self, context_text: str) -> Tuple[str, str]:
+    def _match_persona_scene(self, context_text: str, *, scene_hint: str = "", extra_request: str = "") -> Tuple[str, str]:
         """
         根据上下文匹配场景
 
@@ -974,21 +978,8 @@ class LinghuiStudioPlugin(Star):
         Returns:
             (场景名, 场景提示词)
         """
-        context_lower = (context_text or "").lower()
-
-        # 按关键词长度排序，优先匹配更具体的场景
-        sorted_scenes = sorted(self._persona_scene_map.keys(), key=len, reverse=True)
-
-        for scene_key in sorted_scenes:
-            if scene_key.lower() in context_lower:
-                return scene_key, self._persona_scene_map[scene_key]
-
-        # 未匹配到时，仅使用 JSON 中配置的默认场景提示词；没有就不使用场景提示词
-        default_prompt = (self.conf.get("persona_default_prompt", "") or "").strip()
-        if default_prompt:
-            return "默认", default_prompt
-
-        return "", ""
+        return resolve_persona_scene(scene_hint, extra_request, context_text,
+            self._persona_scene_map, str(self.conf.get("persona_default_prompt", "") or "").strip())
 
     def _build_persona_prompt(self, scene_prompt: str = "", extra_request: str = "") -> str:
         """
@@ -1001,9 +992,7 @@ class LinghuiStudioPlugin(Star):
         Returns:
             完整的提示词
         """
-        persona_name = self.conf.get("persona_name", "小助手")
         persona_desc = self.conf.get("persona_description", "一个可爱的二次元女孩")
-        photo_style = self.conf.get("persona_photo_style", "日常生活风格，自然光线，真实感")
 
         # [修复] 清理人设描述，防止包含框架系统指令
         # 仅保留纯描述部分，截断遇到的 '# 标题' 或 JSON 结构
@@ -1032,26 +1021,7 @@ class LinghuiStudioPlugin(Star):
                     extra_request = extra_request.split(marker)[0]
             extra_request = extra_request.strip()
 
-        prompt_parts = [
-            f"Generate a natural daily life photo of {persona_name}.",
-            f"Character description: {persona_desc}",
-            f"Style: {photo_style}",
-            "The character identity must strictly remain the same as the persona reference image.",
-            "Preserve the face shape, facial identity, hairstyle, hair color, body shape, age appearance, and core character features from the persona reference.",
-            "Identity consistency does not freeze facial expression. Eyebrows, eyelids, gaze and mouth shape may change according to the current photo direction.",
-            "The output must still clearly be the same character from the persona reference, not a different girl with similar clothes.",
-            "Unless the user explicitly asks for a group photo or 合影, show only this one persona character and do not add extra people, standees, posters, cards, mirrors, or reference characters.",
-            "Natural pose and expression, candid moment, high quality, detailed.",
-            "Do NOT include any phones, cameras, or selfie elements in the image."
-        ]
-
-        if scene_prompt:
-            prompt_parts.insert(2, f"Scene: {scene_prompt}")
-
-        if extra_request:
-            prompt_parts.append(f"Additional requirements: {extra_request}")
-
-        return " ".join(prompt_parts)
+        return build_persona_base_prompt({**self.conf, "persona_description": persona_desc}, scene_prompt, extra_request)
 
     async def _load_persona_ref_images(self) -> List[bytes]:
         """加载人设参考图"""
@@ -1912,21 +1882,23 @@ class LinghuiStudioPlugin(Star):
     async def _build_current_time_persona_hint(self, extra_request: str = "") -> str:
         """Return the persisted daily outfit, mood, period, and appearance type hint."""
         try:
-            return await self.persona_profile.build_prompt_hint(extra_request)
+            return await self.persona_profile.build_prompt_hint(extra_request, include_visual_defaults=False)
         except Exception:
             logger.exception("LinghuiStudio: failed to build persona daily-state prompt")
             return ""
 
     async def _plan_persona_photos(self, event: AstrMessageEvent, request: str, base_prompt: str,
                                   count: int, photos: Optional[List[Dict[str, str]]] = None,
-                                  user_request: Optional[str] = None, visual_request: str = ""):
+                                  user_request: Optional[str] = None, visual_request: str = "", scene_request: str = ""):
         """Respect the calling LLM's directions; never make another planning request."""
         state = await self.persona_profile.get_state() if self._get_conf_bool("enable_persona_daily_state", True) else {}
         token, directions = await self.persona_planner.plan(
-            session=event.unified_msg_origin, request=request, count=count, daily_state=state, photos=photos, visual_request=visual_request,
+            session=event.unified_msg_origin, request=request, count=count, daily_state=state, photos=photos,
+            visual_request=visual_request, user_request=user_request, scene_request=scene_request,
         )
-        prompts = [base_prompt + " " + photo_plan_prompt(photo) +
-                   " Original request (highest priority): " + str(request if user_request is None else user_request)
+        prompts = ["The user request is authoritative; per-photo directions only fill unspecified details.\n" +
+                   base_prompt + "\n" + photo_plan_prompt(photo) +
+                   "\nUser request (authoritative): " + str(request if user_request is None else user_request)
                    for photo in directions]
         if count > 1 and photos is None:
             prompts = [prompt + f" Photo {index + 1} of {count}: create one separate image. "
@@ -1946,7 +1918,7 @@ class LinghuiStudioPlugin(Star):
             recent = await self.persona_planner.recent(event.unified_msg_origin)
             hint = (
                 "\n\n[本次人设照片参考] 你已经掌握当前人格与聊天上下文，请自行安排穿搭、表情、视线和动作，"
-                "在 linghui_persona_photo 的 scene_hint / extra_request 中保留具体方向。多张可用 photo_plan 逐张安排。"
+                "在 linghui_persona_photo 的 outfit、expression、gaze、pose 中分别保留决定；scene_hint 只描述场景，extra_request 写其他要求。多张可用 photo_plan 逐张安排。"
                 "根据构图自主选择 aspect_ratio；用户指定比例时严格遵守，无法判断时用 auto 沿用渠道默认比例。"
                 "用户明确要求始终优先，不机械套用温柔微笑；日状态为默认参考，不要求固定同一表情。"
                 "保持角色身份和连续场景的穿搭连贯，强烈情绪需要上下文依据。"
@@ -7426,7 +7398,8 @@ class LinghuiStudioPlugin(Star):
 
     @filter.llm_tool(name="linghui_persona_photo")
     async def persona_photo_tool(self, event: AstrMessageEvent, scene_hint: str = "", extra_request: str = "",
-                                 count: int = 1, photo_plan: str = "", aspect_ratio: str = "auto"):
+                                 count: int = 1, photo_plan: str = "", aspect_ratio: str = "auto",
+                                 outfit: str = "", expression: str = "", gaze: str = "", pose: str = ""):
         '''生成Bot人设角色（你自己）的日常照片或写真。
 
         【唯一指定用途】
@@ -7452,7 +7425,7 @@ class LinghuiStudioPlugin(Star):
         3. 没有明确表达想看照片意愿 → 不要主动发照片
 
         【穿搭与表情由你决定】
-        用户未指定时，根据当前人格与聊天情境，自主在 scene_hint / extra_request 描述适合的穿搭、表情、视线和动作。
+        用户未指定时，根据当前人格与聊天情境，在 outfit、expression、gaze、pose 分别描述穿搭、表情、视线和动作；scene_hint 只描述当前场景，extra_request 保存其他要求。
         不要每次机械写温柔微笑；明确的换装和表情要求必须保留。插件直接尊重你在本次工具调用中已选好的方向，不再另行调用 LLM 规划。多张可以用 photo_plan 逐张安排。
 
         【比例由你按构图决定】
@@ -7469,8 +7442,12 @@ class LinghuiStudioPlugin(Star):
         - 坚决不要为了表现热情而擅自设置大量 count！
 
         Args:
-            scene_hint(string): 场景提示（可选），如"咖啡店"、"公园"等，用于匹配预设场景
+            scene_hint(string): 本次场景（可选）；具体场景优先于预设，避免混入预设动作或时间。
             extra_request(string): 用户的额外要求（可选），如"穿红色衣服"、"微笑"等
+            outfit(string): 本次衣着（可选）；必须遵循用户要求，未指定时可自行决定，默认衣着优先级最低。
+            expression(string): 本次表情（可选）；用户情绪要求优先，避免套用参考图表情。
+            gaze(string): 本次视线方向（可选）。
+            pose(string): 本次动作姿态（可选）。
             count(int): 生成图片的数量，默认1张，最大10张。只有用户明确要求多张时才增大。
             photo_plan(string): 可选的逐张方向 JSON 字符串。格式 {"photos":[{"outfit":"蓝色外套","expression":"认真专注","gaze":"看镜头","pose":"倚栏杆"}]}，每张一项，项数须与 count 一致。通常保持同一套衣服，神态按上下文变化；用户指定统一表情时全部服从。
             aspect_ratio(string): 本批照片的比例，用户明确要求优先，否则可按构图选择 1:1、16:9、9:16、5:4、4:5、4:3、3:4、3:2、2:3、21:9；不确定用 auto 沿用配置。
@@ -7503,7 +7480,8 @@ class LinghuiStudioPlugin(Star):
         # 默认只取当前消息/已展开的引用图片，避免把上一轮生成图误当成“用户补充参考图”。
         user_images = []
         bot_id = self._get_bot_id(event)
-        requested_text = " ".join([str(getattr(event, "message_str", "") or ""), str(scene_hint or ""), str(extra_request or "")]).strip()
+        requested_text = " ".join(str(value or "") for value in (
+            getattr(event, "message_str", ""), scene_hint, extra_request, outfit, expression, gaze, pose)).strip()
         _ref_intent_keywords = [
             "同款", "这件", "那件", "这套", "那套", "这身", "那身",
             "穿这个", "穿那个", "照着", "参考", "参考图", "模仿",
@@ -7557,11 +7535,14 @@ class LinghuiStudioPlugin(Star):
                     context_text += " " + msg.content
 
         # 3. 匹配场景
-        scene_name, scene_prompt = self._match_persona_scene(context_text)
+        scene_name, scene_prompt = self._match_persona_scene(context_text, scene_hint=scene_hint,
+            extra_request=" ".join(str(value or "") for value in (extra_request, outfit, expression, gaze, pose, photo_plan)).strip())
+        scene_prompt = keep_unspecified_suggestions(scene_prompt, str(getattr(event, "message_str", "") or ""),
+            outfit_check=has_outfit_request, expression_check=has_expression_request)
         logger.info(f"人设拍照：场景匹配结果 scene={scene_name}, scene_hint={scene_hint or '无'}")
 
         # 4. 构建完整提示词
-        full_prompt = self._build_persona_prompt(scene_prompt, extra_request)
+        full_prompt = self._build_persona_prompt(scene_prompt)
         full_prompt += " " + await self._build_current_time_persona_hint(requested_text + " " + str(photo_plan or ""))
         if user_images:
             persona_ref_text = " ".join([str(scene_hint or ""), str(extra_request or "")])
@@ -7619,6 +7600,9 @@ class LinghuiStudioPlugin(Star):
                 directions = parse_photo_plan(photo_plan, requested_count)[:count]
             except (ValueError, TypeError):
                 return self._finalize_llm_tool_result("[TOOL_INVALID_ARGUMENT] photo_plan 必须为 JSON，photos 项数与请求数量一致，每项包含 outfit 和 expression。请保留原要求修正参数。")
+        elif any(str(value or "").strip() for value in (outfit, expression, gaze, pose)):
+            directions = [{"outfit": str(outfit or "").strip(), "expression": str(expression or "").strip(),
+                "gaze": str(gaze or "").strip(), "pose": str(pose or "").strip()} for _ in range(count)]
 
         # 7. 检查配额
         gid = norm_id(event.get_group_id())
@@ -7643,12 +7627,10 @@ class LinghuiStudioPlugin(Star):
 
         # 10. 等待拍照任务完成并确认图片已发送，再把成功结果交给二次 LLM 收尾。
         generation_records: List[Dict[str, Any]] = []
-        if scene_hint:
-            full_prompt += " Requested scene and visual requirements: " + scene_hint
         plan_token, photo_prompts = await self._plan_persona_photos(
             event, requested_text, full_prompt, count, directions,
             user_request=str(getattr(event, "message_str", "") or ""),
-            visual_request=" ".join([scene_hint, extra_request])
+            visual_request=extra_request, scene_request=scene_prompt,
         )
         requested_aspect_ratio = None if str(aspect_ratio).strip().lower() in {"", "auto"} else aspect_ratio
         negative_prompt = self._get_persona_negative_prompt()
@@ -7779,10 +7761,12 @@ class LinghuiStudioPlugin(Star):
                     context_text += " " + msg.content
 
         # 匹配场景
-        scene_name, scene_prompt = self._match_persona_scene(context_text)
+        scene_name, scene_prompt = self._match_persona_scene(context_text, scene_hint=scene_hint, extra_request=extra_request)
+        scene_prompt = keep_unspecified_suggestions(scene_prompt, str(getattr(event, "message_str", "") or ""),
+            outfit_check=has_outfit_request, expression_check=has_expression_request)
 
         # 构建提示词
-        full_prompt = self._build_persona_prompt(scene_prompt, extra_request)
+        full_prompt = self._build_persona_prompt(scene_prompt)
         full_prompt += " " + await self._build_current_time_persona_hint(ref_text)
         if user_images:
             if "合影" in ref_text:
@@ -7827,10 +7811,9 @@ class LinghuiStudioPlugin(Star):
             yield event.chain_result([Plain(str(exc))])
             return
 
-        if scene_hint:
-            full_prompt += " Requested scene and visual requirements: " + scene_hint
         plan_token, photo_prompts = await self._plan_persona_photos(
-            event, ref_text, full_prompt, 1, visual_request=ref_text
+            event, ref_text, full_prompt, 1,
+            user_request=str(getattr(event, "message_str", "") or ""), visual_request=extra_request, scene_request=scene_prompt,
         )
         full_prompt = photo_prompts[0]
         negative_prompt = self._get_persona_negative_prompt()

@@ -41,6 +41,10 @@ def normalize_policy(raw: dict[str, Any], old: dict[str, Any] | None = None) -> 
                       (key == "image_aspect_ratio" and not normalize_aspect_ratio(value, ""))):
             raise ValueError(f"渠道 {key} 无效。")
         result[key] = normalized
+    quality = str(raw.get("image_quality", old.get("image_quality", "")) or "").strip().lower()
+    if quality not in {"", "auto", "low", "medium", "high", "xhigh", "max"}:
+        raise ValueError("渠道 image_quality 必须为 auto、low、medium、high、xhigh、max 或留空。")
+    result["image_quality"] = quality
     return result
 
 

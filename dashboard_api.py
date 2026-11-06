@@ -33,7 +33,7 @@ from .channel_policy import normalize_policy as normalize_channel_policy
 
 
 PLUGIN_NAME = "astrbot_plugin_linghui_studio"
-PLUGIN_VERSION = "3.14.1"
+PLUGIN_VERSION = "3.15.0"
 DRAWING_CHANNEL_TEMPLATE_KEY = "drawing_channel"
 _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -402,6 +402,7 @@ class LinghuiDashboardApi:
                 "model": str(self.plugin.conf.get("model", "") or ""),
                 "text_to_image_model": str(self.plugin.conf.get("text_to_image_model", "") or ""),
                 "image_resolution": str(self.plugin.conf.get("image_resolution", "1K") or "1K"),
+                "image_quality": str(self.plugin.conf.get("image_quality", "auto") or "auto"),
                 "image_aspect_ratio": str(self.plugin.conf.get("image_aspect_ratio", "1:1") or "1:1"),
                 "timeout": self._as_int(self.plugin.conf.get("timeout", 120), 5, 900),
                 "command_cooldown_seconds": self._as_int(
@@ -515,6 +516,7 @@ class LinghuiDashboardApi:
             "persona": {
                 "name": str(self.plugin.conf.get("persona_name", "") or ""),
                 "description": str(self.plugin.conf.get("persona_description", "") or ""),
+                "default_outfit": str(self.plugin.conf.get("persona_default_outfit", "") or ""),
                 "photo_style": str(self.plugin.conf.get("persona_photo_style", "") or ""),
                 "negative_prompt": str(self.plugin.conf.get("persona_negative_prompt", "") or ""),
                 "trigger_keywords": persona_keywords,
@@ -712,6 +714,12 @@ class LinghuiDashboardApi:
                 changed_dynamic_keys: set[str] = set()
                 settings = payload.get("settings", {})
                 if isinstance(settings, dict):
+                    if "image_quality" in settings:
+                        quality = str(settings["image_quality"] or "auto").strip().lower()
+                        if quality not in {"auto", "low", "medium", "high", "xhigh", "max"}:
+                            raise ValueError("Images API 质量设置无效。")
+                        self.plugin.conf["image_quality"] = quality
+                        changed_dynamic_keys.add("image_quality")
                     for key in ("model", "text_to_image_model", "image_resolution", "image_aspect_ratio"):
                         if key in settings:
                             self.plugin.conf[key] = str(settings[key] or "").strip()
@@ -880,11 +888,13 @@ class LinghuiDashboardApi:
                     field_map = {
                         "name": "persona_name",
                         "description": "persona_description",
+                        "default_outfit": "persona_default_outfit",
                         "photo_style": "persona_photo_style",
                     }
                     for source, target in field_map.items():
                         if source in persona:
                             self.plugin.conf[target] = str(persona[source] or "").strip()
+                            changed_dynamic_keys.add(target)
                     if "negative_prompt" in persona:
                         self.plugin.conf["persona_negative_prompt"] = str(persona["negative_prompt"] or "").strip()[:12_000]
                         changed_dynamic_keys.add("persona_negative_prompt")
