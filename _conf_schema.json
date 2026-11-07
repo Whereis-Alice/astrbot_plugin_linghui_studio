@@ -1174,6 +1174,45 @@
     "min": 0.01,
     "max": 0.9
   },
+  "qq_image_delivery_mode": {
+    "type": "string",
+    "description": "【图片发送】QQ 图片发送方式",
+    "hint": "auto：仅对 OneBot/aiocqhttp 聊天发送准备副本，大图优先转高质量 JPEG，透明图保留透明度，动图保持原样；original：直接发送原图。Dashboard 缓存、下载、参考图和 PDF 始终保留上游原图。此设置不改变模型生图质量，也不能修复 QQ 客户端或协议端的资源异常。",
+    "default": "auto",
+    "options": ["auto", "original"]
+  },
+  "qq_image_delivery_max_mb": {
+    "type": "int",
+    "description": "【图片发送】QQ 发送副本目标大小（MB）",
+    "hint": "超过目标的大图尝试压缩。JPEG 最多比设定质量降低 5 点，透明图不转 JPEG；如果仍超过目标，会保留较清晰的副本，避免为了体积过度压缩。目标是尽量达到，并非硬性截断。",
+    "default": 2,
+    "min": 1,
+    "max": 20
+  },
+  "qq_image_delivery_max_edge": {
+    "type": "int",
+    "description": "【图片发送】QQ 发送副本最长边（像素）",
+    "hint": "仅在 auto 模式下，超过此尺寸的静态图片等比例缩小；不放大小图。默认 4096，可保留常见 4K 生图尺寸。原始缓存和下载不受影响。",
+    "default": 4096,
+    "min": 512,
+    "max": 8192
+  },
+  "qq_image_delivery_jpeg_quality": {
+    "type": "int",
+    "description": "【图片发送】QQ 发送副本 JPEG 质量",
+    "hint": "默认 95，保留完整色度采样。仅处理超过目标体积或尺寸的静态图片；为了接近目标大小最多降低 5 点，最低 80。",
+    "default": 95,
+    "min": 80,
+    "max": 100
+  },
+  "qq_image_send_concurrency": {
+    "type": "int",
+    "description": "【图片发送】每个 QQ 机器人同时发送图片数",
+    "hint": "默认 1，批量生成可以继续并行，完成后的图片逐张发送，减少 QQ 上传拥塞。按机器人限制同时等待回执的发送请求，Dashboard 重发使用同一队列，不同机器人互不阻塞。平台回执超时后不会自动重复发送。",
+    "default": 1,
+    "min": 1,
+    "max": 4
+  },
   "result_image_download_timeout": {
     "type": "int",
     "description": "【Dashboard 与缓存】结果图片下载超时（秒）",

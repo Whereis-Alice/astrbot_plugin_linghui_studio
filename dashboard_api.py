@@ -33,7 +33,7 @@ from .channel_policy import normalize_policy as normalize_channel_policy
 
 
 PLUGIN_NAME = "astrbot_plugin_linghui_studio"
-PLUGIN_VERSION = "3.15.0"
+PLUGIN_VERSION = "3.16.0"
 DRAWING_CHANNEL_TEMPLATE_KEY = "drawing_channel"
 _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -403,6 +403,11 @@ class LinghuiDashboardApi:
                 "text_to_image_model": str(self.plugin.conf.get("text_to_image_model", "") or ""),
                 "image_resolution": str(self.plugin.conf.get("image_resolution", "1K") or "1K"),
                 "image_quality": str(self.plugin.conf.get("image_quality", "auto") or "auto"),
+                "qq_image_delivery_mode": str(self.plugin.conf.get("qq_image_delivery_mode", "auto") or "auto"),
+                "qq_image_delivery_max_mb": self._as_int(self.plugin.conf.get("qq_image_delivery_max_mb", 2), 1, 20),
+                "qq_image_delivery_max_edge": self._as_int(self.plugin.conf.get("qq_image_delivery_max_edge", 4096), 512, 8192),
+                "qq_image_delivery_jpeg_quality": self._as_int(self.plugin.conf.get("qq_image_delivery_jpeg_quality", 95), 80, 100),
+                "qq_image_send_concurrency": self._as_int(self.plugin.conf.get("qq_image_send_concurrency", 1), 1, 4),
                 "image_aspect_ratio": str(self.plugin.conf.get("image_aspect_ratio", "1:1") or "1:1"),
                 "timeout": self._as_int(self.plugin.conf.get("timeout", 120), 5, 900),
                 "command_cooldown_seconds": self._as_int(
@@ -726,6 +731,10 @@ class LinghuiDashboardApi:
                             if key in {"model", "text_to_image_model"}:
                                 changed_dynamic_keys.add(key)
                     for key, minimum, maximum in (
+                        ("qq_image_delivery_max_mb", 1, 20),
+                        ("qq_image_delivery_max_edge", 512, 8192),
+                        ("qq_image_delivery_jpeg_quality", 80, 100),
+                        ("qq_image_send_concurrency", 1, 4),
                         ("timeout", 5, 900),
                         ("command_cooldown_seconds", 0, 3600),
                         ("generation_cache_retention_days", 1, 365),
@@ -737,8 +746,14 @@ class LinghuiDashboardApi:
                     ):
                         if key in settings:
                             self.plugin.conf[key] = self._as_int(settings[key], minimum, maximum)
-                            if key in {"command_cooldown_seconds", "generation_cache_retention_days", "generation_cache_max_mb"}:
+                            if key.startswith("qq_image_") or key in {"command_cooldown_seconds", "generation_cache_retention_days", "generation_cache_max_mb"}:
                                 changed_dynamic_keys.add(key)
+                    if "qq_image_delivery_mode" in settings:
+                        mode = str(settings["qq_image_delivery_mode"] or "auto")
+                        if mode not in {"auto", "original"}:
+                            raise ValueError("QQ 图片发送方式必须为 auto 或 original。")
+                        self.plugin.conf["qq_image_delivery_mode"] = mode
+                        changed_dynamic_keys.add("qq_image_delivery_mode")
                     if "generation_cache_trim_ratio" in settings:
                         self.plugin.conf["generation_cache_trim_ratio"] = self._as_float(
                             settings["generation_cache_trim_ratio"], 0.01, 0.90
@@ -2059,15 +2074,13 @@ class LinghuiDashboardApi:
             image_bytes = await asyncio.to_thread(image_path.read_bytes)
             delivery_status = "sent"
             try:
-                found_platform = await self.plugin.context.send_message(
+                delivery_status = await self.plugin._send_generated_to_session(
                     session_id,
                     MessageChain([
                         MessageImage.fromBytes(image_bytes),
                         Plain("\nDashboard 已重发这张成功图片。"),
                     ]),
                 )
-                if found_platform is False:
-                    raise ValueError("未找到任务会话对应的平台")
             except Exception as exc:
                 if not is_ambiguous_message_delivery_timeout(exc):
                     return jsonify({

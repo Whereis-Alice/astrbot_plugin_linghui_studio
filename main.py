@@ -2,6 +2,7 @@ import os
 import re
 import asyncio
 import json
+import time
 from functools import wraps
 from datetime import datetime
 from typing import Optional, List, Tuple, Any, Dict, Callable, Awaitable
@@ -20,6 +21,7 @@ from astrbot.core.agent.message import TextPart
 from .quota import QuotaDeniedError
 from .data_manager import DataManager
 from .image_manager import ImageManager
+from .image_delivery import bounded_int, prepare_generated_chain
 from .access_control import AccessPolicy
 from .channel_router import DrawingChannelRouter
 from .channel_policy import extract_channel_option
@@ -2971,28 +2973,105 @@ class LinghuiStudioPlugin(Star):
         )
 
     async def _prepare_send_image_bytes(self, image_bytes: bytes) -> bytes:
-        """发送前保持原图，避免任何有损压缩或缩放。"""
+        """Keep provider originals for history/PDF; prepare copies only at delivery."""
         return image_bytes
 
-    async def _send_generated_result(self, event: AstrMessageEvent, chain: Any) -> str:
-        """Send one completed image result without duplicating QQ late-ACK sends."""
-        try:
-            chain = self._decorate_requester(event, chain)
-            await event.send(chain)
-            return "sent"
-        except Exception as exc:
-            if not is_ambiguous_message_delivery_timeout(exc):
-                raise
-            logger.warning(
-                "Linghui image result has a late QQ send receipt; keeping the completed task successful without retrying: %s",
-                exc,
+    def _image_delivery_platform(
+        self, event=None, session_id: str = ""
+    ) -> Tuple[str, str]:
+        """Resolve adapter type and instance ID, including Dashboard resend sessions."""
+        if event is not None:
+            return (
+                event.get_platform_name()
+                if hasattr(event, "get_platform_name")
+                else "",
+                event.get_platform_id() if hasattr(event, "get_platform_id") else "",
             )
-            return "possibly_sent"
+        platform_id = session_id.split(":", 1)[0]
+        getter = getattr(self.context, "get_platform_inst", None)
+        platform = getter(platform_id) if callable(getter) else None
+        return (platform.meta().name if platform else "", platform_id)
+
+    async def _deliver_generated_chain(
+        self,
+        chain: Any,
+        sender: Callable[[Any], Awaitable[Any]],
+        *,
+        event=None,
+        session_id: str = "",
+    ) -> str:
+        """Bound concurrent QQ uploads and preserve ambiguous receipt semantics."""
+        platform_name, platform_id = self._image_delivery_platform(event, session_id)
+        config = getattr(self, "conf", {})
+        queued_at = time.perf_counter()
+
+        async def deliver() -> str:
+            started = time.perf_counter()
+            prepared = await prepare_generated_chain(chain, config, platform_name)
+            sending_at = time.perf_counter()
+            status = "failed"
+            try:
+                found = await sender(prepared)
+                if found is False:
+                    raise ValueError("未找到任务会话对应的平台")
+                status = "sent"
+                return status
+            except Exception as exc:
+                if not is_ambiguous_message_delivery_timeout(exc):
+                    raise
+                status = "possibly_sent"
+                logger.warning(
+                    "Linghui image result has a late QQ send receipt; keeping the completed task successful without retrying: %s",
+                    safe_error_summary(exc, 240),
+                )
+                return status
+            finally:
+                logger.info(
+                    "Linghui image delivery: adapter=%s queue_ms=%.1f prepare_ms=%.1f send_ms=%.1f status=%s",
+                    platform_name or "unknown",
+                    (started - queued_at) * 1000,
+                    (sending_at - started) * 1000,
+                    (time.perf_counter() - sending_at) * 1000,
+                    status,
+                )
+
+        if platform_name == "aiocqhttp":
+            limit = bounded_int(config.get("qq_image_send_concurrency", 1), 1, 1, 4)
+            if not hasattr(self, "_qq_image_send_semaphores"):
+                self._qq_image_send_semaphores = {}
+            key = (platform_id or platform_name, limit)
+            semaphore = self._qq_image_send_semaphores.setdefault(
+                key, asyncio.Semaphore(limit)
+            )
+            async with semaphore:
+                return await deliver()
+        return await deliver()
+
+    async def _send_generated_result(self, event: AstrMessageEvent, chain: Any) -> str:
+        """Send a generated result through the shared delivery pipeline."""
+        return await self._deliver_generated_chain(
+            self._decorate_requester(event, chain),
+            event.send,
+            event=event,
+        )
+
+    async def _send_generated_to_session(self, session_id: str, chain: Any) -> str:
+        """Use the same preparation and upload gate for Dashboard resends."""
+        return await self._deliver_generated_chain(
+            chain,
+            lambda prepared: self.context.send_message(session_id, prepared),
+            session_id=session_id,
+        )
 
     async def _finalize_generated_delivery(
-            self, task_id: str, record_id: str, delivery_status: str,
-            *, metrics: Optional[Dict[str, Any]] = None,
-            resend: bool = False) -> Optional[Dict[str, Any]]:
+        self,
+        task_id: str,
+        record_id: str,
+        delivery_status: str,
+        *,
+        metrics: Optional[Dict[str, Any]] = None,
+        resend: bool = False,
+    ) -> Optional[Dict[str, Any]]:
         """Save a known send outcome without turning storage errors into send failures."""
         updated = None
         # Finish the task first: history persistence must not leave a sent
@@ -3001,9 +3080,13 @@ class LinghuiStudioPlugin(Star):
             if resend:
                 # Resending does not change the original generation timing or route.
                 updated = await self.task_mgr.update_task(
-                    task_id, delivery_status=delivery_status,
-                    status="possibly_sent" if delivery_status == "possibly_sent" else "succeeded",
-                    error="", error_category="",
+                    task_id,
+                    delivery_status=delivery_status,
+                    status="possibly_sent"
+                    if delivery_status == "possibly_sent"
+                    else "succeeded",
+                    error="",
+                    error_category="",
                 )
             else:
                 updated = await self.task_mgr.finish_success(
@@ -7855,7 +7938,7 @@ class LinghuiStudioPlugin(Star):
             if scene_name:
                 info += f" | 场景: {scene_name}"
             info += f" | 剩余: {quota_str}"
-            yield event.chain_result(self._requester_prefix_nodes(event) + [Image.fromBytes(res), Plain(info)])
+            await self._send_generated_result(event, event.chain_result([Image.fromBytes(res), Plain(info)]))
         else:
             await self._refund_quota(deduction, uid, gid, 1)
             yield event.chain_result(self._notice_nodes(event, f"没弄好: {self._resolve_debug_error_message(res, '这次没弄好，请稍后再试。')}"))

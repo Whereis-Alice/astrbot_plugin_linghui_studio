@@ -1648,6 +1648,11 @@ function hydrateFields() {
   byId("default-t2i-model").value = settings.text_to_image_model || "";
   byId("resolution").value = settings.image_resolution || "1K";
   byId("image-quality").value = settings.image_quality || "auto";
+  byId("qq-image-delivery-mode").value = settings.qq_image_delivery_mode || "auto";
+  byId("qq-image-delivery-max-mb").value = settings.qq_image_delivery_max_mb ?? 2;
+  byId("qq-image-delivery-max-edge").value = settings.qq_image_delivery_max_edge ?? 4096;
+  byId("qq-image-delivery-jpeg-quality").value = settings.qq_image_delivery_jpeg_quality ?? 95;
+  byId("qq-image-send-concurrency").value = settings.qq_image_send_concurrency ?? 1;
   byId("aspect-ratio").value = settings.image_aspect_ratio || "1:1";
   byId("default-timeout").value = settings.timeout ?? 120;
   byId("generation-cache-retention").value = settings.generation_cache_retention_days ?? 7;
@@ -1720,6 +1725,11 @@ function buildPayload() {
       text_to_image_model: value("default-t2i-model").trim(),
       image_resolution: value("resolution"),
       image_quality: value("image-quality"),
+      qq_image_delivery_mode: value("qq-image-delivery-mode"),
+      qq_image_delivery_max_mb: Number(value("qq-image-delivery-max-mb")),
+      qq_image_delivery_max_edge: Number(value("qq-image-delivery-max-edge")),
+      qq_image_delivery_jpeg_quality: Number(value("qq-image-delivery-jpeg-quality")),
+      qq_image_send_concurrency: Number(value("qq-image-send-concurrency")),
       image_aspect_ratio: value("aspect-ratio"),
       timeout: Number(value("default-timeout")) || 120,
       command_cooldown_seconds: Math.max(0, Math.min(3600, Number(value("command-image-cooldown")) || 0)),

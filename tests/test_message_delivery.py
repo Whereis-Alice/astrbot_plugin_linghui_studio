@@ -9,10 +9,11 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from unittest.mock import AsyncMock, Mock, patch
 
 from astrbot.core.message.components import Image, Plain
@@ -35,11 +36,15 @@ ActionFailed, ApiNotAvailable, NetworkError = exceptions.ActionFailed, exception
 def delivery_harness():
     source = ast.parse((ROOT / "main.py").read_text(encoding="utf-8"))
     cls = next(node for node in source.body if isinstance(node, ast.ClassDef) and node.name == "LinghuiStudioPlugin")
-    names = {"_send_generated_result", "_finalize_generated_delivery", "_run_background_task"}
+    names = {"_send_generated_result", "_finalize_generated_delivery", "_run_background_task",
+             "_image_delivery_platform", "_deliver_generated_chain", "_send_generated_to_session"}
     methods = [node for node in cls.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names]
     utils = _load_module("utils")
     namespace = {"AstrMessageEvent": Any, "Optional": Optional, "List": List, "Tuple": Tuple,
-        "Dict": Dict, "Any": Any, "asyncio": asyncio, "datetime": datetime,
+        "Dict": Dict, "Any": Any, "Callable": Callable, "Awaitable": Awaitable,
+        "asyncio": asyncio, "datetime": datetime, "time": time,
+        "bounded_int": _load_module("image_delivery").bounded_int,
+        "prepare_generated_chain": _load_module("image_delivery").prepare_generated_chain,
         "Image": Image, "Plain": Plain, "logger": Mock(),
         "safe_error_summary": _load_module("error_classify").safe_error_summary,
         "QuotaDeniedError": _load_module("quota").QuotaDeniedError}
