@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const source = await readFile(new URL("../pages/linghui-studio/preset-editor.js", import.meta.url), "utf8");
-const { capturePresetDrafts, createPresetDialog, sortedPresetEntries, validateNewPreset } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+const { capturePresetDrafts, createPresetDialog, presetChannelOptions, sortedPresetEntries, validateNewPreset } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
 
 test("groups custom/modified/default and sorts Chinese names and numbers naturally", () => {
   const presets = [
@@ -19,7 +19,7 @@ test("groups custom/modified/default and sorts Chinese names and numbers natural
 
 test("sorted and hidden rows preserve edits by original index, including whitespace", () => {
   const presets = [{ name: "first", prompt: "old1" }, { name: "second", prompt: "old2" }];
-  const row = (index, name, prompt) => ({ dataset: { presetIndex: String(index) }, querySelector: (selector) => ({ value: selector.includes('"name"') ? name : prompt }) });
+  const row = (index, name, prompt) => ({ dataset: { presetIndex: String(index) }, querySelector: (selector) => selector.includes('"channel_id"') ? null : ({ value: selector.includes('"name"') ? name : prompt }) });
   capturePresetDrafts(presets, { querySelectorAll: () => [row(1, "second edited", "\nnew2\n"), row(0, "first", "new1")] });
   assert.deepEqual(presets, [{ name: "first", prompt: "new1" }, { name: "second edited", prompt: "\nnew2\n" }]);
 });
@@ -29,6 +29,23 @@ test("new preset validation rejects incomplete, duplicate and invalid names", ()
     assert.throws(() => validateNewPreset(name, prompt, [{ name: "猫" }]));
   }
   assert.deepEqual(validateNewPreset(" 新预设 ", " \nfirst\nsecond \n"), { name: "新预设", prompt: "first\nsecond" });
+});
+
+test("channel selection preserves missing targets visibly and escapes provider names", () => {
+  const markup = presetChannelOptions([{ id: "gif", name: '<GIF "channel">' }, { id: "off", enabled: false }], "missing");
+  assert.match(markup, /value="missing" selected>不可用/);
+  assert.match(markup, /&lt;GIF &quot;channel&quot;&gt;/);
+  assert.match(markup, /value="off"\s+disabled/);
+  assert.match(markup, /跟随会话/);
+});
+
+test("draft channel and original preset identity survive prompt and name edits", () => {
+  const presets = [{ name: "old", original_name: "old", prompt: "first", channel_id: "gif" }];
+  const values = { name: "new", prompt: "updated", channel_id: "other" };
+  capturePresetDrafts(presets, { querySelectorAll: () => [{ dataset: { presetIndex: "0" },
+    querySelector: (selector) => ({ value: values[selector.match(/"(.+)"/)[1]] }),
+  }] });
+  assert.deepEqual(presets, [{ name: "new", original_name: "old", prompt: "updated", channel_id: "other" }]);
 });
 
 class Element {
@@ -89,6 +106,17 @@ test("one confirmation saves, inserts only the successful preset and closes", as
     assert.equal(f.presets.length, 2);
     assert.equal(f.node("dialog").open, false);
     assert.equal(f.node("submit").disabled, false);
+  } finally { f.restore(); }
+});
+
+test("creating a preset submits the selected channel", async () => {
+  const f = fixture();
+  try {
+    f.dialog.open();
+    f.node("name").value = "GIF 预设"; f.node("prompt").value = "animate";
+    f.node("channel").value = "gif";
+    await f.node("form").emit("submit");
+    assert.deepEqual(f.calls, [{ name: "GIF 预设", prompt: "animate", channel_id: "gif" }]);
   } finally { f.restore(); }
 });
 

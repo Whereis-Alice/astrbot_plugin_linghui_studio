@@ -1,5 +1,5 @@
 import { createImageViewer } from "./image-viewer.js?v=3.14.0";
-import { capturePresetDrafts, createPresetDialog, sortedPresetEntries } from "./preset-editor.js?v=3.14.0";
+import { capturePresetDrafts, createPresetDialog, presetChannelOptions, sortedPresetEntries } from "./preset-editor.js?v=3.17.0";
 
 const bridge = window.AstrBotPluginPage || {
   ready: async () => ({}),
@@ -94,6 +94,7 @@ try {
 } catch { /* 使用默认排序 */ }
 const presetDialog = createPresetDialog({
   getPresets: () => { syncPresetDrafts(); return state.config?.presets || []; },
+  getChannels: () => state.config?.channels || [],
   createPreset: (preset) => bridge.apiPost("preset_create", preset),
   onCreated: (preset) => {
     syncPresetDrafts();
@@ -425,6 +426,10 @@ function channelTemplate(channel = {}, index = 0) {
     models: channel.models || [],
     image_resolution: channel.image_resolution || "",
     image_quality: channel.image_quality || "",
+    image_output_format: channel.image_output_format || "auto",
+    image_frame_count: channel.image_frame_count ?? 9,
+    image_frame_duration_ms: channel.image_frame_duration_ms ?? 200,
+    image_complexity: channel.image_complexity || "auto",
     image_aspect_ratio: channel.image_aspect_ratio || "",
     api_keys_masked: channel.api_keys_masked || "",
   };
@@ -460,6 +465,10 @@ function channelTemplate(channel = {}, index = 0) {
         <label class="field"><span>每日总额度（次数）</span><input data-channel="daily_limit" type="number" min="-1" max="2147483647" value="${item.daily_limit}" /><small class="field-hint">全会话共用；-1 不限，0 停用。成功扣 1 次，失败退回；北京时间次日 0 点恢复。</small></label>
         <label class="field"><span>生图分辨率</span><select data-channel="image_resolution">${["", "1K", "2K", "4K"].map(v => `<option value="${v}" ${item.image_resolution === v ? "selected" : ""}>${v || "跟随全局"}</option>`).join("")}</select><small class="field-hint">仅为本渠道默认值；显式参数及提示词尺寸优先。</small></label>
         <label class="field"><span>Images API 质量</span><select data-channel="image_quality">${["", "auto", "low", "medium", "high", "xhigh", "max"].map(v => `<option value="${v}" ${item.image_quality === v ? "selected" : ""}>${v || "跟随全局"}</option>`).join("")}</select><small class="field-hint">仅用于 gpt-image-* 的 Images 请求；质量与分辨率独立，高质量通常增加耗时与用量。xhigh/max 需要模型与渠道支持。</small></label>
+        <label class="field"><span>输出格式</span><select data-channel="image_output_format">${["auto", "png", "jpeg", "webp", "gif"].map(v => `<option value="${v}" ${item.image_output_format === v ? "selected" : ""}>${v === "auto" ? "auto（模型默认）" : v}</option>`).join("")}</select><small class="field-hint">GIF 需要模型及 Images 渠道支持，例如 GPT Image 2.6；使用自动尺寸并保留完整动画。auto 不发送格式参数，可覆盖全局 GIF 设置。</small></label>
+        <label class="field"><span>GIF 帧数</span><input data-channel="image_frame_count" type="number" min="2" max="16" step="1" value="${item.image_frame_count}" /><small class="field-hint">仅 GIF 请求生效，2–16 帧；更多帧通常增加用量与耗时。</small></label>
+        <label class="field"><span>GIF 每帧时长（毫秒）</span><input data-channel="image_frame_duration_ms" type="number" min="20" max="2000" step="10" value="${item.image_frame_duration_ms}" /><small class="field-hint">仅 GIF 请求生效，20–2000，必须为 10 的倍数。</small></label>
+        <label class="field"><span>Images API 复杂度</span><select data-channel="image_complexity">${["auto", "low", "medium", "high"].map(v => `<option value="${v}" ${item.image_complexity === v ? "selected" : ""}>${v}</option>`).join("")}</select><small class="field-hint">auto 不发送复杂度参数；仅支持此参数的模型和渠道可用。</small></label>
         <label class="field"><span>默认比例</span><select data-channel="image_aspect_ratio">${["", "1:1", "16:9", "9:16", "5:4", "4:5", "4:3", "3:4", "3:2", "2:3", "21:9"].map(v => `<option value="${v}" ${item.image_aspect_ratio === v ? "selected" : ""}>${v || "跟随全局"}</option>`).join("")}</select><small class="field-hint">本渠道指定比例也适用于参考图；提示词及显式参数优先。</small></label>
         <label class="field full"><span>模型回退顺序（每行一个）</span><textarea data-channel="models" rows="3" placeholder="model-a&#10;model-b">${escapeHtml(item.models.join("\n"))}</textarea><small class="field-hint">按顺序尝试完才换渠道。带参考图/文生图专用模型优先，然后此列表；留空沿用默认模型。手动指定模型时只用指定模型。</small></label>
         <label class="field"><span>默认模型</span><input data-channel="model" list="${modelListId}" value="${escapeHtml(item.model)}" /><small class="field-hint">图生图和未指定模型的请求使用此模型。</small></label>
@@ -493,6 +502,10 @@ function readChannels() {
       models: get("models").value.split(/\r?\n/).map(v => v.trim()).filter(Boolean),
       image_resolution: get("image_resolution").value,
       image_quality: get("image_quality").value,
+      image_output_format: get("image_output_format").value,
+      image_frame_count: Number(get("image_frame_count").value),
+      image_frame_duration_ms: Number(get("image_frame_duration_ms").value),
+      image_complexity: get("image_complexity").value,
       image_aspect_ratio: get("image_aspect_ratio").value,
       model: get("model").value.trim(),
       image_edit_model: get("image_edit_model").value.trim(),
@@ -546,6 +559,7 @@ function renderPresets() {
     <div class="preset-row${hidden ? " is-filtered" : ""}" data-preset-index="${index}" data-preset-source="${source}">
       <span class="preset-badge preset-badge-${source}" title="${escapeHtml(badge.title)}">${badge.icon} ${escapeHtml(badge.label)}</span>
       <input data-preset="name" value="${escapeHtml(preset.name)}" placeholder="预设名" />
+      <select data-preset="channel_id" title="指定渠道后不切换到其他渠道；留空跟随会话和默认路由" aria-label="预设指定渠道">${presetChannelOptions(state.config?.channels || [], preset.channel_id || "")}</select>
       <textarea data-preset="prompt" rows="3" placeholder="提示词">${escapeHtml(preset.prompt)}</textarea>
       <button class="remove-button" type="button" data-remove-preset="${index}" title="删除预设" aria-label="删除预设">×</button>
     </div>`;
@@ -1648,6 +1662,10 @@ function hydrateFields() {
   byId("default-t2i-model").value = settings.text_to_image_model || "";
   byId("resolution").value = settings.image_resolution || "1K";
   byId("image-quality").value = settings.image_quality || "auto";
+  byId("image-output-format").value = settings.image_output_format || "auto";
+  byId("image-frame-count").value = settings.image_frame_count ?? 9;
+  byId("image-frame-duration-ms").value = settings.image_frame_duration_ms ?? 200;
+  byId("image-complexity").value = settings.image_complexity || "auto";
   byId("qq-image-delivery-mode").value = settings.qq_image_delivery_mode || "auto";
   byId("qq-image-delivery-max-mb").value = settings.qq_image_delivery_max_mb ?? 2;
   byId("qq-image-delivery-max-edge").value = settings.qq_image_delivery_max_edge ?? 4096;
@@ -1725,6 +1743,10 @@ function buildPayload() {
       text_to_image_model: value("default-t2i-model").trim(),
       image_resolution: value("resolution"),
       image_quality: value("image-quality"),
+      image_output_format: value("image-output-format"),
+      image_frame_count: Number(value("image-frame-count")),
+      image_frame_duration_ms: Number(value("image-frame-duration-ms")),
+      image_complexity: value("image-complexity"),
       qq_image_delivery_mode: value("qq-image-delivery-mode"),
       qq_image_delivery_max_mb: Number(value("qq-image-delivery-max-mb")),
       qq_image_delivery_max_edge: Number(value("qq-image-delivery-max-edge")),

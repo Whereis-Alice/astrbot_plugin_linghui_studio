@@ -209,6 +209,10 @@ class DrawingChannelRouter:
             "image_resolution",
             "image_aspect_ratio",
             "image_quality",
+            "image_output_format",
+            "image_frame_count",
+            "image_frame_duration_ms",
+            "image_complexity",
         ):
             value = channel.get(key)
             if value not in (None, "", []):
@@ -248,7 +252,7 @@ class DrawingChannelRouter:
             return channel_image_edit
         if text_to_image and channel_t2i and (not requested or requested in {global_default, global_t2i}):
             return channel_t2i
-        if channel_default and (not requested or requested == global_default):
+        if channel_default and (not requested or requested in {global_default, global_t2i}):
             return channel_default
         return requested or channel_t2i or channel_default or global_t2i or global_default
 
@@ -358,6 +362,26 @@ class DrawingChannelRouter:
         self._last_metrics = copied
         self._metrics_context.set(copied)
 
+    def _preset_channel_binding(self, preset_name: str) -> str:
+        """Resolve a preset's exact binding without silently routing bad entries."""
+        if not preset_name:
+            return ""
+        bindings = self.config.get("preset_channel_bindings", [])
+        if not isinstance(bindings, list):
+            raise ValueError("预设渠道绑定配置无效，请在 WebUI 重新保存预设。")
+        matches = [
+            item for item in bindings
+            if isinstance(item, dict) and str(item.get("preset", "") or "").strip() == preset_name
+        ]
+        if not matches:
+            return ""
+        if len(matches) > 1:
+            raise ValueError(f"预设 [{preset_name}] 存在重复的渠道绑定，请在 WebUI 修正。")
+        channel_id = matches[0].get("channel_id", "")
+        if not isinstance(channel_id, str) or not channel_id.strip():
+            raise ValueError(f"预设 [{preset_name}] 的绑定渠道为空或无效，请重新选择渠道。")
+        return channel_id.strip()
+
     async def call_api(
         self,
         images: List[bytes],
@@ -374,11 +398,22 @@ class DrawingChannelRouter:
         allow_fallback: bool = True,
         session_id: str = "",
         prefer_config_aspect_ratio: bool = False,
+        preset_name: str = "",
     ) -> bytes | str:
         self._set_last_metrics({})
         explicit_channel = str(preferred_channel_id or "").strip()
-        if explicit_channel and not any(c["id"] == explicit_channel for c in self._raw_channels()):
-            return f"指定渠道 {explicit_channel} 不存在或已被手动禁用，请检查 WebUI 的渠道 ID。"
+        preset_name = str(preset_name or "").strip()
+        try:
+            preset_channel = "" if explicit_channel else self._preset_channel_binding(preset_name)
+        except ValueError as exc:
+            return str(exc)
+        strict_channel = explicit_channel or preset_channel
+        strict_label = f"预设 [{preset_name}] 绑定的渠道" if preset_channel else "指定渠道"
+        if strict_channel and not any(c["id"] == strict_channel for c in self._raw_channels()):
+            return f"{strict_label} {strict_channel} 不存在或已被手动禁用，请检查 WebUI 的渠道 ID。"
+        if preset_channel:
+            # A GIF preset must never fall back to an unrelated still-image route.
+            allow_fallback = False
         prepared_prompt = await self.prompt_processor.prepare(prompt)
         parameter_prompt = prepared_prompt
         prepared_prompt = append_negative_prompt(prepared_prompt, negative_prompt)
@@ -388,21 +423,29 @@ class DrawingChannelRouter:
         # route changes.
         prepared_prompt = append_final_instruction(prepared_prompt, final_instruction)
         session_key = str(session_id or "").strip()
-        channel_override = str(preferred_channel_id or "").strip()
+        channel_override = strict_channel
         session_scoped_channel = ""
         if not channel_override:
             session_scoped_channel = self._session_channel_override(session_key)
             channel_override = session_scoped_channel
-        session_scoped_model = self._session_model_override(session_key, model)
+        session_scoped_model = "" if preset_channel else self._session_model_override(session_key, model)
         if session_scoped_model:
             model = session_scoped_model
         override_meta = {
             "session_id": session_key,
             "session_channel_override": session_scoped_channel,
             "session_model_override": session_scoped_model,
+            "preset_name": preset_name,
+            "preset_channel_binding": preset_channel,
         }
-        if explicit_channel and images and not next(c for c in self._raw_channels() if c["id"] == explicit_channel).get("reference_image_enabled", True):
-            return f"指定渠道 {explicit_channel} 不允许带参考图请求。"
+        if strict_channel:
+            # Prompt preprocessing may await a service while the admin edits
+            # channels. Recheck before selection so a removed binding fails closed.
+            selected = next((c for c in self._raw_channels() if c["id"] == strict_channel), None)
+            if selected is None:
+                return f"{strict_label} {strict_channel} 不存在或已被手动禁用，请检查 WebUI 的渠道 ID。"
+            if images and selected.get("reference_image_enabled", True) is False:
+                return f"{strict_label} {strict_channel} 不允许带参考图请求。"
         channels = self._ordered_channels(
             requires_input_image=bool(images),
             selected_override=channel_override,
@@ -414,11 +457,11 @@ class DrawingChannelRouter:
                 "至少为一个已启用渠道打开‘允许带参考图请求’。"
             )
         if not channels and self.config.get("drawing_channels"):
-            if explicit_channel and images:
-                selected = next(c for c in self._raw_channels() if c["id"] == explicit_channel)
+            if strict_channel and images:
+                selected = next(c for c in self._raw_channels() if c["id"] == strict_channel)
                 if selected.get("reference_image_enabled", True) is False:
-                    return f"指定渠道 {explicit_channel} 不允许带参考图请求。"
-            target = f"指定渠道 {explicit_channel} 的" if explicit_channel else "绘图渠道的"
+                    return f"{strict_label} {strict_channel} 不允许带参考图请求。"
+            target = f"{strict_label} {strict_channel} 的" if strict_channel else "绘图渠道的"
             return f"{target}每日总额度已用完或没有启用的可用渠道；日额度在北京时间次日 00:00 自动恢复。"
         if not channels:
             client = await self._client_for({"id": "legacy"})

@@ -156,6 +156,8 @@ class ImageManager:
 
         try:
             with PILImage.open(io.BytesIO(raw)) as img:
+                if getattr(img, "is_animated", False):
+                    return raw
                 working = img.copy()
                 width, height = working.size
 

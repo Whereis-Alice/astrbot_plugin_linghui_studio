@@ -176,6 +176,47 @@
             ],
             "default": ""
           },
+          "image_output_format": {
+            "type": "string",
+            "description": "本渠道 输出格式",
+            "hint": "auto 不发送格式参数，由模型决定。GIF 需要模型和 Images 渠道支持，例如 GPT Image 2.6；GIF 使用自动尺寸并保留动画原文件。",
+            "options": [
+              "auto",
+              "png",
+              "jpeg",
+              "webp",
+              "gif"
+            ],
+            "default": "auto"
+          },
+          "image_frame_count": {
+            "type": "int",
+            "description": "本渠道 GIF 帧数",
+            "hint": "仅 GIF 请求生效。范围 2–16，更多帧通常增加耗时和用量。",
+            "default": 9,
+            "min": 2,
+            "max": 16
+          },
+          "image_frame_duration_ms": {
+            "type": "int",
+            "description": "本渠道 GIF 每帧时长（毫秒）",
+            "hint": "仅 GIF 请求生效。范围 20–2000，必须为 10 的倍数。",
+            "default": 200,
+            "min": 20,
+            "max": 2000
+          },
+          "image_complexity": {
+            "type": "string",
+            "description": "本渠道 Images API 复杂度",
+            "hint": "auto 不发送该参数；low/medium/high 仅在模型和渠道支持时使用。",
+            "options": [
+              "auto",
+              "low",
+              "medium",
+              "high"
+            ],
+            "default": "auto"
+          },
           "image_quality": {
             "type": "string",
             "description": "本渠道 Images API 质量",
@@ -352,6 +393,47 @@
       "4K"
     ],
     "default": "1K"
+  },
+  "image_output_format": {
+    "type": "string",
+    "description": "【图片设置】输出格式",
+    "hint": "auto 不发送格式参数，由模型决定。GIF 需要模型和 Images 渠道支持，例如 GPT Image 2.6；GIF 使用自动尺寸并保留动画原文件。",
+    "options": [
+      "auto",
+      "png",
+      "jpeg",
+      "webp",
+      "gif"
+    ],
+    "default": "auto"
+  },
+  "image_frame_count": {
+    "type": "int",
+    "description": "【图片设置】GIF 帧数",
+    "hint": "仅 GIF 请求生效。范围 2–16，更多帧通常增加耗时和用量。",
+    "default": 9,
+    "min": 2,
+    "max": 16
+  },
+  "image_frame_duration_ms": {
+    "type": "int",
+    "description": "【图片设置】GIF 每帧时长（毫秒）",
+    "hint": "仅 GIF 请求生效。范围 20–2000，必须为 10 的倍数。",
+    "default": 200,
+    "min": 20,
+    "max": 2000
+  },
+  "image_complexity": {
+    "type": "string",
+    "description": "【图片设置】Images API 复杂度",
+    "hint": "auto 不发送该参数；low/medium/high 仅在模型和渠道支持时使用。",
+    "options": [
+      "auto",
+      "low",
+      "medium",
+      "high"
+    ],
+    "default": "auto"
   },
   "image_quality": {
     "type": "string",
@@ -704,6 +786,31 @@
     "hint": "仅对 #bnn 和“自定义绘图子命令”（默认 #画）生效，包含带图和不带图两种请求。会在翻译/优化完成后以 Negative prompt: ... 形式追加；留空则关闭，不影响预设、#文生图、头像图生图、人设拍照或 LLM 工具。",
     "default": ""
   },
+  "preset_channel_bindings": {
+    "type": "template_list",
+    "description": "【提示词处理】预设指定渠道",
+    "hint": "填写预设名称与渠道 ID。绑定后该预设只走指定渠道，失败不会切换其他渠道；未绑定则跟随会话和默认路由。",
+    "default": [],
+    "templates": {
+      "preset_channel_binding": {
+        "name": "预设渠道绑定",
+        "items": {
+          "preset": {
+            "type": "string",
+            "description": "预设名称",
+            "hint": "填写已存在的预设名称，必须与提示词预设名称完全一致。",
+            "default": ""
+          },
+          "channel_id": {
+            "type": "string",
+            "description": "渠道 ID",
+            "hint": "填写已启用的绘图渠道 ID；绑定预设失败时不会切换其他渠道。",
+            "default": ""
+          }
+        }
+      }
+    }
+  },
   "prompt_list": {
     "type": "list",
     "description": "【提示词与预设】提示词预设",
@@ -763,7 +870,8 @@
       "漏腰:Restyle the referenced adult subject in a tasteful modern outfit with a small fashion-oriented midriff detail, such as a cropped jacket or coordinated high-waist set. Preserve identity, hairstyle, age appearance, body proportions, and the original design language. Use confident natural posing and a fully clothed, non-explicit composition.",
       "半融合:A striking, high-definition frontal portrait of the character from the input photo, with the face perfectly centered. The image blends two styles seamlessly: the left half retains the character's original realistic appearance, including detailed skin textures, natural lighting, and exact facial features from the input image, while the right half transitions into a vibrant manga-style version, featuring bold outlines, expressive eyes, and stylized features typical of high-quality anime art, while preserving recognizable traits (e.g., hair shape, facial structure). The transition between the realistic and manga halves is smooth and gradual, with no visible dividing line, ensuring a natural, cohesive fusion at the center of the face. The blending emphasizes the contrast between realistic and manga aesthetics while maintaining a unified appearance. The background is a neutral, solid color (e.g., soft gray or white) to highlight the fusion effect, with consistent lighting to enhance the artistic impact and no harsh separation.",
       "洗澡:`任务：根据给出图片中的人物，生成一张场景细节丰富画风精美的二次元图片。必须健全的图片不要露点\n前景与主体（床铺）：\n- 画面下方和中心是一张铺着粉红色床单的大床。床单看起来非常凌乱，布满褶皱，并且布满湿痕和黏液。\n- 床上分布散落着图中人物的各种衣服和饰品（上衣，下衣，内衣，袜子/裤袜，腿环，choker，手套等全身衣着），需要分开零散放置，衣服也潮湿且褶皱。\n床上一角放置一张与原来参照图相同的照片。\n- 床上还放置了用过的润滑液瓶\n后景（磨砂玻璃）：\n- 画面的上方是一面巨大的半透明磨砂玻璃\n- 透过磨砂玻璃可以极端模糊看到图中人物除了头发以外无衣物无身体细节一丝不挂但身材完美的外轮廓的面向镜头，趴在玻璃上```",
-      "洗澡2:`任务：根据给出图片中的人物，生成一张场景细节丰富画风精美的二次元图片。必须健全的图片不要露点 前景与主体（床铺）： - 画面下方和中心是一张铺着粉红色床单的大床。床单看起来非常凌乱，布满褶皱，并且布满湿痕和黏液。 - 床上分布散落着图中人物的各种衣服和饰品（上衣，下衣，内衣，袜子/裤袜，腿环，choker，手套等全身衣着），需要分开零散放置，衣服也潮湿且褶皱。 床上一角放置一张与原来参照图相同的照片。 - 床上还放置了用过的润滑液瓶 后景（磨砂玻璃）： - 画面的上方是一面巨大的半透明磨砂玻璃 - 透过磨砂玻璃可以极端模糊看到图中人物除了头发以外无衣物无身体细节一丝不挂但身材完美的外轮廓的面向镜头，趴在玻璃上```"
+      "洗澡2:`任务：根据给出图片中的人物，生成一张场景细节丰富画风精美的二次元图片。必须健全的图片不要露点 前景与主体（床铺）： - 画面下方和中心是一张铺着粉红色床单的大床。床单看起来非常凌乱，布满褶皱，并且布满湿痕和黏液。 - 床上分布散落着图中人物的各种衣服和饰品（上衣，下衣，内衣，袜子/裤袜，腿环，choker，手套等全身衣着），需要分开零散放置，衣服也潮湿且褶皱。 床上一角放置一张与原来参照图相同的照片。 - 床上还放置了用过的润滑液瓶 后景（磨砂玻璃）： - 画面的上方是一面巨大的半透明磨砂玻璃 - 透过磨砂玻璃可以极端模糊看到图中人物除了头发以外无衣物无身体细节一丝不挂但身材完美的外轮廓的面向镜头，趴在玻璃上```",
+      "GIF表情:Create a real animated GIF, not a contact sheet or a still image. Animate the referenced subject with a gentle blink, a small head tilt, and a friendly wave, forming a smooth seamless loop. Preserve the subject's identity, hairstyle, outfit, colors, and original visual style across every frame. Use a fixed camera, a clean background, consistent lighting, and no captions or watermarks. If no reference image is supplied, follow the user's subject description."
     ]
   },
   "enable_preset_ref_images": {

@@ -45,6 +45,25 @@ def normalize_policy(raw: dict[str, Any], old: dict[str, Any] | None = None) -> 
     if quality not in {"", "auto", "low", "medium", "high", "xhigh", "max"}:
         raise ValueError("渠道 image_quality 必须为 auto、low、medium、high、xhigh、max 或留空。")
     result["image_quality"] = quality
+    for key, options in (
+        ("image_output_format", {"auto", "png", "jpeg", "webp", "gif"}),
+        ("image_complexity", {"auto", "low", "medium", "high"}),
+    ):
+        value = raw.get(key, old.get(key, "auto"))
+        if not isinstance(value, str) or value.strip().lower() not in options:
+            raise ValueError(f"渠道 {key} 无效。")
+        result[key] = value.strip().lower()
+    for key, default, minimum, maximum, step in (
+        ("image_frame_count", 9, 2, 16, 1),
+        ("image_frame_duration_ms", 200, 20, 2000, 10),
+    ):
+        value = raw.get(key, old.get(key, default))
+        if isinstance(value, bool) or not re.fullmatch(r"\d+", str(value)):
+            raise ValueError(f"渠道 {key} 必须为整数。")
+        value = int(value)
+        if not minimum <= value <= maximum or value % step:
+            raise ValueError(f"渠道 {key} 必须在 {minimum} 至 {maximum} 之间，且为 {step} 的倍数。")
+        result[key] = value
     return result
 
 

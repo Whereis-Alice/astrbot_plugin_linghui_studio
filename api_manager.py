@@ -26,6 +26,7 @@ from .protocol_adapters import (
 )
 from .response_parsing import (
     extract_mixed_image_payload,
+    image_mime_from_bytes,
     iter_sse_payloads,
     looks_like_sse,
     parse_response_body,
@@ -120,6 +121,16 @@ class ApiManager:
             if result == reference:
                 return index
 
+        # A valid animation can start at the unchanged reference pose. Comparing
+        # its first frame with a still reference would reject the whole GIF.
+        # Byte-identical echoes are still rejected above, including animations.
+        try:
+            with PILImage.open(io.BytesIO(result)) as source:
+                if getattr(source, "is_animated", False):
+                    return None
+        except (OSError, ValueError, EOFError):
+            return None
+
         try:
             result_size, result_sample = cls._normalized_image_sample(result)
         except Exception:
@@ -151,6 +162,16 @@ class ApiManager:
         return None
 
     async def _validate_reference_result(self, result: bytes | str, images: List[bytes]) -> bytes | str:
+        if isinstance(result, bytes) and str(self.config.get("image_output_format", "auto")).strip().lower() == "gif":
+            def is_animated_gif() -> bool:
+                try:
+                    with PILImage.open(io.BytesIO(result)) as image:
+                        return image.format == "GIF" and bool(getattr(image, "is_animated", False))
+                except Exception:
+                    return False
+
+            if not await asyncio.to_thread(is_animated_gif):
+                return "渠道未返回有效的 GIF 动画，请确认模型支持 GIF 且渠道接受 output_format 参数。"
         if not (images and isinstance(result, bytes) and result):
             return result
         match_index = await asyncio.to_thread(self._find_reference_echo, result, images)
@@ -325,6 +346,20 @@ class ApiManager:
                 self.generic_idx += 1
                 return k
 
+    @staticmethod
+    def _base64_image_uri(value: str) -> str:
+        """Label inline output by its signature without re-encoding the image."""
+        encoded = str(value).strip()
+        if encoded.startswith("data:"):
+            return encoded
+        try:
+            head = re.sub(r"\s+", "", encoded)[:64]
+            signature = base64.urlsafe_b64decode(head + "=" * (-len(head) % 4))
+            mime = image_mime_from_bytes(signature) or "image/png"
+        except (ValueError, TypeError):
+            mime = "image/png"
+        return f"data:{mime};base64,{encoded}"
+
     def extract_image_url(self, data: Dict) -> str | None:
         """解析各种奇怪的 API 返回格式"""
         try:
@@ -333,14 +368,14 @@ class ApiManager:
             if "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
                 item = data["data"][0]
                 if "b64_json" in item:
-                    return f"data:image/png;base64,{item['b64_json']}"
+                    return self._base64_image_uri(item['b64_json'])
                 if "url" in item:
                     url_value = item["url"]
                     if isinstance(url_value, str):
                         # 兼容某些接口把纯 base64 误放进 url 字段
                         pure_b64_match = re.fullmatch(r'[A-Za-z0-9+/]{1000,}={0,2}', url_value.strip())
                         if pure_b64_match:
-                            return f"data:image/jpeg;base64,{url_value.strip()}"
+                            return self._base64_image_uri(url_value)
                     return url_value
 
             # ================== 2. OpenAI Chat Completion ==================
@@ -375,11 +410,11 @@ class ApiManager:
                                 if k in args:
                                     value = args[k]
                                     if k == "b64_json" and isinstance(value, str):
-                                        return f"data:image/png;base64,{value}"
+                                        return self._base64_image_uri(value)
                                     if isinstance(value, str):
                                         pure_b64_match = re.fullmatch(r'[A-Za-z0-9+/]{1000,}={0,2}', value.strip())
                                         if pure_b64_match:
-                                            return f"data:image/jpeg;base64,{value.strip()}"
+                                            return self._base64_image_uri(value)
                                     return value
                             
                             # 尝试深度遍历寻找 base64 或 url
@@ -390,10 +425,10 @@ class ApiManager:
                                         if k in ["url", "image_url", "b64_json", "image", "data", "link"]:
                                             if isinstance(v, str):
                                                 if k == "b64_json":
-                                                    return f"data:image/png;base64,{v}"
+                                                    return self._base64_image_uri(v)
                                                 pure_b64_match = re.fullmatch(r'[A-Za-z0-9+/]{1000,}={0,2}', v.strip())
                                                 if pure_b64_match:
-                                                    return f"data:image/jpeg;base64,{v.strip()}"
+                                                    return self._base64_image_uri(v)
                                                 return v
                                         res = find_url(v)
                                         if res: return res
@@ -418,7 +453,7 @@ class ApiManager:
                         # 尝试2: 纯 base64 无前缀
                         pure_b64_match = re.search(r'"([A-Za-z0-9+/]{1000,}={0,2})"', func_args)
                         if pure_b64_match:
-                            return f"data:image/png;base64,{pure_b64_match.group(1)}"
+                            return self._base64_image_uri(pure_b64_match.group(1))
 
                         # 尝试3: 字符串正则直接解析 url/https
                         if "http" in func_args:
@@ -465,7 +500,7 @@ class ApiManager:
                 # 0.5 尝试匹配纯 base64 图片内容
                 pure_b64_match = re.search(r'([A-Za-z0-9+/]{1000,}={0,2})', content)
                 if pure_b64_match:
-                    return f"data:image/jpeg;base64,{pure_b64_match.group(1)}"
+                    return self._base64_image_uri(pure_b64_match.group(1))
 
                 # 1. 尝试匹配 Markdown 图片语法 ![...](url) - 这种更精确
                 # 匹配 ![description](http...)
@@ -629,16 +664,42 @@ class ApiManager:
     def _is_gpt_image_model(model: str) -> bool:
         return str(model or "").strip().lower().startswith("gpt-image")
 
-    def _images_request_options(self, model: str) -> Dict[str, str]:
-        """Quality controls rendering; dimensions remain a separate size parameter."""
-        if not self._is_gpt_image_model(model):
-            return {}
-        quality = str(self.config.get("image_quality", "auto") or "auto").strip().lower()
-        if quality not in {"auto", "low", "medium", "high", "xhigh", "max"}:
-            raise ValueError("无效的 Images API 质量设置")
+    def _images_request_options(self, model: str) -> dict[str, Any]:
+        """Build explicit Images options, retaining defaults for older models."""
+        options: dict[str, Any] = {}
+        if self._is_gpt_image_model(model):
+            quality = str(self.config.get("image_quality", "auto") or "auto").strip().lower()
+            if quality not in {"auto", "low", "medium", "high", "xhigh", "max"}:
+                raise ValueError("无效的 Images API 质量设置")
+            options["quality"] = quality
         # GPT Image 2+ uses high input fidelity automatically. Sending an
         # input_fidelity override to those models is unsupported.
-        return {"quality": quality}
+        output_format = str(self.config.get("image_output_format", "auto") or "auto").strip().lower()
+        if output_format not in {"auto", "png", "jpeg", "webp", "gif"}:
+            raise ValueError("无效的 Images API 输出格式")
+        if output_format != "auto":
+            options["output_format"] = output_format
+        complexity = str(self.config.get("image_complexity", "auto") or "auto").strip().lower()
+        if complexity not in {"auto", "low", "medium", "high"}:
+            raise ValueError("无效的 Images API 复杂度设置")
+        if complexity != "auto":
+            options["complexity"] = complexity
+        if output_format == "gif":
+            for name, default, minimum, maximum in (
+                ("frame_count", 9, 2, 16),
+                ("frame_duration_ms", 200, 20, 2000),
+            ):
+                raw = self.config.get(f"image_{name}", default)
+                if isinstance(raw, bool) or not re.fullmatch(r"\d+", str(raw)):
+                    raise ValueError(f"GIF {name} 必须为整数")
+                value = int(raw)
+                if not minimum <= value <= maximum or (name == "frame_duration_ms" and value % 10):
+                    raise ValueError(f"GIF {name} 无效，请检查取值范围和帧间隔")
+                options[name] = value
+            # Finished frames share a total pixel budget. Let the model choose
+            # dimensions rather than multiply a static 4K setting by 9 frames.
+            options["size"] = "auto"
+        return options
 
     def _images_prompt(self, prompt: str, model: str, resolution: str) -> str:
         if self._is_gpt_image_model(model) or resolution == "1K":
@@ -837,9 +898,10 @@ class ApiManager:
                 form.add_field("model", model)
                 form.add_field("prompt", final_prompt)
                 form.add_field("n", "1")
-                form.add_field("size", request_params["size"])
-                for option, value in self._images_request_options(model).items():
-                    form.add_field(option, value)
+                options = self._images_request_options(model)
+                form.add_field("size", options.pop("size", request_params["size"]))
+                for option, value in options.items():
+                    form.add_field(option, str(value))
                 if not self._is_gpt_image_model(model):
                     form.add_field("response_format", "b64_json")
 
@@ -918,6 +980,7 @@ class ApiManager:
             if (
                 not exact_endpoint and not size_retried
                 and self._is_gpt_image_model(model)
+                and str(self.config.get("image_output_format", "auto")).strip().lower() != "gif"
                 and params.get("size") != "1024x1024"
                 and self._is_size_compatibility_error(result)
             ):
@@ -1447,6 +1510,10 @@ class ApiManager:
         """Bound protocol fallback to one attempt per interface and one key."""
         self._reset_metrics()
         protocol = normalize_protocol(self.config.get("protocol", PROTOCOL_AUTO))
+        gif_requested = str(self.config.get("image_output_format", "auto")).strip().lower() == "gif"
+        interface_mode = str(interface_override or self._get_interface_mode()).strip().lower()
+        if gif_requested and (is_native_protocol(protocol) or interface_mode not in {"auto", "openai_image"}):
+            return "GIF 输出需要 OpenAI Images 接口，请将渠道接口模式设为 auto 或 openai_image，并使用支持 GIF 的模型。"
         if is_native_protocol(protocol):
             return await self._call_native_protocol_api(
                 protocol, images, prompt, model, proxy,
@@ -1455,8 +1522,9 @@ class ApiManager:
                 resolution=resolution,
             )
 
-        interface_mode = str(interface_override or self._get_interface_mode()).strip().lower()
-        if interface_mode == "auto":
+        if gif_requested:
+            interfaces = ["openai_image"]
+        elif interface_mode == "auto":
             interfaces = self._auto_interface_order(model, bool(images))
         elif interface_override or interface_mode not in {"openai_image", "openai_chat"}:
             interfaces = [interface_mode]
@@ -1476,7 +1544,12 @@ class ApiManager:
                 use_text_to_image_api=use_text_to_image_api,
                 aspect_ratio=aspect_ratio, resolution=resolution,
             )
-            if index + 1 == len(interfaces) or not self._is_transport_compatibility_error(result):
+            if (
+                index + 1 == len(interfaces)
+                or not self._is_transport_compatibility_error(result)
+                # Chat Completions cannot carry the animated Images contract.
+                or (transport == "openai_image" and str(self.config.get("image_output_format", "auto")).strip().lower() == "gif")
+            ):
                 return result
             logger.warning(
                 "Drawing interface %s rejected the request (%s); trying %s once.",
@@ -1833,7 +1906,7 @@ class ApiManager:
                     pure_b64_match = re.search(r'"([A-Za-z0-9+/]{1000,}={0,2})"', resp_text)
                     if pure_b64_match:
                         logger.warning("在非JSON/非标准流解析失败分支中找到了纯base64，已挽救")
-                        img_url = f"data:image/png;base64,{pure_b64_match.group(1)}"
+                        img_url = self._base64_image_uri(pure_b64_match.group(1))
                         return base64.b64decode(img_url.split(",")[-1])
 
                     return f"数据解析失败: 返回内容不是 JSON. 内容: {resp_text[:100]}... | URL: {active_url}"
@@ -1856,7 +1929,7 @@ class ApiManager:
                 pure_b64_match = re.search(r'"([A-Za-z0-9+/]{1000,}={0,2})"', raw_str)
                 if pure_b64_match:
                     logger.warning("在报错分支的终极fallback中找到了纯base64，已挽救")
-                    img_url = f"data:image/png;base64,{pure_b64_match.group(1)}"
+                    img_url = self._base64_image_uri(pure_b64_match.group(1))
 
             if not img_url:
                 raw_resp_b64_match = re.search(r'(data:image\/[\w\-\+\.]+(?:;base64)?,[\w\-\+\/=\s]{100,})', resp_text)

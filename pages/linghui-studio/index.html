@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>灵绘工坊</title>
     <link rel="icon" type="image/svg+xml" href="./assets/linghui-logo.svg" />
-    <link rel="stylesheet" href="./style.css?v=3.14.0" />
+    <link rel="stylesheet" href="./style.css?v=3.17.0" />
   </head>
   <body>
     <main class="shell">
@@ -334,6 +334,10 @@
               <label class="field"><span>兼容文生图模型</span><input id="default-t2i-model" /><small class="field-hint">仅在未配置绘图渠道时使用；留空则沿用兼容默认模型。</small></label>
               <label class="field"><span>默认分辨率</span><select id="resolution"><option>1K</option><option>2K</option><option>4K</option></select><small class="field-hint">发送给支持该参数的文生图接口；不支持时由渠道服务端自行处理。</small></label>
               <label class="field"><span>Images API 默认质量</span><select id="image-quality"><option>auto</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select><small class="field-hint">gpt-image-* 的质量参数，与分辨率独立；渠道可单独覆盖。high 适合精细成图，xhigh/max 需要模型和渠道支持。</small></label>
+              <label class="field"><span>Images API 默认输出格式</span><select id="image-output-format"><option>auto</option><option>png</option><option>jpeg</option><option>webp</option><option>gif</option></select><small class="field-hint">auto 由模型决定；GIF 需要相应模型与渠道支持，例如 GPT Image 2.6。建议在独立 GIF 渠道设置，再将 GIF 预设绑定该渠道。</small></label>
+              <label class="field"><span>GIF 帧数</span><input id="image-frame-count" type="number" min="2" max="16" step="1" /><small class="field-hint">仅 GIF 请求生效，默认 9，范围 2–16。</small></label>
+              <label class="field"><span>GIF 每帧时长（毫秒）</span><input id="image-frame-duration-ms" type="number" min="20" max="2000" step="10" /><small class="field-hint">仅 GIF 请求生效，默认 200；20–2000 且为 10 的倍数。</small></label>
+              <label class="field"><span>Images API 默认复杂度</span><select id="image-complexity"><option>auto</option><option>low</option><option>medium</option><option>high</option></select><small class="field-hint">auto 不发送参数；其他值需要模型及渠道支持。</small></label>
               <label class="field"><span>QQ 图片发送方式</span><select id="qq-image-delivery-mode"><option value="auto">自动优化发送副本</option><option value="original">发送原图</option></select><small class="field-hint">仅用于 OneBot QQ。大图使用高质量副本降低上传量；成功记录、下载和 PDF 保留完整原图，透明图和动图保留特性。</small></label>
               <label class="field"><span>QQ 发送副本目标大小（MB）</span><input id="qq-image-delivery-max-mb" type="number" min="1" max="20" /><small class="field-hint">默认 2 MB，尽量达到；不会为了体积过度降低画质。透明图片可能超过目标。</small></label>
               <label class="field"><span>QQ 发送副本最长边（像素）</span><input id="qq-image-delivery-max-edge" type="number" min="512" max="8192" /><small class="field-hint">默认 4096；仅缩小超过设定尺寸的静态图片，等比例处理。</small></label>
@@ -390,6 +394,7 @@
         <div><h2 id="preset-create-title">添加预设</h2><p id="preset-create-help" class="field-hint">填写后点“确认添加”即可保存。</p></div>
         <label class="field"><span>预设名称</span><input id="preset-create-name" placeholder="例如：雨夜街景" maxlength="48" autocomplete="off" /><small class="field-hint">最多 48 个字符，不能包含冒号或换行，也不能与已有预设重名。</small></label>
         <label class="field"><span>提示词</span><textarea id="preset-create-prompt" rows="8" maxlength="12000" placeholder="描述画面、风格、构图和需要保留的要求"></textarea></label>
+        <label class="field"><span>指定渠道（可选）</span><select id="preset-create-channel"></select><small class="field-hint">留空跟随会话和默认渠道。绑定后失败不会切换到其他渠道，适合使用专门的 GIF 渠道。</small></label>
         <p id="preset-create-error" class="preset-create-error" role="alert" hidden></p>
         <div class="confirm-actions"><button id="preset-create-cancel" class="quiet-action" type="button">取消</button><button id="preset-create-submit" class="primary-action" type="submit">确认添加</button></div>
       </form>
@@ -427,6 +432,6 @@
       </footer>
     </dialog>
     <div id="toast" class="toast" role="status"></div>
-    <script type="module" src="./app.js?v=3.15.0"></script>
+    <script type="module" src="./app.js?v=3.17.0"></script>
   </body>
 </html>

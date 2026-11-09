@@ -28,7 +28,7 @@ from .channel_policy import extract_channel_option
 from .error_classify import safe_error_summary
 from .session_overrides import SessionOverrideStore
 from .batch_policy import BatchFailureGuard, policy_label
-from .default_presets import ADDITIONAL_DEFAULT_PRESETS, DEFAULT_PRESET_PACK_VERSION
+from .default_presets import DEFAULT_PRESET_PACK_VERSION, presets_for_upgrade
 from .preset_descriptions import preset_description
 from .persona_profile import PersonaProfileManager
 from .persona_planner import PersonaPhotoPlanner, photo_plan_prompt, parse_photo_plan, has_outfit_request, has_expression_request
@@ -209,6 +209,11 @@ class LinghuiStudioPlugin(Star):
         "api_keys",
         "api_mode",
         "prompt_list",
+        "preset_channel_bindings",
+        "image_output_format",
+        "image_frame_count",
+        "image_frame_duration_ms",
+        "image_complexity",
         "custom_drawing_negative_prompt",
         "persona_negative_prompt",
         "persona_description",
@@ -569,7 +574,7 @@ class LinghuiStudioPlugin(Star):
             if isinstance(item, str) and ":" in item
         }
         updated = list(prompt_list)
-        for name, prompt in ADDITIONAL_DEFAULT_PRESETS.items():
+        for name, prompt in presets_for_upgrade(installed_version).items():
             if name not in existing_names:
                 updated.append(f"{name}:{prompt}")
         self.conf["prompt_list"] = updated
@@ -3173,6 +3178,7 @@ class LinghuiStudioPlugin(Star):
             preferred_channel_id: str = None,
             allow_fallback: bool = True,
             session_id: str = "",
+            preset_name: str = "",
             prefer_config_aspect_ratio: bool = False,
     ) -> bytes | str:
         runtime_task = asyncio.create_task(self.api_mgr.call_api(
@@ -3190,6 +3196,7 @@ class LinghuiStudioPlugin(Star):
             allow_fallback=allow_fallback,
             session_id=session_id,
             prefer_config_aspect_ratio=prefer_config_aspect_ratio,
+            preset_name=preset_name,
         ))
         await self.task_mgr.attach_runtime_task(task_id, runtime_task)
         try:
@@ -3512,6 +3519,7 @@ class LinghuiStudioPlugin(Star):
                     session_id=event.unified_msg_origin,
                     negative_prompt=negative_prompt,
                     prefer_config_aspect_ratio=prefer_config_aspect_ratio,
+                    preset_name=preset_name,
                 )
                 if isinstance(res, bytes) or not self._is_transient_generation_error(res) or attempt == 1:
                     break
@@ -3722,6 +3730,7 @@ class LinghuiStudioPlugin(Star):
                                 use_text_to_image_api=True,
                                 aspect_ratio=aspect_ratio, resolution=resolution,
                                 session_id=event.unified_msg_origin,
+                                preset_name=preset_name,
                             )
 
                             if isinstance(res, bytes):
@@ -3897,6 +3906,7 @@ class LinghuiStudioPlugin(Star):
                                 session_id=event.unified_msg_origin,
                                 aspect_ratio=aspect_ratio, negative_prompt=negative_prompt,
                                 prefer_config_aspect_ratio=prefer_config_aspect_ratio,
+                                preset_name=preset_name,
                             )
 
                             if isinstance(res, bytes):
@@ -4775,6 +4785,7 @@ class LinghuiStudioPlugin(Star):
                 preferred_channel_id=preferred_channel_id or None,
                 allow_fallback=not bool(preferred_channel_id),
                 session_id=event.unified_msg_origin,
+                preset_name=preset_name,
             )
         except asyncio.CancelledError:
             if charged:
@@ -5107,8 +5118,12 @@ class LinghuiStudioPlugin(Star):
         # 删除这个预设绑定的参考图，避免列表里没有预设但参考图索引还残留。
         ref_count = await self.data_mgr.clear_preset_ref_images(name)
 
+        self.conf["preset_channel_bindings"] = [
+            item for item in self.conf.get("preset_channel_bindings", []) or []
+            if not isinstance(item, dict) or str(item.get("preset", "")).strip() != name
+        ]
         self.data_mgr.reload_prompts()
-        self._save_config(["prompt_list"])
+        self._save_config(["prompt_list", "preset_channel_bindings"])
 
         details = []
         if removed_runtime:
@@ -6650,6 +6665,7 @@ class LinghuiStudioPlugin(Star):
             res = await self.api_mgr.call_api(
                 images, prompt, model, False, self.img_mgr.proxy,
                 session_id=event.unified_msg_origin,
+                preset_name=preset_name,
             )
 
             # 处理结果
@@ -7008,6 +7024,7 @@ class LinghuiStudioPlugin(Star):
                                 res = await self.api_mgr.call_api(
                                     images, final_prompt, model, False, self.img_mgr.proxy,
                                     session_id=event.unified_msg_origin,
+                                    preset_name=preset_name,
                                 )
                                 if isinstance(res, bytes):
                                     route_metrics = self._snapshot_generation_route_metrics()
@@ -7318,6 +7335,7 @@ class LinghuiStudioPlugin(Star):
                                 res = await self.api_mgr.call_api(
                                     images, final_prompt, model, False, self.img_mgr.proxy,
                                     session_id=event.unified_msg_origin,
+                                    preset_name=preset_name,
                                 )
                                 if isinstance(res, bytes):
                                     route_metrics = self._snapshot_generation_route_metrics()

@@ -37,16 +37,32 @@ def _ensure_test_package():
 def _load_module(name, *, with_quart=False):
     _ensure_test_package()
     if with_quart and "quart" not in sys.modules:
-        quart = types.ModuleType("quart")
-        quart.jsonify = lambda payload: payload
-        quart.request = types.SimpleNamespace(args={})
+        try:
+            importlib.import_module("quart")
+        except ImportError:
+            sys.modules["quart"] = types.ModuleType("quart")
+    if with_quart:
+        # Patch this module's bindings instead of replacing Quart globally;
+        # the real OneBot SDK also imports Quart in mixed regression suites.
+        quart = sys.modules["quart"]
+        if not hasattr(quart, "jsonify"):
+            quart.jsonify = lambda payload: payload
+            quart.request = types.SimpleNamespace(args={})
+
+            async def placeholder_send_file(*args, **kwargs):
+                return args, kwargs
+
+            quart.send_file = placeholder_send_file
+    module = importlib.import_module(f"{PACKAGE}.{name}")
+    if with_quart:
+        module.jsonify = lambda payload: payload
+        module.request = types.SimpleNamespace(args={})
 
         async def send_file(*args, **kwargs):
             return args, kwargs
 
-        quart.send_file = send_file
-        sys.modules["quart"] = quart
-    return importlib.import_module(f"{PACKAGE}.{name}")
+        module.send_file = send_file
+    return module
 
 
 class AccessPolicyTest(unittest.TestCase):
@@ -141,11 +157,11 @@ class ConfigurationDocumentationTest(unittest.TestCase):
             "半融合", "洗澡", "洗澡2",
         }
         enhanced_names = {
-            "捧脸", "变真人", "果冻化", "变COS", "漫画封面", "证件照", "男友视角", "漏腰",
+            "捧脸", "变真人", "果冻化", "变COS", "漫画封面", "证件照", "男友视角", "漏腰", "GIF表情",
         }
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(set(names), upstream_names | enhanced_names)
-        self.assertEqual(len(names), 52)
+        self.assertEqual(len(names), 53)
 
     def test_upstream_public_command_aliases_remain_registered(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -446,8 +462,8 @@ class DashboardRegistrationTest(unittest.TestCase):
         )
         rows = self.DashboardApi(plugin)._preset_rows()
         self.assertEqual(rows, [
-            {"name": "chat", "prompt": "from chat", "source": "custom"},
-            {"name": "config", "prompt": "chat override", "source": "custom"},
+            {"name": "chat", "original_name": "chat", "prompt": "from chat", "source": "custom", "channel_id": ""},
+            {"name": "config", "original_name": "config", "prompt": "chat override", "source": "custom", "channel_id": ""},
         ])
 
     def test_dashboard_preserves_or_clears_a_masked_channel_key_explicitly(self):

@@ -695,7 +695,7 @@ h3 { color: var(--subtle); font-size: 14px; }
 .field { display: grid; min-width: 0; gap: 6px; color: var(--subtle); font-size: 13px; }
 .field.full { grid-column: 1 / -1; }
 .field.compact { width: min(360px, 100%); margin-bottom: 14px; }
-.field input, .field select, .field textarea, .credit-form input, .credit-form select, .preset-row input, .preset-row textarea {
+.field input, .field select, .field textarea, .credit-form input, .credit-form select, .preset-row input, .preset-row select, .preset-row textarea {
   width: 100%;
   padding: 8px 9px;
   border: 1px solid var(--line-strong);
@@ -707,7 +707,7 @@ h3 { color: var(--subtle); font-size: 14px; }
   transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
 }
 .field textarea { min-height: 68px; resize: vertical; line-height: 1.45; }
-.field input:focus, .field select:focus, .field textarea:focus, .credit-form input:focus, .credit-form select:focus, .preset-row input:focus, .preset-row textarea:focus { border-color: var(--cyan); background: var(--surface-hover); box-shadow: 0 0 0 2px var(--focus); }
+.field input:focus, .field select:focus, .field textarea:focus, .credit-form input:focus, .credit-form select:focus, .preset-row input:focus, .preset-row select:focus, .preset-row textarea:focus { border-color: var(--cyan); background: var(--surface-hover); box-shadow: 0 0 0 2px var(--focus); }
 .field-hint { display: block; color: var(--muted); font-size: 12px; line-height: 1.45; }
 .field-hint code { color: var(--cyan); font-size: inherit; }
 .toggle-field { min-height: 36px; padding: 3px 0; display: flex; align-items: flex-start; gap: 8px; color: var(--subtle); font-size: 13px; }
@@ -760,7 +760,7 @@ h3 { color: var(--subtle); font-size: 14px; }
 .preset-create-panel h2 { margin: 0 0 6px; color: var(--ink); font-size: 18px; }
 .preset-create-panel textarea { min-height: 180px; max-height: 45dvh; resize: vertical; }
 .preset-create-error { margin: 0; color: var(--red); font-size: 13px; overflow-wrap: anywhere; }
-.preset-row { display: grid; grid-template-columns: 82px 150px minmax(0, 1fr) 28px; align-items: start; gap: 8px; }
+.preset-row { display: grid; grid-template-columns: 82px 140px minmax(150px, 190px) minmax(0, 1fr) 28px; align-items: start; gap: 8px; }
 .preset-row.is-filtered { display: none; }
 .preset-row textarea { min-height: 36px; resize: vertical; line-height: 1.4; }
 .preset-badge { min-width: 0; min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 3px; overflow: hidden; padding: 3px 5px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); background: var(--input); font-size: 11px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; cursor: help; }
@@ -1148,6 +1148,7 @@ html[data-theme="terminal"] .field textarea,
 html[data-theme="terminal"] .credit-form input,
 html[data-theme="terminal"] .credit-form select,
 html[data-theme="terminal"] .preset-row input,
+html[data-theme="terminal"] .preset-row select,
 html[data-theme="terminal"] .preset-row textarea,
 html[data-theme="terminal"] .preset-toolbar,
 html[data-theme="terminal"] .preset-toolbar input[type="search"],
@@ -1209,7 +1210,7 @@ html[data-theme="terminal"] .summary-row { border-bottom-style: dashed; }
 .section-heading h2, .overview-panel-heading h2 { letter-spacing: -0.005em; }
 .field input, .field select, .field textarea,
 .credit-form input, .credit-form select,
-.preset-row input, .preset-row textarea { border-radius: var(--radius-sm); border-color: var(--chip-line); }
+.preset-row input, .preset-row select, .preset-row textarea { border-radius: var(--radius-sm); border-color: var(--chip-line); }
 .field input:hover, .field select:hover, .field textarea:hover { border-color: var(--line-strong); }
 
 /* ==========================================================================
@@ -1369,7 +1370,9 @@ html[data-theme="terminal"] .tab-pane.active { animation: none; }
   .preset-toolbar { align-items: stretch; }
   .preset-count { margin-left: 0; }
   .preset-row { grid-template-columns: auto minmax(0, 1fr) 28px; }
-  .preset-row textarea { grid-column: 1 / -1; grid-row: 2; }
+  .preset-row > select { grid-column: 1 / -1; grid-row: 2; }
+  .preset-row textarea { grid-column: 1 / -1; grid-row: 3; }
+  .preset-row > .remove-button { grid-column: 3; grid-row: 1; }
   .summary-row { grid-template-columns: 1fr auto; }
   .summary-row small { grid-column: 1 / -1; }
   .image-grid { grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); }

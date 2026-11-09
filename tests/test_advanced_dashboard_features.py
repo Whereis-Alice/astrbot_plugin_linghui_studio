@@ -33,6 +33,11 @@ def load_module(name, *, with_quart=False):
         sys.modules["astrbot"] = astrbot
 
     if with_quart and "quart" not in sys.modules:
+        try:
+            importlib.import_module("quart")
+        except ImportError:
+            pass
+    if with_quart and "quart" not in sys.modules:
         quart = types.ModuleType("quart")
         quart.jsonify = lambda payload: payload
         quart.request = types.SimpleNamespace(args={}, method="GET")
@@ -43,7 +48,16 @@ def load_module(name, *, with_quart=False):
         quart.send_file = send_file
         sys.modules["quart"] = quart
 
-    return importlib.import_module(f"{PACKAGE}.{name}")
+    module = importlib.import_module(f"{PACKAGE}.{name}")
+    if with_quart:
+        module.jsonify = lambda payload: payload
+        module.request = types.SimpleNamespace(args={}, method="GET")
+
+        async def send_file(*args, **kwargs):
+            return args, kwargs
+
+        module.send_file = send_file
+    return module
 
 
 def png_bytes(color=(50, 120, 220)):

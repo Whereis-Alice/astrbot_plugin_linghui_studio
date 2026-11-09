@@ -18,7 +18,22 @@ export function capturePresetDrafts(presets, container) {
     if (!preset) return;
     preset.name = row.querySelector('[data-preset="name"]').value;
     preset.prompt = row.querySelector('[data-preset="prompt"]').value;
+    const channel = row.querySelector('[data-preset="channel_id"]');
+    if (channel) preset.channel_id = channel.value;
   });
+}
+
+export function presetChannelOptions(channels = [], selected = "") {
+  const escape = (value) => String(value).replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character]));
+  const options = [`<option value="" ${selected ? "" : "selected"}>跟随会话 / 默认渠道</option>`];
+  if (selected && !channels.some((channel) => channel.id === selected)) {
+    options.push(`<option value="${escape(selected)}" selected>不可用：${escape(selected)}（请更换或解除）</option>`);
+  }
+  channels.forEach((channel) => {
+    const enabled = channel.enabled !== false;
+    options.push(`<option value="${escape(channel.id)}" ${channel.id === selected ? "selected" : ""} ${!enabled && channel.id !== selected ? "disabled" : ""}>${escape(channel.name || channel.id)}${channel.name ? ` (${escape(channel.id)})` : ""}${enabled ? "" : "（已禁用）"}</option>`);
+  });
+  return options.join("");
 }
 
 export function validateNewPreset(rawName, rawPrompt, presets = []) {
@@ -35,11 +50,12 @@ export function validateNewPreset(rawName, rawPrompt, presets = []) {
   return { name, prompt };
 }
 
-export function createPresetDialog({ getPresets, createPreset, onCreated }) {
+export function createPresetDialog({ getPresets, getChannels = () => [], createPreset, onCreated }) {
   const dialog = document.getElementById("preset-create-dialog");
   const form = document.getElementById("preset-create-form");
   const name = document.getElementById("preset-create-name");
   const prompt = document.getElementById("preset-create-prompt");
+  const channel = document.getElementById("preset-create-channel");
   const error = document.getElementById("preset-create-error");
   const cancel = document.getElementById("preset-create-cancel");
   const submit = document.getElementById("preset-create-submit");
@@ -48,7 +64,7 @@ export function createPresetDialog({ getPresets, createPreset, onCreated }) {
 
   function setSaving(value) {
     saving = value;
-    [name, prompt, cancel, submit].forEach((control) => { control.disabled = value; });
+    [name, prompt, channel, cancel, submit].filter(Boolean).forEach((control) => { control.disabled = value; });
     submit.textContent = value ? "正在保存…" : "确认添加";
     form.setAttribute("aria-busy", String(value));
   }
@@ -57,6 +73,7 @@ export function createPresetDialog({ getPresets, createPreset, onCreated }) {
     if (saving || dialog.open) return;
     opener = document.activeElement;
     name.value = prompt.value = "";
+    if (channel) { channel.innerHTML = presetChannelOptions(getChannels()); channel.value = ""; }
     error.hidden = true;
     error.textContent = "";
     setSaving(false);
@@ -71,6 +88,7 @@ export function createPresetDialog({ getPresets, createPreset, onCreated }) {
     let preset;
     try {
       preset = validateNewPreset(name.value, prompt.value, getPresets());
+      if (channel?.value) preset.channel_id = channel.value;
     } catch (invalid) {
       error.textContent = invalid.message;
       error.hidden = false;

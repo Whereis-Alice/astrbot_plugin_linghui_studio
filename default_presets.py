@@ -10,10 +10,17 @@ from __future__ import annotations
 from typing import Dict, List
 
 
-DEFAULT_PRESET_PACK_VERSION = 1
+DEFAULT_PRESET_PACK_VERSION = 2
 
 
 ADDITIONAL_DEFAULT_PRESETS: Dict[str, str] = {
+    "GIF表情": (
+        "Create a real animated GIF, not a contact sheet or a still image. Animate the referenced subject "
+        "with a gentle blink, a small head tilt, and a friendly wave, forming a smooth seamless loop. "
+        "Preserve the subject's identity, hairstyle, outfit, colors, and original visual style across every "
+        "frame. Use a fixed camera, a clean background, consistent lighting, and no captions or watermarks. "
+        "If no reference image is supplied, follow the user's subject description."
+    ),
     "捧脸": (
         "Create a polished close-up portrait based on the reference subject. Preserve identity, hairstyle, "
         "facial proportions, age appearance, and visual style. Pose the subject with both hands gently framing "
@@ -63,6 +70,14 @@ ADDITIONAL_DEFAULT_PRESETS: Dict[str, str] = {
         "lighting, and a fully clothed, non-explicit composition without voyeuristic emphasis."
     ),
 }
+
+
+def presets_for_upgrade(installed_version: int) -> Dict[str, str]:
+    """Add only new presets; do not resurrect presets deleted after an older pack."""
+    return {
+        name: prompt for name, prompt in ADDITIONAL_DEFAULT_PRESETS.items()
+        if installed_version < (2 if name == "GIF表情" else 1)
+    }
 
 
 def serialized_default_presets() -> List[str]:

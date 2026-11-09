@@ -166,6 +166,7 @@ from aiocqhttp.api_impl import WebSocketReverseApi
 from aiocqhttp.exceptions import NetworkError
 from astrbot.core.message.components import Image
 from astrbot.core.message.message_event_result import MessageChain
+import astrbot.api.star
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
 spec = importlib.util.spec_from_file_location("delivery_utils", sys.argv[1])
 utils = importlib.util.module_from_spec(spec)

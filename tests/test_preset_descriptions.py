@@ -16,7 +16,7 @@ class PresetDescriptionsTest(unittest.TestCase):
             separator = ":" if ":" in raw else "："
             names.append(raw.split(separator, 1)[0].strip())
         self.assertEqual(set(names), set(PRESET_DESCRIPTIONS))
-        self.assertEqual(len(names), 52)
+        self.assertEqual(len(names), 53)
         self.assertTrue(all(preset_description(name).endswith("。") for name in names))
 
     def test_custom_preset_has_a_clear_fallback(self):
