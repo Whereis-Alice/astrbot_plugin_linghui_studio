@@ -26,6 +26,7 @@ from .error_classify import safe_error_summary
 from .gallery_preview import GalleryPreviewError, build_gallery_image
 from .protocol_adapters import PROTOCOL_CHOICES, PROTOCOL_LABELS, normalize_protocol
 from .requester_tag import DEFAULT_TAG_MODE, normalize_tag_mode
+from .preset_options import normalize_preset_generation_options, preset_options_map
 from .utils import is_ambiguous_message_delivery_timeout, norm_id, normalize_api_root
 
 
@@ -33,7 +34,7 @@ from .channel_policy import normalize_policy as normalize_channel_policy
 
 
 PLUGIN_NAME = "astrbot_plugin_linghui_studio"
-PLUGIN_VERSION = "3.17.0"
+PLUGIN_VERSION = "3.18.0"
 DRAWING_CHANNEL_TEMPLATE_KEY = "drawing_channel"
 _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -41,6 +42,10 @@ _PREVIEW_MAX_BYTES = 300 * 1024
 _INTERFACE_MODES = {"auto", "openai_image", "openai_chat", "gemini_official", "custom_endpoint"}
 _DASHBOARD_THEMES = {"dark", "light", "alice", "terminal", "nebula"}
 _DASHBOARD_DENSITIES = {"comfortable", "compact"}
+_PRESET_IMAGE_DEFAULTS = {
+    "image_output_format": "auto", "image_frame_count": 9,
+    "image_frame_duration_ms": 200, "image_complexity": "auto",
+}
 
 
 class LinghuiDashboardApi:
@@ -231,7 +236,7 @@ class LinghuiDashboardApi:
         }
         return result
 
-    def _preset_rows(self) -> List[Dict[str, str]]:
+    def _preset_rows(self) -> List[Dict[str, Any]]:
         rows: Dict[str, str] = {}
         for entry in self.plugin.conf.get("prompt_list", []) or []:
             if not isinstance(entry, str):
@@ -257,7 +262,9 @@ class LinghuiDashboardApi:
                     rows[name] = prompt
         shipped = getattr(manager, "default_prompts", {}) or {}
         bindings = self._preset_binding_map()
-        result: List[Dict[str, str]] = []
+        channel_selections = self._preset_channels_map()
+        options = preset_options_map(self.plugin.conf)
+        result: List[Dict[str, Any]] = []
         for name, prompt in sorted(rows.items()):
             origin = shipped.get(name)
             if origin is None:
@@ -267,55 +274,90 @@ class LinghuiDashboardApi:
             else:
                 source = "modified"
             result.append({"name": name, "original_name": name, "prompt": prompt, "source": source,
-                           "channel_id": bindings.get(name, "")})
+                           "channel_id": bindings.get(name, ""), "channel_ids": channel_selections.get(name, []),
+                           **_PRESET_IMAGE_DEFAULTS, **options.get(name, {})})
         return result
 
-    def _preset_binding_map(self) -> Dict[str, str]:
-        """Keep unavailable saved targets visible so administrators can repair them."""
-        result: Dict[str, str] = {}
+    def _preset_channels_map(self) -> Dict[str, List[str]]:
+        """Keep selected routes and their order visible, including unavailable IDs."""
+        result: Dict[str, List[str]] = {}
         entries = self.plugin.conf.get("preset_channel_bindings", [])
         if isinstance(entries, list):
             for entry in entries:
-                if isinstance(entry, dict) and isinstance(entry.get("preset"), str) and isinstance(entry.get("channel_id"), str):
-                    preset, channel_id = entry["preset"].strip(), entry["channel_id"].strip()
-                    if preset and channel_id:
-                        result[preset] = channel_id
+                if not isinstance(entry, dict) or not isinstance(entry.get("preset"), str):
+                    continue
+                preset = entry["preset"].strip()
+                if "channel_ids" in entry:
+                    raw_ids = entry["channel_ids"]
+                    if not isinstance(raw_ids, list) or any(not isinstance(value, str) for value in raw_ids):
+                        continue
+                    channel_ids = [value.strip() for value in raw_ids if value.strip()]
+                    # Native template migration fills new list fields with [] on old rows.
+                    legacy_id = entry.get("channel_id", "")
+                    if not channel_ids and isinstance(legacy_id, str) and legacy_id.strip():
+                        channel_ids = [legacy_id.strip()]
+                else:
+                    value = entry.get("channel_id", "")
+                    channel_ids = [value.strip()] if isinstance(value, str) and value.strip() else []
+                if preset and channel_ids:
+                    result[preset] = channel_ids
         return result
+
+    def _preset_binding_map(self) -> Dict[str, str]:
+        """Expose the primary selection to legacy API consumers."""
+        return {preset: channel_ids[0] for preset, channel_ids in self._preset_channels_map().items()}
 
     def _normalize_preset_bindings(
         self, incoming: Any, names: set[str], channels: List[Dict[str, Any]],
-    ) -> List[Dict[str, str]]:
+    ) -> List[Dict[str, Any]]:
         if not isinstance(incoming, list) or len(incoming) > 200:
             raise ValueError("预设渠道绑定必须是列表，最多 200 项。")
         targets = {channel["id"]: channel for channel in channels}
-        result: List[Dict[str, str]] = []
+        result: List[Dict[str, Any]] = []
         seen: set[str] = set()
         for entry in incoming:
-            if not isinstance(entry, dict) or not isinstance(entry.get("preset"), str) or not isinstance(entry.get("channel_id"), str):
-                raise ValueError("预设渠道绑定必须包含文本类型的 preset 与 channel_id。")
-            preset, channel_id = entry["preset"].strip(), entry["channel_id"].strip()
+            if not isinstance(entry, dict) or not isinstance(entry.get("preset"), str):
+                raise ValueError("预设渠道绑定必须包含文本类型的 preset。")
+            preset = entry["preset"].strip()
             if not preset or preset not in names:
                 raise ValueError(f"渠道绑定的预设不存在：{preset or '（空）'}。")
             if preset in seen:
                 raise ValueError(f"预设渠道绑定重复：{preset}。")
             seen.add(preset)
-            if not channel_id:
-                continue
-            channel = targets.get(channel_id)
-            if channel is None or not self._as_bool(channel.get("enabled", True)):
-                raise ValueError(f"预设 [{preset}] 的渠道 {channel_id} 不存在或已禁用，请先更换或解除绑定。")
-            result.append({"__template_key": "preset_channel_binding", "preset": preset, "channel_id": channel_id})
+            if "channel_ids" not in entry and "channel_id" not in entry:
+                raise ValueError("预设渠道绑定必须提供 channel_ids 或 channel_id。")
+            if "channel_ids" in entry:
+                raw_ids = entry["channel_ids"]
+                if not isinstance(raw_ids, list) or len(raw_ids) > 8 or any(not isinstance(value, str) for value in raw_ids):
+                    raise ValueError("预设渠道 channel_ids 必须是文本列表，最多 8 项。")
+                channel_ids = [value.strip() for value in raw_ids]
+                if any(not value for value in channel_ids):
+                    raise ValueError("预设渠道列表不能包含空 ID。")
+            else:
+                channel_id = entry.get("channel_id", "")
+                if not isinstance(channel_id, str):
+                    raise ValueError("预设渠道 channel_id 必须是文本。")
+                channel_ids = [channel_id.strip()] if channel_id.strip() else []
+            if len(channel_ids) != len(set(channel_ids)):
+                raise ValueError(f"预设 [{preset}] 选择了重复的渠道。")
+            for channel_id in channel_ids:
+                channel = targets.get(channel_id)
+                if channel is None or not self._as_bool(channel.get("enabled", True)):
+                    raise ValueError(f"预设 [{preset}] 的渠道 {channel_id} 不存在或已禁用，请先更换或解除绑定。")
+            if channel_ids:
+                result.append({"__template_key": "preset_channel_binding", "preset": preset,
+                               "channel_id": channel_ids[0], "channel_ids": channel_ids})
         return result
 
     def _prepare_preset_bindings(
         self, payload: Dict[str, Any], channels: List[Dict[str, Any]],
         normalized_presets: List[str] | None = None,
-    ) -> List[Dict[str, str]]:
+    ) -> List[Dict[str, Any]]:
         renames = {
             str(row.get("original_id", "")).strip(): str(row.get("id", "")).strip()
             for row in payload.get("channels", []) if isinstance(row, dict) and row.get("original_id")
         }
-        previous = self._preset_binding_map()
+        previous = self._preset_channels_map()
         names = {row["name"] for row in self._preset_rows()}
         if normalized_presets is not None:
             names = {entry.split(":", 1)[0] for entry in normalized_presets}
@@ -327,16 +369,55 @@ class LinghuiDashboardApi:
                 name = str(row.get("name", "") or "").strip()
                 if name not in names:
                     continue
-                channel_id = row.get("channel_id", previous.get(str(row.get("original_name", name)), ""))
-                if not isinstance(channel_id, str):
-                    raise ValueError("预设渠道 ID 必须是文本。")
-                entries.append({"preset": name, "channel_id": channel_id.strip()})
+                if "channel_ids" in row:
+                    selection = {"channel_ids": row["channel_ids"]}
+                elif "channel_id" in row:
+                    selection = {"channel_id": row["channel_id"]}
+                else:
+                    selection = {"channel_ids": previous.get(str(row.get("original_name", name)), [])}
+                entries.append({"preset": name, **selection})
         else:
-            entries = [{"preset": preset, "channel_id": channel_id} for preset, channel_id in previous.items()]
+            entries = [{"preset": preset, "channel_ids": channel_ids} for preset, channel_ids in previous.items()]
         if isinstance(entries, list):
-            entries = [dict(entry, channel_id=renames.get(entry.get("channel_id"), entry.get("channel_id")))
-                       if isinstance(entry, dict) and isinstance(entry.get("channel_id"), str) else entry for entry in entries]
+            renamed_entries = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    renamed_entries.append(entry)
+                    continue
+                entry = dict(entry)
+                if "channel_ids" in entry and isinstance(entry["channel_ids"], list):
+                    entry["channel_ids"] = [renames.get(value, value) if isinstance(value, str) else value
+                                            for value in entry["channel_ids"]]
+                elif isinstance(entry.get("channel_id"), str):
+                    entry["channel_id"] = renames.get(entry["channel_id"], entry["channel_id"])
+                renamed_entries.append(entry)
+            entries = renamed_entries
         return self._normalize_preset_bindings(entries, names, channels)
+
+    def _prepare_preset_generation_options(
+        self, payload: Dict[str, Any], normalized_presets: List[str] | None = None,
+    ) -> List[Dict[str, Any]]:
+        """Validate preset request options before changing any live configuration."""
+        previous = preset_options_map(self.plugin.conf)
+        names = {row["name"] for row in self._preset_rows()}
+        if normalized_presets is not None:
+            names = {entry.split(":", 1)[0] for entry in normalized_presets}
+        if "preset_generation_options" in payload:
+            entries = payload["preset_generation_options"]
+        elif normalized_presets is not None:
+            entries = []
+            for row in payload["presets"]:
+                name = str(row.get("name", "") or "").strip()
+                if name not in names:
+                    continue
+                original_name = str(row.get("original_name", name) or name).strip()
+                options = dict(previous.get(original_name, {}))
+                options.update({key: row[key] for key in _PRESET_IMAGE_DEFAULTS if key in row})
+                if options:
+                    entries.append({"preset": name, **options})
+        else:
+            entries = [{"preset": name, **options} for name, options in previous.items() if name in names]
+        return normalize_preset_generation_options(entries, names)
 
     def _safe_reference_path(self, raw_path: str | Path) -> Path | None:
         """Return a stored reference image only when it stays under the data root."""
@@ -811,6 +892,9 @@ class LinghuiDashboardApi:
                 bindings = None
                 if any(key in payload for key in ("channels", "presets", "preset_channel_bindings")):
                     bindings = self._prepare_preset_bindings(payload, channels, presets)
+                preset_options = None
+                if any(key in payload for key in ("presets", "preset_generation_options")):
+                    preset_options = self._prepare_preset_generation_options(payload, presets)
                 settings = payload.get("settings", {})
                 image_options = {}
                 if isinstance(settings, dict):
@@ -894,6 +978,12 @@ class LinghuiDashboardApi:
                 if bindings is not None and bindings != self.plugin.conf.get("preset_channel_bindings", []):
                     self.plugin.conf["preset_channel_bindings"] = bindings
                     changed_dynamic_keys.add("preset_channel_bindings")
+                if preset_options is not None and (
+                    "preset_generation_options" not in self.plugin.conf
+                    or preset_options != self.plugin.conf.get("preset_generation_options", [])
+                ):
+                    self.plugin.conf["preset_generation_options"] = preset_options
+                    changed_dynamic_keys.add("preset_generation_options")
                 if "active_drawing_channel" in payload:
                     active_channel = str(payload["active_drawing_channel"] or "").strip()
                     channel_ids = {
@@ -1142,11 +1232,27 @@ class LinghuiDashboardApi:
             previous = copy.deepcopy(self.plugin.conf.get("prompt_list", []))
             previous_bindings = copy.deepcopy(self.plugin.conf.get("preset_channel_bindings", []))
             had_bindings = "preset_channel_bindings" in self.plugin.conf
-            bindings = previous_bindings
-            if "channel_id" in payload:
+            previous_options = copy.deepcopy(self.plugin.conf.get("preset_generation_options", []))
+            had_options = "preset_generation_options" in self.plugin.conf
+            preset_options = previous_options
+            if any(key in payload for key in _PRESET_IMAGE_DEFAULTS):
                 try:
+                    names = {row["name"] for row in rows}
+                    entries = [{"preset": preset, **options}
+                               for preset, options in preset_options_map(self.plugin.conf).items() if preset in names]
+                    entries.append({"preset": name, **{key: payload[key] for key in _PRESET_IMAGE_DEFAULTS if key in payload}})
+                    preset_options = normalize_preset_generation_options(entries, names | {name})
+                except ValueError as exc:
+                    return jsonify({"success": False, "message": str(exc)}), 400
+            bindings = previous_bindings
+            if "channel_id" in payload or "channel_ids" in payload:
+                try:
+                    selection = ({"channel_ids": payload["channel_ids"]} if "channel_ids" in payload
+                                 else {"channel_id": payload["channel_id"]})
+                    existing_bindings = [{"preset": preset, "channel_ids": channel_ids}
+                                         for preset, channel_ids in self._preset_channels_map().items()]
                     bindings = self._normalize_preset_bindings(
-                        [*previous_bindings, {"preset": name, "channel_id": payload["channel_id"]}],
+                        [*existing_bindings, {"preset": name, **selection}],
                         {row["name"] for row in rows} | {name},
                         self.plugin.conf.get("drawing_channels", []) or [],
                     )
@@ -1159,6 +1265,9 @@ class LinghuiDashboardApi:
                 if bindings != previous_bindings:
                     self.plugin.conf["preset_channel_bindings"] = bindings
                     changed_keys.append("preset_channel_bindings")
+                if preset_options != previous_options:
+                    self.plugin.conf["preset_generation_options"] = preset_options
+                    changed_keys.append("preset_generation_options")
                 self.plugin._save_config(changed_keys)
             except Exception:
                 self.plugin.conf["prompt_list"] = previous
@@ -1166,6 +1275,10 @@ class LinghuiDashboardApi:
                     self.plugin.conf["preset_channel_bindings"] = previous_bindings
                 else:
                     self.plugin.conf.pop("preset_channel_bindings", None)
+                if had_options:
+                    self.plugin.conf["preset_generation_options"] = previous_options
+                else:
+                    self.plugin.conf.pop("preset_generation_options", None)
                 try:
                     await self.plugin.data_mgr.remove_user_prompt(name)
                 except Exception:
@@ -2615,6 +2728,20 @@ class LinghuiDashboardApi:
         redacted_fields: List[str] = []
         for key in schema:
             value = copy.deepcopy(self.plugin.conf.get(key, schema[key].get("default")))
+            if key == "prompt_list":
+                # Export the same effective presets that Dashboard edits, including
+                # chat-created entries whose prompt lives in user_prompts.json.
+                value = [f"{row['name']}:{row['prompt']}" for row in self._preset_rows()]
+            if key == "preset_channel_bindings":
+                value = [{"__template_key": "preset_channel_binding", "preset": preset,
+                          "channel_id": channel_ids[0], "channel_ids": list(channel_ids)}
+                         for preset, channel_ids in self._preset_channels_map().items()]
+            if key == "preset_generation_options":
+                names = {row["name"] for row in self._preset_rows()}
+                value = normalize_preset_generation_options(
+                    [{"preset": name, **options} for name, options in preset_options_map(self.plugin.conf).items()
+                     if name in names], names,
+                )
             if key == "drawing_channels" and isinstance(value, list):
                 for index, channel in enumerate(value):
                     if not isinstance(channel, dict):
@@ -2748,10 +2875,17 @@ class LinghuiDashboardApi:
             if self._is_secret_config_key(key) and str(raw_value or "").strip() == "__KEEP_EXISTING_SECRET__":
                 continue
             field_type = str(definition.get("type", "string") or "string")
-            if key == "preset_channel_bindings":
+            if key in {"preset_channel_bindings", "preset_generation_options"}:
                 if not isinstance(raw_value, list):
-                    raise ValueError("预设渠道绑定必须是列表。")
+                    raise ValueError("预设渠道绑定或生成参数必须是列表。")
                 normalized[key] = copy.deepcopy(raw_value)
+                if key == "preset_channel_bindings":
+                    for entry in normalized[key]:
+                        # A native config export can contain the newly defaulted []
+                        # alongside a pre-existing single-channel value.
+                        if (isinstance(entry, dict) and entry.get("channel_ids") == []
+                                and isinstance(entry.get("channel_id"), str) and entry["channel_id"].strip()):
+                            entry.pop("channel_ids")
                 continue
             if key == "drawing_channels":
                 incoming = copy.deepcopy(raw_value) if isinstance(raw_value, list) else []
@@ -2800,13 +2934,26 @@ class LinghuiDashboardApi:
                 names.update(getattr(self.plugin.data_mgr, "user_prompts", {}))
             bindings = normalized.get("preset_channel_bindings")
             if bindings is None:
-                bindings = [{"preset": preset, "channel_id": channel_id}
-                            for preset, channel_id in self._preset_binding_map().items() if preset in names]
+                bindings = [{"preset": preset, "channel_ids": channel_ids}
+                            for preset, channel_ids in self._preset_channels_map().items() if preset in names]
             checked = self._normalize_preset_bindings(
                 bindings, names, normalized.get("drawing_channels", self.plugin.conf.get("drawing_channels", []) or []),
             )
             if checked != self.plugin.conf.get("preset_channel_bindings", []) or "preset_channel_bindings" in normalized:
                 normalized["preset_channel_bindings"] = checked
+        if any(key in normalized for key in ("preset_generation_options", "prompt_list")):
+            names = {row["name"] for row in self._preset_rows()}
+            if "prompt_list" in normalized:
+                names = {entry.split(":" if ":" in entry else "：", 1)[0].strip()
+                         for entry in normalized["prompt_list"] if isinstance(entry, str) and (":" in entry or "：" in entry)}
+                names.update(getattr(self.plugin.data_mgr, "user_prompts", {}))
+            options = normalized.get("preset_generation_options")
+            if options is None:
+                options = [{"preset": preset, **values}
+                           for preset, values in preset_options_map(self.plugin.conf).items() if preset in names]
+            checked = normalize_preset_generation_options(options, names)
+            if checked != self.plugin.conf.get("preset_generation_options", []) or "preset_generation_options" in normalized:
+                normalized["preset_generation_options"] = checked
         image_keys = ("image_output_format", "image_frame_count", "image_frame_duration_ms", "image_complexity")
         if any(key in raw_config for key in image_keys):
             values = normalize_channel_policy({key: raw_config[key] for key in image_keys if key in raw_config})

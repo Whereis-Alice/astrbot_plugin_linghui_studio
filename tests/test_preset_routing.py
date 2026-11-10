@@ -162,6 +162,50 @@ class PresetRoutingTest(unittest.IsolatedAsyncioTestCase):
             "image_output_format", "image_frame_count", "image_frame_duration_ms", "image_complexity",
         )], ["auto", 9, 200, "auto"])
 
+    async def test_multiple_selected_channels_fail_over_in_selected_order_only(self):
+        self.router.bind_session_store(None)
+        self.config["drawing_channels"].append({"id": "c", "base_url": "c", "model": "other", "api_keys": "c-key", "priority": 999})
+        self.config["preset_channel_bindings"] = [{"preset": "动图", "channel_id": "b", "channel_ids": ["b", "a"]}]
+        self.outcomes[("b", "gif-model")] = "API Error 503 unavailable"
+        result = await self.router.call_api([], "loop", "default", session_id="chat", preset_name="动图")
+        self.assertEqual(result, b"generated")
+        self.assertEqual([call[0] for call in self.calls], ["b", "a"])
+        self.assertEqual(self.router.get_last_metrics()["preset_channel_bindings"], ["b", "a"])
+        self.assertEqual(self.router.get_last_metrics()["session_channel_override"], "")
+        self.assertEqual(self.router.get_last_metrics()["session_model_override"], "")
+
+    async def test_multiple_bound_failures_never_reach_unselected_channel(self):
+        self.router.bind_session_store(None)
+        self.config["drawing_channels"].append({"id": "c", "model": "not-allowed", "api_keys": "key"})
+        self.config["preset_channel_bindings"] = [{"preset": "动图", "channel_ids": ["b", "a"]}]
+        self.outcomes.update({("b", "gif-model"): "HTTP 503 unavailable", ("a", "still-model"): "HTTP 524 timeout"})
+        result = await self.router.call_api([], "loop", "default", preset_name="动图")
+        self.assertIsInstance(result, str)
+        self.assertEqual([call[0] for call in self.calls], ["b", "a"])
+
+    async def test_selected_fallback_is_used_even_when_global_fallback_is_disabled_for_it(self):
+        self.router.bind_session_store(None)
+        self.config["drawing_channels"][0]["fallback_enabled"] = False
+        self.config["preset_channel_bindings"] = [{"preset": "动图", "channel_ids": ["b", "a"]}]
+        self.outcomes[("b", "gif-model")] = "HTTP 503 unavailable"
+        await self.router.call_api([], "loop", "default", preset_name="动图")
+        self.assertEqual([call[0] for call in self.calls], ["b", "a"])
+
+    async def test_exhausted_selected_primary_uses_next_selected_channel(self):
+        self.router.bind_session_store(None)
+        self.config["drawing_channels"][1]["daily_limit"] = 0
+        self.config["preset_channel_bindings"] = [{"preset": "动图", "channel_ids": ["b", "a"]}]
+        await self.router.call_api([], "loop", "default", preset_name="动图")
+        self.assertEqual([call[0] for call in self.calls], ["a"])
+
+    async def test_invalid_multi_channel_binding_fails_before_generation(self):
+        for ids in (["b", "missing"], ["b", "b"], "b", ["b", None]):
+            with self.subTest(ids=ids):
+                self.config["preset_channel_bindings"] = [{"preset": "动图", "channel_ids": ids}]
+                result = await self.router.call_api([], "loop", "default", preset_name="动图")
+                self.assertIsInstance(result, str)
+                self.assertEqual(self.calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const source = await readFile(new URL("../pages/linghui-studio/preset-editor.js", import.meta.url), "utf8");
-const { capturePresetDrafts, createPresetDialog, presetChannelOptions, sortedPresetEntries, validateNewPreset } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+const { capturePresetDrafts, createPresetDialog, movePresetChannel, normalizePresetGenerationOptions, presetChannelIds, presetChannelOptions, presetChannelPicker, presetGenerationFields, sortedPresetEntries, validateNewPreset } = await import(`data:text/javascript;base64,${Buffer.from(`${source}\n//# sourceURL=linghui-preset-editor.js`).toString("base64")}`);
+const defaultImageOptions = { image_output_format: "auto", image_frame_count: 9, image_frame_duration_ms: 200, image_complexity: "auto" };
 
 test("groups custom/modified/default and sorts Chinese names and numbers naturally", () => {
   const presets = [
@@ -19,7 +20,7 @@ test("groups custom/modified/default and sorts Chinese names and numbers natural
 
 test("sorted and hidden rows preserve edits by original index, including whitespace", () => {
   const presets = [{ name: "first", prompt: "old1" }, { name: "second", prompt: "old2" }];
-  const row = (index, name, prompt) => ({ dataset: { presetIndex: String(index) }, querySelector: (selector) => selector.includes('"channel_id"') ? null : ({ value: selector.includes('"name"') ? name : prompt }) });
+  const row = (index, name, prompt) => ({ dataset: { presetIndex: String(index) }, querySelector: (selector) => ({ '[data-preset="name"]': { value: name }, '[data-preset="prompt"]': { value: prompt } })[selector] || null });
   capturePresetDrafts(presets, { querySelectorAll: () => [row(1, "second edited", "\nnew2\n"), row(0, "first", "new1")] });
   assert.deepEqual(presets, [{ name: "first", prompt: "new1" }, { name: "second edited", prompt: "\nnew2\n" }]);
 });
@@ -43,7 +44,10 @@ test("draft channel and original preset identity survive prompt and name edits",
   const presets = [{ name: "old", original_name: "old", prompt: "first", channel_id: "gif" }];
   const values = { name: "new", prompt: "updated", channel_id: "other" };
   capturePresetDrafts(presets, { querySelectorAll: () => [{ dataset: { presetIndex: "0" },
-    querySelector: (selector) => ({ value: values[selector.match(/"(.+)"/)[1]] }),
+    querySelector: (selector) => {
+      const key = selector.match(/data-preset="(.+)"/)?.[1];
+      return key in values ? { value: values[key] } : null;
+    },
   }] });
   assert.deepEqual(presets, [{ name: "new", original_name: "old", prompt: "updated", channel_id: "other" }]);
 });
@@ -56,6 +60,7 @@ class Element {
   focus() { this.focused = true; }
   showModal() { this.open = true; }
   close() { this.open = false; void this.emit("close"); }
+  querySelectorAll(selector) { return selector === "[data-preset-channel]:checked" ? (this.selectedChannels || []).map((value) => ({ value })) : []; }
 }
 
 function fixture(createPreset = async (preset) => ({ success: true, preset: { ...preset, source: "custom" } })) {
@@ -102,21 +107,24 @@ test("one confirmation saves, inserts only the successful preset and closes", as
     f.dialog.open();
     f.node("name").value = " 新预设 "; f.node("prompt").value = "new prompt";
     await f.node("form").emit("submit");
-    assert.deepEqual(f.calls, [{ name: "新预设", prompt: "new prompt" }]);
+    assert.deepEqual(f.calls, [{ name: "新预设", prompt: "new prompt", channel_ids: [], channel_id: "", ...defaultImageOptions }]);
     assert.equal(f.presets.length, 2);
     assert.equal(f.node("dialog").open, false);
     assert.equal(f.node("submit").disabled, false);
   } finally { f.restore(); }
 });
 
-test("creating a preset submits the selected channel", async () => {
+test("creating a GIF preset submits the selected existing channels in order and animation settings", async () => {
   const f = fixture();
   try {
     f.dialog.open();
     f.node("name").value = "GIF 预设"; f.node("prompt").value = "animate";
-    f.node("channel").value = "gif";
+    f.node("channel").selectedChannels = ["miku", "orb"];
+    f.node("output-format").value = "gif";
+    f.node("frame-count").value = "12";
+    f.node("frame-duration-ms").value = "170";
     await f.node("form").emit("submit");
-    assert.deepEqual(f.calls, [{ name: "GIF 预设", prompt: "animate", channel_id: "gif" }]);
+    assert.deepEqual(f.calls, [{ name: "GIF 预设", prompt: "animate", channel_ids: ["miku", "orb"], channel_id: "miku", ...defaultImageOptions, image_output_format: "gif", image_frame_count: 12, image_frame_duration_ms: 170 }]);
   } finally { f.restore(); }
 });
 
@@ -149,8 +157,85 @@ test("pending save blocks duplicate submission and cancelling", async () => {
     await f.node("dialog").emit("cancel", { preventDefault: () => { blocked = true; } });
     assert.equal(blocked, true);
     assert.equal(f.calls.length, 1);
+    assert.equal(f.node("output-format").disabled, true);
+    assert.equal(f.node("frame-count").disabled, true);
+    assert.equal(f.node("channel").inert, true);
     assert.equal(f.node("dialog").open, true);
     resolve({ success: true }); await pending;
     assert.equal(f.presets.length, 2);
   } finally { f.restore(); }
+});
+
+test("GIF controls appear only for GIF and an invalid duration focuses the field without posting", async () => {
+  const f = fixture();
+  try {
+    f.dialog.open();
+    assert.equal(f.node("animation").hidden, true);
+    f.node("output-format").value = "gif";
+    await f.node("output-format").emit("change");
+    assert.equal(f.node("animation").hidden, false);
+    f.node("name").value = "动图画"; f.node("prompt").value = "animate";
+    f.node("frame-duration-ms").value = "167";
+    await f.node("form").emit("submit");
+    assert.equal(f.calls.length, 0);
+    assert.match(f.node("error").textContent, /10 的倍数/);
+    assert.equal(f.node("frame-duration-ms").focused, true);
+    f.node("output-format").value = "auto";
+    await f.node("output-format").emit("change");
+    assert.equal(f.node("animation").hidden, true);
+  } finally { f.restore(); }
+});
+
+test("new and legacy channel identities preserve deliberate unbinding and reorder without mutating the source", () => {
+  assert.deepEqual(presetChannelIds({ channel_id: "miku" }), ["miku"]);
+  assert.deepEqual(presetChannelIds({ channel_id: "miku", channel_ids: [] }), []);
+  const selected = ["miku", "orb"];
+  assert.deepEqual(movePresetChannel(selected, "orb", "up"), ["orb", "miku"]);
+  assert.deepEqual(movePresetChannel(selected, "miku", "down"), ["orb", "miku"]);
+  assert.deepEqual(movePresetChannel(selected, "miku", "up"), selected);
+  assert.deepEqual(movePresetChannel(selected, "missing", "up"), selected);
+  assert.deepEqual(selected, ["miku", "orb"]);
+});
+
+test("ordered picker shows primary/fallback, unavailable chosen targets and escaped channel names", () => {
+  const markup = presetChannelPicker([{ id: "orb", name: '<orb "GIF">' }, { id: "miku" }, { id: "off", enabled: false }], ["miku", "missing", "orb"]);
+  assert.ok(markup.indexOf('value="miku"') < markup.indexOf('value="missing"'));
+  assert.ok(markup.indexOf('value="missing"') < markup.indexOf('value="orb"'));
+  assert.match(markup, /主用 · miku/);
+  assert.match(markup, /备用 1 · missing（不可用/);
+  assert.match(markup, /&lt;orb &quot;GIF&quot;&gt;/);
+  assert.match(markup, /value="off"\s+disabled/);
+  assert.match(markup, /只在所选渠道间回退/);
+});
+
+test("renaming and filtered drafts retain channel order and GIF options until save", () => {
+  const presets = [{ name: "动图画", original_name: "动图画", prompt: "old", channel_id: "miku", channel_ids: ["miku", "orb"], ...defaultImageOptions }];
+  const fields = { name: "动图画2", prompt: "new", image_output_format: "gif", image_frame_count: "12", image_frame_duration_ms: "170", image_complexity: "medium" };
+  const picker = { querySelectorAll: () => [{ value: "orb" }, { value: "miku" }] };
+  capturePresetDrafts(presets, { querySelectorAll: () => [{ dataset: { presetIndex: "0" }, querySelector: (selector) => {
+    if (selector === "[data-preset-channel-picker]") return picker;
+    const key = selector.match(/data-preset="(.+)"/)?.[1];
+    return key in fields ? { value: fields[key] } : null;
+  } }] });
+  assert.deepEqual(presets[0].channel_ids, ["orb", "miku"]);
+  assert.equal(presets[0].channel_id, "orb");
+  assert.equal(presets[0].original_name, "动图画");
+  assert.equal(presets[0].name, "动图画2");
+  assert.deepEqual(normalizePresetGenerationOptions(presets[0]), { image_output_format: "gif", image_frame_count: 12, image_frame_duration_ms: 170, image_complexity: "medium" });
+});
+
+test("animation option validation covers count, duration, types and static defaults", () => {
+  assert.deepEqual(normalizePresetGenerationOptions(), defaultImageOptions);
+  for (const image_frame_count of ["", 1, 17, 2.5, "bad"]) assert.throws(() => normalizePresetGenerationOptions({ image_output_format: "gif", image_frame_count }));
+  for (const image_frame_duration_ms of ["", 19, 2001, 167, "bad"]) assert.throws(() => normalizePresetGenerationOptions({ image_output_format: "gif", image_frame_duration_ms }));
+  assert.throws(() => normalizePresetGenerationOptions({ image_output_format: "svg" }));
+  assert.throws(() => normalizePresetGenerationOptions({ image_complexity: "bad" }));
+});
+
+test("rendering an incomplete GIF draft remains editable and escapes injected attributes", () => {
+  const markup = presetGenerationFields({ image_output_format: "gif", image_frame_count: "", image_frame_duration_ms: '\" onfocus=\"bad' });
+  assert.match(markup, /value="gif" selected/);
+  assert.match(markup, /&quot; onfocus=&quot;bad/);
+  assert.doesNotMatch(markup, /value="" onfocus/);
+  assert.match(presetGenerationFields(), />跟随渠道<\/option>/);
 });

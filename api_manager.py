@@ -5,6 +5,7 @@ import ipaddress
 import json
 import re
 import socket
+from contextvars import ContextVar
 from urllib.parse import quote
 from urllib.parse import urljoin
 from urllib.parse import urlparse
@@ -32,6 +33,7 @@ from .response_parsing import (
     parse_response_body,
 )
 from .utils import normalize_api_root
+from .preset_options import normalize_image_options
 
 
 class ApiManager:
@@ -46,6 +48,7 @@ class ApiManager:
         self._session = None # 保持 Session 持久化，复用 TCP/SSL 连接
         self._last_metrics = {}
         self._last_download_metrics = {}
+        self._request_image_options = ContextVar(f"linghui_image_options_{id(self)}", default=None)
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -67,6 +70,11 @@ class ApiManager:
 
     def get_last_metrics(self) -> Dict:
         return dict(self._last_metrics or {})
+
+    def _image_option(self, name: str, default: Any = None) -> Any:
+        """Read request-local preset options without changing the shared channel."""
+        options = self._request_image_options.get()
+        return options[name] if options is not None and name in options else self.config.get(name, default)
 
     def _normalize_call_api_args(self, legacy_use_power_or_proxy=None, proxy=None, use_text_to_image_api: bool = False):
         """兼容旧版 call_api 调用签名：
@@ -162,7 +170,7 @@ class ApiManager:
         return None
 
     async def _validate_reference_result(self, result: bytes | str, images: List[bytes]) -> bytes | str:
-        if isinstance(result, bytes) and str(self.config.get("image_output_format", "auto")).strip().lower() == "gif":
+        if isinstance(result, bytes) and str(self._image_option("image_output_format", "auto")).strip().lower() == "gif":
             def is_animated_gif() -> bool:
                 try:
                     with PILImage.open(io.BytesIO(result)) as image:
@@ -674,12 +682,12 @@ class ApiManager:
             options["quality"] = quality
         # GPT Image 2+ uses high input fidelity automatically. Sending an
         # input_fidelity override to those models is unsupported.
-        output_format = str(self.config.get("image_output_format", "auto") or "auto").strip().lower()
+        output_format = str(self._image_option("image_output_format", "auto") or "auto").strip().lower()
         if output_format not in {"auto", "png", "jpeg", "webp", "gif"}:
             raise ValueError("无效的 Images API 输出格式")
         if output_format != "auto":
             options["output_format"] = output_format
-        complexity = str(self.config.get("image_complexity", "auto") or "auto").strip().lower()
+        complexity = str(self._image_option("image_complexity", "auto") or "auto").strip().lower()
         if complexity not in {"auto", "low", "medium", "high"}:
             raise ValueError("无效的 Images API 复杂度设置")
         if complexity != "auto":
@@ -689,7 +697,7 @@ class ApiManager:
                 ("frame_count", 9, 2, 16),
                 ("frame_duration_ms", 200, 20, 2000),
             ):
-                raw = self.config.get(f"image_{name}", default)
+                raw = self._image_option(f"image_{name}", default)
                 if isinstance(raw, bool) or not re.fullmatch(r"\d+", str(raw)):
                     raise ValueError(f"GIF {name} 必须为整数")
                 value = int(raw)
@@ -980,7 +988,7 @@ class ApiManager:
             if (
                 not exact_endpoint and not size_retried
                 and self._is_gpt_image_model(model)
-                and str(self.config.get("image_output_format", "auto")).strip().lower() != "gif"
+                and str(self._image_option("image_output_format", "auto")).strip().lower() != "gif"
                 and params.get("size") != "1024x1024"
                 and self._is_size_compatibility_error(result)
             ):
@@ -1343,22 +1351,30 @@ class ApiManager:
                        proxy: str = None,
                        use_text_to_image_api: bool = False,
                        aspect_ratio: str = None,
-                       resolution: str = None) -> bytes | str:
+                       resolution: str = None,
+                       image_options: dict[str, Any] | None = None) -> bytes | str:
         proxy, use_text_to_image_api = self._normalize_call_api_args(
             legacy_use_power_or_proxy, proxy, use_text_to_image_api
         )
+        try:
+            overrides = normalize_image_options(image_options) if image_options is not None else None
+        except ValueError as exc:
+            return str(exc)
+        token = self._request_image_options.set(overrides)
+        try:
+            if self.config.get("enable_luxury_mode", False):
+                return await self._call_api_with_luxury_mode(
+                    images, prompt, model, proxy, use_text_to_image_api,
+                    aspect_ratio=aspect_ratio, resolution=resolution
+                )
 
-        if self.config.get("enable_luxury_mode", False):
-            return await self._call_api_with_luxury_mode(
+            result = await self._call_api_once(
                 images, prompt, model, proxy, use_text_to_image_api,
                 aspect_ratio=aspect_ratio, resolution=resolution
             )
-
-        result = await self._call_api_once(
-            images, prompt, model, proxy, use_text_to_image_api,
-            aspect_ratio=aspect_ratio, resolution=resolution
-        )
-        return await self._validate_reference_result(result, images)
+            return await self._validate_reference_result(result, images)
+        finally:
+            self._request_image_options.reset(token)
 
     async def _call_native_protocol_api(self, protocol: str, images: List[bytes], prompt: str,
                                         model: str, proxy: str = None,
@@ -1510,7 +1526,7 @@ class ApiManager:
         """Bound protocol fallback to one attempt per interface and one key."""
         self._reset_metrics()
         protocol = normalize_protocol(self.config.get("protocol", PROTOCOL_AUTO))
-        gif_requested = str(self.config.get("image_output_format", "auto")).strip().lower() == "gif"
+        gif_requested = str(self._image_option("image_output_format", "auto")).strip().lower() == "gif"
         interface_mode = str(interface_override or self._get_interface_mode()).strip().lower()
         if gif_requested and (is_native_protocol(protocol) or interface_mode not in {"auto", "openai_image"}):
             return "GIF 输出需要 OpenAI Images 接口，请将渠道接口模式设为 auto 或 openai_image，并使用支持 GIF 的模型。"
@@ -1548,7 +1564,7 @@ class ApiManager:
                 index + 1 == len(interfaces)
                 or not self._is_transport_compatibility_error(result)
                 # Chat Completions cannot carry the animated Images contract.
-                or (transport == "openai_image" and str(self.config.get("image_output_format", "auto")).strip().lower() == "gif")
+                or (transport == "openai_image" and str(self._image_option("image_output_format", "auto")).strip().lower() == "gif")
             ):
                 return result
             logger.warning(

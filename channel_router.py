@@ -18,6 +18,7 @@ from .api_manager import ApiManager
 from .error_classify import GenerationError, classify_generation_error, safe_error_summary
 from .prompt_processor import PromptProcessor
 from .utils import append_final_instruction, append_negative_prompt
+from .preset_options import resolve_preset_generation_options
 
 
 class DrawingChannelRouter:
@@ -131,8 +132,12 @@ class DrawingChannelRouter:
         requires_input_image: bool = False,
         selected_override: str = "",
         allow_fallback: bool = True,
+        allowed_channel_ids: List[str] | None = None,
     ) -> List[Dict[str, Any]]:
         channels = self._raw_channels()
+        if allowed_channel_ids is not None:
+            by_id = {channel["id"]: channel for channel in channels}
+            channels = [by_id[channel_id] for channel_id in allowed_channel_ids if channel_id in by_id]
         if not channels:
             return []
 
@@ -172,7 +177,7 @@ class DrawingChannelRouter:
 
         fallbacks = [
             item for item in channels
-            if item["id"] != primary["id"] and item.get("fallback_enabled", True) is not False
+            if item["id"] != primary["id"] and (allowed_channel_ids is not None or item.get("fallback_enabled", True) is not False)
         ]
         ordered = [primary] + fallbacks
         ordered = [item for item in ordered if not self.daily_quota.snapshot(item)["quota_exhausted"]]
@@ -362,25 +367,38 @@ class DrawingChannelRouter:
         self._last_metrics = copied
         self._metrics_context.set(copied)
 
-    def _preset_channel_binding(self, preset_name: str) -> str:
-        """Resolve a preset's exact binding without silently routing bad entries."""
+    def _preset_channel_bindings(self, preset_name: str) -> List[str]:
+        """Resolve the preset's ordered allowlist; legacy single bindings still work."""
         if not preset_name:
-            return ""
+            return []
         bindings = self.config.get("preset_channel_bindings", [])
         if not isinstance(bindings, list):
             raise ValueError("预设渠道绑定配置无效，请在 WebUI 重新保存预设。")
-        matches = [
-            item for item in bindings
-            if isinstance(item, dict) and str(item.get("preset", "") or "").strip() == preset_name
-        ]
+        matches = [item for item in bindings
+                   if isinstance(item, dict) and str(item.get("preset", "") or "").strip() == preset_name]
         if not matches:
-            return ""
+            return []
         if len(matches) > 1:
             raise ValueError(f"预设 [{preset_name}] 存在重复的渠道绑定，请在 WebUI 修正。")
-        channel_id = matches[0].get("channel_id", "")
+        row = matches[0]
+        if "channel_ids" in row and row["channel_ids"] != []:
+            channel_ids = row["channel_ids"]
+            if (not isinstance(channel_ids, list) or not channel_ids or len(channel_ids) > 8
+                    or any(not isinstance(value, str) or not value.strip() for value in channel_ids)):
+                raise ValueError(f"预设 [{preset_name}] 的渠道列表无效，请重新选择渠道。")
+            result = [value.strip() for value in channel_ids]
+            if len(set(result)) != len(result):
+                raise ValueError(f"预设 [{preset_name}] 的渠道列表重复，请在 WebUI 修正。")
+            return result
+        channel_id = row.get("channel_id", "")
         if not isinstance(channel_id, str) or not channel_id.strip():
             raise ValueError(f"预设 [{preset_name}] 的绑定渠道为空或无效，请重新选择渠道。")
-        return channel_id.strip()
+        return [channel_id.strip()]
+
+    def _preset_channel_binding(self, preset_name: str) -> str:
+        """Return the first channel for callers using the older single-binding API."""
+        channels = self._preset_channel_bindings(preset_name)
+        return channels[0] if channels else ""
 
     async def call_api(
         self,
@@ -404,15 +422,19 @@ class DrawingChannelRouter:
         explicit_channel = str(preferred_channel_id or "").strip()
         preset_name = str(preset_name or "").strip()
         try:
-            preset_channel = "" if explicit_channel else self._preset_channel_binding(preset_name)
+            preset_channels = [] if explicit_channel else self._preset_channel_bindings(preset_name)
+            preset_channel = preset_channels[0] if preset_channels else ""
+            image_options = resolve_preset_generation_options(self.config, preset_name)
         except ValueError as exc:
             return str(exc)
         strict_channel = explicit_channel or preset_channel
         strict_label = f"预设 [{preset_name}] 绑定的渠道" if preset_channel else "指定渠道"
-        if strict_channel and not any(c["id"] == strict_channel for c in self._raw_channels()):
-            return f"{strict_label} {strict_channel} 不存在或已被手动禁用，请检查 WebUI 的渠道 ID。"
-        if preset_channel:
-            # A GIF preset must never fall back to an unrelated still-image route.
+        required_channels = preset_channels or ([explicit_channel] if explicit_channel else [])
+        enabled_ids = {channel["id"] for channel in self._raw_channels()}
+        for channel_id in required_channels:
+            if channel_id not in enabled_ids:
+                return f"{strict_label} {channel_id} 不存在或已被手动禁用，请检查 WebUI 的渠道 ID。"
+        if len(preset_channels) == 1:
             allow_fallback = False
         prepared_prompt = await self.prompt_processor.prepare(prompt)
         parameter_prompt = prepared_prompt
@@ -437,19 +459,21 @@ class DrawingChannelRouter:
             "session_model_override": session_scoped_model,
             "preset_name": preset_name,
             "preset_channel_binding": preset_channel,
+            "preset_channel_bindings": list(preset_channels),
+            "preset_image_options": dict(image_options),
         }
-        if strict_channel:
-            # Prompt preprocessing may await a service while the admin edits
-            # channels. Recheck before selection so a removed binding fails closed.
-            selected = next((c for c in self._raw_channels() if c["id"] == strict_channel), None)
+        for channel_id in required_channels:
+            # A service edit during prompt preprocessing must not open the allowlist.
+            selected = next((c for c in self._raw_channels() if c["id"] == channel_id), None)
             if selected is None:
-                return f"{strict_label} {strict_channel} 不存在或已被手动禁用，请检查 WebUI 的渠道 ID。"
+                return f"{strict_label} {channel_id} 不存在或已被手动禁用，请检查 WebUI 的渠道 ID。"
             if images and selected.get("reference_image_enabled", True) is False:
-                return f"{strict_label} {strict_channel} 不允许带参考图请求。"
+                return f"{strict_label} {channel_id} 不允许带参考图请求。"
         channels = self._ordered_channels(
             requires_input_image=bool(images),
             selected_override=channel_override,
             allow_fallback=allow_fallback,
+            allowed_channel_ids=preset_channels or None,
         )
         if images and not channels and self._raw_channels() and not any(c.get("reference_image_enabled", True) is not False for c in self._raw_channels()):
             return (
@@ -478,6 +502,7 @@ class DrawingChannelRouter:
                 use_text_to_image_api=use_text_to_image_api,
                 aspect_ratio=aspect_ratio,
                 resolution=resolution,
+                **({"image_options": image_options} if image_options else {}),
             )
             duration = time.monotonic() - started
             classification = None if self._is_success(result) else classify_generation_error(result)
@@ -544,6 +569,7 @@ class DrawingChannelRouter:
                                 use_text_to_image_api=use_text_to_image_api,
                                 aspect_ratio=effective_ratio,
                                 resolution=effective_resolution,
+                                **({"image_options": image_options} if image_options else {}),
                             )
                         except asyncio.CancelledError:
                             raise

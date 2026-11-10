@@ -126,23 +126,34 @@ def classify_generation_error(error: Any) -> GenerationError:
     ):
         return GenerationError(
             "rate_limit", "限流或上游额度不足", True, True, True, True, status,
-            "渠道暂时限流或上游额度不足，已尝试轮换密钥或回退渠道。",
+            "渠道暂时限流或上游额度不足，请稍后重试或联系管理员。",
         )
 
     if _contains(
         lower, "content_filter", "safety filter", "safety", "blocked", "moderation",
         "image_unsafe", "image unsafe", "poll failed: 451",
         "安全过滤", "内容过滤", "生成被拦截", "sexually_explicit",
+        "content_policy", "content_polic", "content policy", "policy_violation",
+        "nsfw", "inappropriate", "moderation_blocked", "内容审核", "安全策略",
+        "色情或情色内容的防护限制", "违反内容政策", "违反了安全政策",
     ):
         return GenerationError(
             "safety", "内容安全限制", False, False, False, False, status,
             "请求被内容安全规则拦截，请调整提示词后重试。",
         )
 
+    if status in {408, 504, 524} or _contains(
+        lower, "timeout", "timed out", "请求超时", "连接超时", "read timeout",
+    ):
+        return GenerationError(
+            "timeout", "请求超时", True, False, True, True, status,
+            "渠道响应超时，请稍后重试。",
+        )
+
     if _contains(lower, "upstream_error", "upstream error", "bad_response_status_code", "openai_error"):
         return GenerationError(
             "upstream", "上游服务异常", True, False, True, True, status,
-            "上游服务返回了异常响应，已尝试其他可用渠道。",
+            "上游服务返回了异常响应，请稍后重试。",
         )
 
     if _contains(
@@ -151,7 +162,7 @@ def classify_generation_error(error: Any) -> GenerationError:
     ) or status in {404, 405}:
         return GenerationError(
             "unsupported", "接口或模型不支持", False, False, True, False, status,
-            "当前渠道的接口或模型不支持这类请求，已尝试其他可用渠道。",
+            "当前渠道的接口或模型不支持这类请求，请检查渠道设置。",
         )
 
     if status in {400, 409, 413, 415, 422} or _contains(
@@ -160,15 +171,7 @@ def classify_generation_error(error: Any) -> GenerationError:
     ):
         return GenerationError(
             "bad_request", "请求参数或格式错误", False, False, True, False, status,
-            "当前渠道不接受这组请求参数或图片格式，已尝试其他可用渠道。",
-        )
-
-    if status in {408, 504} or _contains(
-        lower, "timeout", "timed out", "请求超时", "连接超时", "read timeout",
-    ):
-        return GenerationError(
-            "timeout", "请求超时", True, False, True, True, status,
-            "渠道响应超时，已尝试其他可用渠道。",
+            "当前渠道不接受这组请求参数或图片格式，请检查尺寸、格式和模型设置。",
         )
 
     if _contains(
@@ -178,7 +181,7 @@ def classify_generation_error(error: Any) -> GenerationError:
     ):
         return GenerationError(
             "network", "网络连接失败", True, False, True, True, status,
-            "渠道网络连接失败，已尝试其他可用渠道。",
+            "渠道网络连接失败，请稍后重试。",
         )
 
     if status is not None and status >= 500 or _contains(
@@ -187,16 +190,17 @@ def classify_generation_error(error: Any) -> GenerationError:
     ):
         return GenerationError(
             "upstream", "上游服务异常", True, False, True, True, status,
-            "上游服务暂时异常，已尝试其他可用渠道。",
+            "上游服务暂时异常，请稍后重试。",
         )
 
     if _contains(
         lower, "数据解析失败", "未找到图片数据", "返回内容为空", "无法解析出图片",
         "result image download", "结果图片下载失败", "下载结果图失败",
+        "未返回有效的 gif 动画",
     ):
         return GenerationError(
             "bad_response", "响应或结果图异常", True, False, True, True, status,
-            "渠道返回的内容无法识别为有效图片，已尝试其他可用渠道。",
+            "渠道返回的内容无法识别为有效图片，请稍后重试或检查渠道设置。",
         )
 
     if _contains(lower, "url 未配置", "api url", "未配置", "no available", "没有可用于"):
@@ -207,7 +211,7 @@ def classify_generation_error(error: Any) -> GenerationError:
 
     return GenerationError(
         "unknown", "未知错误", True, False, True, False, status,
-        "渠道返回了未识别的错误，已按回退规则继续尝试。",
+        "渠道返回了未识别的错误，请稍后重试或查看任务详情。",
     )
 
 
@@ -215,6 +219,7 @@ def safe_error_summary(error: Any, limit: int = 240) -> str:
     """Return a bounded diagnostic string without accidental key leakage."""
 
     text = re.sub(r"sk-[A-Za-z0-9_-]{8,}", "sk-***", str(error or ""))
+    text = re.sub(r"abk_[A-Za-z0-9_-]{8,}", "abk_***", text)
     text = re.sub(
         r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+",
         r"\1***",

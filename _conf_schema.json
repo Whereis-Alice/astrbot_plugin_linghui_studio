@@ -789,7 +789,7 @@
   "preset_channel_bindings": {
     "type": "template_list",
     "description": "【提示词处理】预设指定渠道",
-    "hint": "填写预设名称与渠道 ID。绑定后该预设只走指定渠道，失败不会切换其他渠道；未绑定则跟随会话和默认路由。",
+    "hint": "每个预设可选择一个或多个渠道，按列表顺序回退且不使用未选渠道；未绑定则跟随会话和默认路由。",
     "default": [],
     "templates": {
       "preset_channel_binding": {
@@ -801,11 +801,87 @@
             "hint": "填写已存在的预设名称，必须与提示词预设名称完全一致。",
             "default": ""
           },
+          "channel_ids": {
+            "type": "list",
+            "description": "渠道列表（按顺序回退）",
+            "hint": "填写已启用的渠道 ID，首项为主用，其余为备用。GIF 预设只选择支持动画的渠道。",
+            "default": [],
+            "items": {"type": "string"}
+          },
           "channel_id": {
             "type": "string",
             "description": "渠道 ID",
-            "hint": "填写已启用的绘图渠道 ID；绑定预设失败时不会切换其他渠道。",
+            "hint": "兼容旧版的首选渠道。多渠道请填写 channel_ids 有序列表。",
             "default": ""
+          }
+        }
+      }
+    }
+  },
+  "preset_generation_options": {
+    "type": "template_list",
+    "description": "【提示词与预设】预设图片参数",
+    "hint": "预设可在现有渠道上指定 GIF 或静图格式，无需复制渠道。auto 跟随渠道默认；GIF 帧数与时长只作用于该预设的请求。请为 GIF 预设选择支持动画的渠道。",
+    "default": [
+      {
+        "__template_key": "preset_generation_option",
+        "preset": "GIF表情",
+        "image_output_format": "gif",
+        "image_frame_count": 9,
+        "image_frame_duration_ms": 200,
+        "image_complexity": "auto"
+      }
+    ],
+    "templates": {
+      "preset_generation_option": {
+        "name": "预设图片参数",
+        "items": {
+          "preset": {
+            "type": "string",
+            "description": "预设名称",
+            "hint": "填写已经存在的预设名称，与提示词名称完全一致。",
+            "default": ""
+          },
+          "image_output_format": {
+            "type": "string",
+            "description": "输出格式",
+            "hint": "auto 跟随渠道；gif 明确请求动画。",
+            "options": [
+              "auto",
+              "png",
+              "jpeg",
+              "webp",
+              "gif"
+            ],
+            "default": "auto"
+          },
+          "image_frame_count": {
+            "type": "int",
+            "description": "GIF 帧数",
+            "hint": "2–16 帧，仅 GIF 生效。",
+            "default": 9,
+            "min": 2,
+            "max": 16
+          },
+          "image_frame_duration_ms": {
+            "type": "int",
+            "description": "GIF 每帧时长（毫秒）",
+            "hint": "20–2000 毫秒，必须为10的倍数。",
+            "default": 200,
+            "min": 20,
+            "max": 2000
+          },
+          "image_complexity": {
+            "type": "string",
+            "description": "复杂度",
+            "hint": "仅在服务商支持时指定；auto 使用模型默认。",
+            "options": [
+              "auto",
+              "low",
+              "medium",
+              "high"
+            ],
+            "default": "auto"
           }
         }
       }

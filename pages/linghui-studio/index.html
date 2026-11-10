@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>灵绘工坊</title>
     <link rel="icon" type="image/svg+xml" href="./assets/linghui-logo.svg" />
-    <link rel="stylesheet" href="./style.css?v=3.17.0" />
+    <link rel="stylesheet" href="./style.css?v=3.18.0" />
   </head>
   <body>
     <main class="shell">
@@ -249,7 +249,7 @@
         <section id="tab-prompts" class="tab-pane">
           <div class="two-columns wide-first">
             <section class="section-block">
-              <div class="section-heading"><div><h2>提示词预设</h2><p>默认使用 #&lt;预设名&gt; [追加要求] 调用；命名空间模式请在前面加上配置的命名空间。预设名不能包含冒号。聊天里发 <code>#预设列表</code> 可看图鉴，<code>#预设查看 名称</code> 看完整提示词。</p></div><button id="add-preset" class="quiet-action">添加预设</button></div>
+              <div class="section-heading"><div><h2>提示词预设</h2><p>默认使用 #&lt;预设名&gt; [追加要求] 调用；命名空间模式请在前面加上配置的命名空间。预设名不能包含冒号。聊天里发 <code>#预设列表</code> 可看图鉴，<code>#预设查看 名称</code> 看完整提示词。</p><p class="field-hint">制作动图：选一个已支持 GIF 的渠道，再将预设输出设为“GIF 动图”。只影响该预设，无需新增渠道。</p></div><button id="add-preset" class="quiet-action">添加预设</button></div>
               <div class="preset-toolbar">
                 <input id="preset-filter" type="search" placeholder="搜索预设名或提示词" autocomplete="off" aria-label="搜索预设" />
                 <div class="preset-source-filter" role="group" aria-label="按来源筛选预设">
@@ -394,7 +394,16 @@
         <div><h2 id="preset-create-title">添加预设</h2><p id="preset-create-help" class="field-hint">填写后点“确认添加”即可保存。</p></div>
         <label class="field"><span>预设名称</span><input id="preset-create-name" placeholder="例如：雨夜街景" maxlength="48" autocomplete="off" /><small class="field-hint">最多 48 个字符，不能包含冒号或换行，也不能与已有预设重名。</small></label>
         <label class="field"><span>提示词</span><textarea id="preset-create-prompt" rows="8" maxlength="12000" placeholder="描述画面、风格、构图和需要保留的要求"></textarea></label>
-        <label class="field"><span>指定渠道（可选）</span><select id="preset-create-channel"></select><small class="field-hint">留空跟随会话和默认渠道。绑定后失败不会切换到其他渠道，适合使用专门的 GIF 渠道。</small></label>
+        <div class="preset-create-route">
+          <div class="field"><span>渠道（可多选）</span><div id="preset-create-channel"></div><small class="field-hint">勾选后可调整主用、备用顺序，只在所选渠道间回退。</small></div>
+          <label class="field"><span>输出格式</span><select id="preset-create-output-format"><option value="auto">跟随渠道</option><option value="png">PNG</option><option value="jpeg">JPEG</option><option value="webp">WebP</option><option value="gif">GIF 动图</option></select><small class="field-hint">GIF 可直接使用已有的兼容渠道，只影响这个预设。</small></label>
+        </div>
+        <div id="preset-create-animation" class="preset-create-animation" hidden>
+          <label class="field"><span>帧数</span><input id="preset-create-frame-count" type="number" min="2" max="16" step="1" value="9" /></label>
+          <label class="field"><span>每帧时长（ms）</span><input id="preset-create-frame-duration-ms" type="number" min="20" max="2000" step="10" value="200" /></label>
+          <label class="field"><span>复杂度</span><select id="preset-create-complexity"><option value="auto">自动</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></label>
+          <small class="field-hint">帧数 2–16，每帧时长 20–2000ms，且为 10 的倍数。循环时长 = 帧数 × 每帧时长。</small>
+        </div>
         <p id="preset-create-error" class="preset-create-error" role="alert" hidden></p>
         <div class="confirm-actions"><button id="preset-create-cancel" class="quiet-action" type="button">取消</button><button id="preset-create-submit" class="primary-action" type="submit">确认添加</button></div>
       </form>
@@ -432,6 +441,6 @@
       </footer>
     </dialog>
     <div id="toast" class="toast" role="status"></div>
-    <script type="module" src="./app.js?v=3.17.0"></script>
+    <script type="module" src="./app.js?v=3.18.0"></script>
   </body>
 </html>

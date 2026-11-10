@@ -461,9 +461,11 @@ class DashboardRegistrationTest(unittest.TestCase):
             data_mgr=types.SimpleNamespace(user_prompts={"chat": "from chat", "config": "chat override"}),
         )
         rows = self.DashboardApi(plugin)._preset_rows()
+        defaults = {"channel_id": "", "channel_ids": [], "image_output_format": "auto",
+                    "image_frame_count": 9, "image_frame_duration_ms": 200, "image_complexity": "auto"}
         self.assertEqual(rows, [
-            {"name": "chat", "original_name": "chat", "prompt": "from chat", "source": "custom", "channel_id": ""},
-            {"name": "config", "original_name": "config", "prompt": "chat override", "source": "custom", "channel_id": ""},
+            {"name": "chat", "original_name": "chat", "prompt": "from chat", "source": "custom", **defaults},
+            {"name": "config", "original_name": "config", "prompt": "chat override", "source": "custom", **defaults},
         ])
 
     def test_dashboard_preserves_or_clears_a_masked_channel_key_explicitly(self):

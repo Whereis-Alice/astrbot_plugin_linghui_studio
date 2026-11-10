@@ -1,5 +1,5 @@
 import { createImageViewer } from "./image-viewer.js?v=3.14.0";
-import { capturePresetDrafts, createPresetDialog, presetChannelOptions, sortedPresetEntries } from "./preset-editor.js?v=3.17.0";
+import { capturePresetDrafts, createPresetDialog, handlePresetChannelPickerEvent, normalizePresetGenerationOptions, presetChannelIds, presetChannelPicker, presetGenerationFields, sortedPresetEntries } from "./preset-editor.js?v=3.18.0";
 
 const bridge = window.AstrBotPluginPage || {
   ready: async () => ({}),
@@ -552,14 +552,15 @@ function renderPresets() {
     const source = presetSourceOf(preset);
     counts[source] += 1;
     const badge = PRESET_SOURCE_BADGES[source];
+    const selectedChannels = presetChannelIds(preset);
     const haystack = `${preset.name || ""}\n${preset.prompt || ""}`.toLowerCase();
     const hidden = (wanted !== "all" && source !== wanted) || (keyword && !haystack.includes(keyword));
     if (!hidden) visible += 1;
     return `
     <div class="preset-row${hidden ? " is-filtered" : ""}" data-preset-index="${index}" data-preset-source="${source}">
-      <span class="preset-badge preset-badge-${source}" title="${escapeHtml(badge.title)}">${badge.icon} ${escapeHtml(badge.label)}</span>
-      <input data-preset="name" value="${escapeHtml(preset.name)}" placeholder="预设名" />
-      <select data-preset="channel_id" title="指定渠道后不切换到其他渠道；留空跟随会话和默认路由" aria-label="预设指定渠道">${presetChannelOptions(state.config?.channels || [], preset.channel_id || "")}</select>
+      <div class="preset-badges"><span class="preset-badge preset-badge-${source}" title="${escapeHtml(badge.title)}">${badge.icon} ${escapeHtml(badge.label)}</span><span class="preset-output-badge" data-preset-output-badge ${!preset.image_output_format || preset.image_output_format === "auto" ? "hidden" : ""}>${preset.image_output_format === "gif" ? "GIF 动图" : escapeHtml(String(preset.image_output_format || "").toUpperCase())}</span><span class="preset-route-badge" data-preset-channel-badge title="${escapeHtml(selectedChannels.join(" → "))}" ${selectedChannels.length ? "" : "hidden"}>${selectedChannels.length > 1 ? `${selectedChannels.length} 个渠道` : escapeHtml(selectedChannels[0] || "")}</span></div>
+      <input data-preset="name" value="${escapeHtml(preset.name)}" placeholder="预设名" aria-label="预设名称" />
+      <div class="preset-request-fields"><div class="preset-inline-field"><span>渠道</span>${presetChannelPicker(state.config?.channels || [], selectedChannels)}</div>${presetGenerationFields(preset)}</div>
       <textarea data-preset="prompt" rows="3" placeholder="提示词">${escapeHtml(preset.prompt)}</textarea>
       <button class="remove-button" type="button" data-remove-preset="${index}" title="删除预设" aria-label="删除预设">×</button>
     </div>`;
@@ -589,7 +590,7 @@ function syncPresetDrafts() {
 function readPresets() {
   syncPresetDrafts();
   return (state.config?.presets || []).map((preset) => ({
-    ...preset, name: preset.name.trim(), prompt: preset.prompt.trim(),
+    ...preset, ...normalizePresetGenerationOptions(preset), name: preset.name.trim(), prompt: preset.prompt.trim(),
   })).filter((item) => item.name || item.prompt);
 }
 
@@ -2260,6 +2261,12 @@ document.addEventListener("click", async (event) => {
       presetDialog.open();
       return;
     }
+    const movePresetChannel = event.target.closest("[data-preset-channel-move]");
+    if (movePresetChannel && movePresetChannel.closest("#preset-list")) {
+      const row = movePresetChannel.closest(".preset-row");
+      if (handlePresetChannelPickerEvent(event, state.config?.channels || [])) updatePresetRowDraft(row);
+      return;
+    }
     const removePreset = event.target.closest("[data-remove-preset]");
     if (removePreset) {
       syncPresetDrafts();
@@ -2386,6 +2393,26 @@ byId("preset-filter")?.addEventListener("input", (event) => {
   state.presetKeyword = event.target.value || "";
   renderPresets();
 });
+function updatePresetRowDraft(row) {
+  syncPresetDrafts();
+  const format = row.querySelector('[data-preset="image_output_format"]')?.value || "auto";
+  row.querySelectorAll("[data-preset-gif-option]").forEach((field) => { field.hidden = format !== "gif"; });
+  const badge = row.querySelector("[data-preset-output-badge]");
+  if (badge) { badge.hidden = format === "auto"; badge.textContent = format === "gif" ? "GIF 动图" : format.toUpperCase(); }
+  const channels = presetChannelIds(state.config.presets[Number(row.dataset.presetIndex)]);
+  const channelBadge = row.querySelector("[data-preset-channel-badge]");
+  if (channelBadge) { channelBadge.hidden = !channels.length; channelBadge.textContent = channels.length > 1 ? `${channels.length} 个渠道` : channels[0] || ""; channelBadge.title = channels.join(" → "); }
+  setSaveState("预设有未保存修改");
+}
+function updatePresetDraft(event) {
+  const row = event.target.closest?.(".preset-row[data-preset-index]");
+  if (!row) return;
+  if (event.type === "change" && event.target.matches?.("[data-preset-channel]")) handlePresetChannelPickerEvent(event, state.config?.channels || []);
+  else if (!event.target.matches?.("[data-preset]")) return;
+  updatePresetRowDraft(row);
+}
+byId("preset-list").addEventListener("input", updatePresetDraft);
+byId("preset-list").addEventListener("change", updatePresetDraft);
 byId("preset-sort").addEventListener("change", (event) => {
   syncPresetDrafts();
   state.presetSort = PRESET_SORTS.has(event.target.value) ? event.target.value : "grouped";
