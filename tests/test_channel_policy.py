@@ -105,8 +105,8 @@ class RouterPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.config = {"model": "default", "text_to_image_model": "default",
-                       "drawing_channels": [{"id": "a", "base_url": "a", "api_keys": "one"},
-                                            {"id": "b", "base_url": "b", "api_keys": "two"}]}
+                       "drawing_channels": [{"id": "a", "base_url": "a", "api_keys": "one", "model": "default"},
+                                            {"id": "b", "base_url": "b", "api_keys": "two", "model": "default"}]}
 
     def router(self):
         router = self.module.DrawingChannelRouter(self.config)
@@ -115,32 +115,31 @@ class RouterPolicyTest(unittest.IsolatedAsyncioTestCase):
         return router
 
     async def test_photo_ratio_uses_config_and_ignores_negative_dimensions(self):
-        self.config.update(image_aspect_ratio="9:16", image_resolution="1K")
+        self.config["drawing_channels"][0].update(image_aspect_ratio="9:16", image_resolution="1K")
         router = self.router()
-        await router.call_api([b"square-reference"], "portrait", "default",
+        await router.call_api([b"square-reference"], "portrait", "",
             prefer_config_aspect_ratio=True, negative_prompt="avoid 1:1, 4K")
         self.assertEqual(self.calls[-1][2]["aspect_ratio"], "9:16")
         self.assertEqual(self.calls[-1][2]["resolution"], "1K")
         self.assertIn("Negative prompt: avoid 1:1, 4K", self.calls[-1][3])
-        await router.call_api([b"reference"], "portrait 3:2", "default", prefer_config_aspect_ratio=True)
+        await router.call_api([b"reference"], "portrait 3:2", "", prefer_config_aspect_ratio=True)
         self.assertEqual(self.calls[-1][2]["aspect_ratio"], "3:2")
-        await router.call_api([b"reference"], "portrait 3:2", "default",
+        await router.call_api([b"reference"], "portrait 3:2", "",
             aspect_ratio="2:3", prefer_config_aspect_ratio=True)
         self.assertEqual(self.calls[-1][2]["aspect_ratio"], "2:3")
 
-    async def test_photo_ratio_follows_each_fallback_channel_and_legacy_default(self):
+    async def test_photo_ratio_follows_each_fallback_channel_and_no_implicit_service(self):
         self.config["drawing_channels"][0]["image_aspect_ratio"] = "4:5"
         self.config["drawing_channels"][1]["image_aspect_ratio"] = "16:9"
         self.outcomes[("a", "default")] = "API Error 503"
         router = self.router()
-        await router.call_api([b"reference"], "photo", "default", prefer_config_aspect_ratio=True)
+        await router.call_api([b"reference"], "photo", "", prefer_config_aspect_ratio=True)
         self.assertEqual([call[2]["aspect_ratio"] for call in self.calls], ["4:5", "16:9"])
         self.config.update(drawing_channels=[], image_aspect_ratio="4:3", base_url="legacy", api_keys="one")
         self.calls.clear()
-        await router.call_api([b"reference"], "photo", "default", prefer_config_aspect_ratio=True)
-        self.assertEqual(self.calls[-1][2]["aspect_ratio"], "4:3")
-        await router.call_api([b"reference"], "ordinary edit", "default")
-        self.assertIsNone(self.calls[-1][2]["aspect_ratio"])
+        result = await router.call_api([b"reference"], "photo", "", prefer_config_aspect_ratio=True)
+        self.assertIn("未配置可用绘图渠道", result)
+        self.assertEqual(self.calls, [])
 
     async def test_priority_then_stable_order_and_explicit_primary(self):
         self.config["drawing_channels"] += [{"id": "c", "base_url": "c", "api_keys": "three", "priority": 8}]
@@ -149,14 +148,14 @@ class RouterPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([c["id"] for c in router._ordered_channels()], ["b", "c", "a"])
         self.config["active_drawing_channel"] = "a"
         self.assertEqual([c["id"] for c in router._ordered_channels()], ["a", "b", "c"])
-        await router.call_api([], "cat", "default", preferred_channel_id="c", allow_fallback=False)
+        await router.call_api([], "cat", "", preferred_channel_id="c", allow_fallback=False)
         self.assertEqual(self.calls[0][0], "c")
 
     async def test_models_are_exhausted_before_switching_channel(self):
         self.config["drawing_channels"][0]["models"] = ["first", "second"]
         self.outcomes = {("a", "first"): "API Error 404 model_not_found", ("a", "second"): "API Error 503"}
         router = self.router()
-        self.assertEqual(await router.call_api([], "cat", "default"), b"generated")
+        self.assertEqual(await router.call_api([], "cat", ""), b"generated")
         self.assertEqual([(c[0], c[1]) for c in self.calls], [("a", "first"), ("a", "second"), ("b", "default")])
         self.assertEqual(router.daily_quota.snapshot({"id": "a"})["daily_used"], 0)
         self.assertEqual(router.daily_quota.snapshot({"id": "b"})["daily_used"], 1)
@@ -165,22 +164,88 @@ class RouterPolicyTest(unittest.IsolatedAsyncioTestCase):
     async def test_specialized_and_explicit_models_and_safety_policy(self):
         self.config["drawing_channels"][0].update({"image_edit_model": "edit", "models": ["one", "two"]})
         router = self.router()
-        self.assertEqual(router._models_for("default", router.channels()[0], False, True), ["edit", "one", "two"])
+        self.assertEqual(router._models_for("", router.channels()[0], False, True), ["edit", "one", "two"])
         self.outcomes[("a", "edit")] = "content_filter safety"
-        await router.call_api([b"reference"], "cat", "default")
+        await router.call_api([b"reference"], "cat", "")
         self.assertEqual([(c[0], c[1]) for c in self.calls], [("a", "edit")])
         self.calls.clear()
         await router.call_api([], "cat", "user-model")
         self.assertEqual(self.calls[0][1], "user-model")
+
+    async def test_safety_stop_records_reason_and_skips_other_keys_models_and_channels(self):
+        self.config["drawing_channels"][0].update(models=["first", "second"], api_keys="one\ntwo")
+        self.outcomes[("a", "first")] = "HTTP 400: content_policy_violation"
+        router = self.router()
+        result = await router.call_api([b"reference"], "portrait", "")
+        self.assertEqual([(c[0], c[1]) for c in self.calls], [("a", "first")])
+        self.assertTrue(result.endswith("（内容审核拦截，未继续切换渠道）"))
+        metrics = router.get_last_metrics()
+        self.assertIs(metrics["fallback_stopped"], True)
+        self.assertEqual(metrics["fallback_stop_reason"], "safety")
+        self.assertEqual(metrics["error_category"], "safety")
+        self.assertEqual(metrics["fallback_count"], 0)
+        self.assertEqual(len(metrics["attempt_chain"]), 1)
+        self.assertEqual(router.daily_quota.snapshot({"id": "a"})["daily_used"], 0)
+
+    async def test_existing_safety_fallback_switch_keeps_its_boolean_and_string_behavior(self):
+        for flag, should_fallback in ((False, False), ("false", False), (True, True), ("true", True)):
+            with self.subTest(flag=flag):
+                self.config["fallback_on_safety_error"] = flag
+                self.outcomes[("a", "default")] = "HTTP 400: content_policy_violation"
+                self.calls.clear()
+                router = self.router()
+                result = await router.call_api([b"reference"], "portrait", "")
+                metrics = router.get_last_metrics()
+                if should_fallback:
+                    self.assertEqual(result, b"generated")
+                    self.assertEqual([c[0] for c in self.calls], ["a", "b"])
+                    self.assertEqual(metrics["fallback_count"], 1)
+                    self.assertNotIn("fallback_stop_reason", metrics)
+                    self.assertNotIn("fallback_stopped", metrics)
+                else:
+                    self.assertEqual([c[0] for c in self.calls], ["a"])
+                    self.assertTrue(result.endswith("（内容审核拦截，未继续切换渠道）"))
+                    self.assertEqual(metrics["fallback_stop_reason"], "safety")
+
+    async def test_timeout_and_rate_limit_still_fall_back_without_safety_stop_metrics(self):
+        for error, category in (("HTTP 524: timed out", "timeout"),
+                                ("HTTP 429: quota exceeded", "rate_limit")):
+            with self.subTest(error=error):
+                self.outcomes[("a", "default")] = error
+                self.calls.clear()
+                router = self.router()
+                self.assertEqual(await router.call_api([b"reference"], "portrait", ""), b"generated")
+                self.assertEqual([c[0] for c in self.calls], ["a", "b"])
+                metrics = router.get_last_metrics()
+                self.assertEqual(metrics["fallback_count"], 1)
+                self.assertEqual(metrics["attempt_chain"][0]["error_category"], category)
+                self.assertTrue(metrics["attempt_chain"][1]["success"])
+                self.assertNotIn("fallback_stop_reason", metrics)
+                self.assertNotIn("fallback_stopped", metrics)
+
+    async def test_exhausted_timeout_and_rate_limit_routes_do_not_claim_moderation_stop(self):
+        for error in ("HTTP 524: timed out", "HTTP 429: quota exceeded"):
+            with self.subTest(error=error):
+                self.outcomes.update({("a", "default"): error, ("b", "default"): error})
+                self.calls.clear()
+                router = self.router()
+                result = await router.call_api([b"reference"], "portrait", "")
+                self.assertEqual([c[0] for c in self.calls], ["a", "b"])
+                self.assertIn("绘图渠道均失败", result)
+                self.assertNotIn("内容审核拦截", result)
+                metrics = router.get_last_metrics()
+                self.assertEqual(len(metrics["attempt_chain"]), 2)
+                self.assertNotIn("fallback_stop_reason", metrics)
+                self.assertNotIn("fallback_stopped", metrics)
 
     async def test_budget_is_shared_and_reserved_before_concurrent_dispatch(self):
         self.config["drawing_channels"][0]["daily_limit"] = 1
         self.config["drawing_channels"][1]["daily_limit"] = 0
         router = self.router()
         self.gate = asyncio.Event()
-        first = asyncio.create_task(router.call_api([], "cat", "default", session_id="one"))
+        first = asyncio.create_task(router.call_api([], "cat", "", session_id="one"))
         await asyncio.sleep(0)
-        second = await router.call_api([], "cat", "default", session_id="two")
+        second = await router.call_api([], "cat", "", session_id="two")
         self.assertIn("每日总额度", second)
         self.assertEqual(len(self.calls), 1)
         self.gate.set()
@@ -188,36 +253,36 @@ class RouterPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(router.get_health_snapshot()["channels"][0]["quota_exhausted"])
         self.assertTrue(self.config["drawing_channels"][0].get("enabled", True))
         restored = self.router()
-        self.assertIn("每日总额度", await restored.call_api([], "cat", "default"))
+        self.assertIn("每日总额度", await restored.call_api([], "cat", ""))
 
     async def test_cancel_refunds_and_exhausted_primary_routes_to_backup(self):
         self.config["drawing_channels"][0]["daily_limit"] = 1
         router = self.router()
         self.gate = asyncio.Event()
-        task = asyncio.create_task(router.call_api([], "cat", "default"))
+        task = asyncio.create_task(router.call_api([], "cat", ""))
         await asyncio.sleep(0)
         task.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await task
         self.assertEqual(router.daily_quota.snapshot(router.channels()[0])["daily_used"], 0)
         self.gate = None
-        await router.call_api([], "cat", "default")
-        await router.call_api([], "cat", "default")
+        await router.call_api([], "cat", "")
+        await router.call_api([], "cat", "")
         self.assertEqual(self.calls[-1][0], "b")
 
     async def test_target_never_switches_channel_or_uses_legacy(self):
         router = self.router()
         self.outcomes[("a", "default")] = "API Error 503"
-        failure = await router.call_api([], "cat", "default", preferred_channel_id="a", allow_fallback=False)
+        failure = await router.call_api([], "cat", "", preferred_channel_id="a", allow_fallback=False)
         self.assertIn("均失败", failure)
         self.assertEqual([c[0] for c in self.calls], ["a"])
         self.calls.clear()
-        self.assertIn("不存在", await router.call_api([], "cat", "default", preferred_channel_id="missing"))
+        self.assertIn("不存在", await router.call_api([], "cat", "", preferred_channel_id="missing"))
         self.config["drawing_channels"][0]["reference_image_enabled"] = False
-        self.assertIn("不允许", await router.call_api([b"ref"], "cat", "default", preferred_channel_id="a", allow_fallback=False))
+        self.assertIn("不允许", await router.call_api([b"ref"], "cat", "", preferred_channel_id="a", allow_fallback=False))
         for c in self.config["drawing_channels"]:
             c["enabled"] = False
-        self.assertIn("可用渠道", await router.call_api([], "cat", "default"))
+        self.assertIn("可用渠道", await router.call_api([], "cat", ""))
         self.assertEqual(self.calls, [])
 
     async def test_channel_sizes_and_prompt_explicit_precedence(self):
@@ -225,10 +290,10 @@ class RouterPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.config["drawing_channels"][1].update({"image_resolution": "1K", "image_aspect_ratio": "1:1"})
         self.outcomes[("a", "default")] = "API Error 503"
         router = self.router()
-        await router.call_api([b"ref"], "cat", "default")
+        await router.call_api([b"ref"], "cat", "")
         self.assertEqual([(c[2]["resolution"], c[2]["aspect_ratio"]) for c in self.calls], [("2K", "16:9"), ("1K", "1:1")])
         self.calls.clear()
-        await router.call_api([], "cat 4K 9:16", "default", resolution="1K")
+        await router.call_api([], "cat 4K 9:16", "", resolution="1K")
         self.assertEqual([(c[2]["resolution"], c[2]["aspect_ratio"]) for c in self.calls], [("1K", "9:16"), ("1K", "9:16")])
 
 
@@ -278,10 +343,10 @@ class ChannelMigrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await self.import_document(document))["success"])
         self.assertEqual(self.config["drawing_channels"][0]["api_keys"], "")
 
-    async def test_save_failure_rolls_back_and_shared_keys_are_exported(self):
+    async def test_save_failure_rolls_back_and_channel_keys_are_not_inherited(self):
         self.config["drawing_channels"][0]["api_keys"] = ""
         document = self.api._export_channels_document()
-        self.assertEqual(document["channels"][0]["api_keys"], "shared-key")
+        self.assertEqual(document["channels"][0]["api_keys"], "")
         before = copy.deepcopy(self.config)
         self.plugin._save_config.side_effect = [OSError("disk full"), None]
         response, status = await self.import_document(document)

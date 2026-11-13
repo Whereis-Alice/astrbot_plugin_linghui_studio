@@ -21,9 +21,9 @@ class ImageManager:
     )
 
     def __init__(self, config: dict):
-        self.proxy = config.get("proxy_url") if config.get("use_proxy") else None
+        self.proxy = None
         self.max_retries = config.get("download_retries", 3)
-        self.timeout = config.get("timeout", 60)
+        self.timeout = config.get("result_image_download_timeout", 45)
         self.table_quality = config.get("preset_table_quality", "高清")
         self.table_columns = config.get("preset_table_columns", 5)
         self._font_download_lock = asyncio.Lock()

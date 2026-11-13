@@ -26,7 +26,10 @@ from .error_classify import safe_error_summary
 from .gallery_preview import GalleryPreviewError, build_gallery_image
 from .protocol_adapters import PROTOCOL_CHOICES, PROTOCOL_LABELS, normalize_protocol
 from .requester_tag import DEFAULT_TAG_MODE, normalize_tag_mode
-from .preset_options import normalize_preset_generation_options, preset_options_map
+from .preset_options import (
+    effective_preset_settings, normalize_preset_generation_options,
+    preset_channels_map, preset_options_map, store_preset_settings,
+)
 from .utils import is_ambiguous_message_delivery_timeout, norm_id, normalize_api_root
 
 
@@ -34,7 +37,7 @@ from .channel_policy import normalize_policy as normalize_channel_policy
 
 
 PLUGIN_NAME = "astrbot_plugin_linghui_studio"
-PLUGIN_VERSION = "3.18.0"
+PLUGIN_VERSION = "3.19.0"
 DRAWING_CHANNEL_TEMPLATE_KEY = "drawing_channel"
 _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -280,28 +283,7 @@ class LinghuiDashboardApi:
 
     def _preset_channels_map(self) -> Dict[str, List[str]]:
         """Keep selected routes and their order visible, including unavailable IDs."""
-        result: Dict[str, List[str]] = {}
-        entries = self.plugin.conf.get("preset_channel_bindings", [])
-        if isinstance(entries, list):
-            for entry in entries:
-                if not isinstance(entry, dict) or not isinstance(entry.get("preset"), str):
-                    continue
-                preset = entry["preset"].strip()
-                if "channel_ids" in entry:
-                    raw_ids = entry["channel_ids"]
-                    if not isinstance(raw_ids, list) or any(not isinstance(value, str) for value in raw_ids):
-                        continue
-                    channel_ids = [value.strip() for value in raw_ids if value.strip()]
-                    # Native template migration fills new list fields with [] on old rows.
-                    legacy_id = entry.get("channel_id", "")
-                    if not channel_ids and isinstance(legacy_id, str) and legacy_id.strip():
-                        channel_ids = [legacy_id.strip()]
-                else:
-                    value = entry.get("channel_id", "")
-                    channel_ids = [value.strip()] if isinstance(value, str) and value.strip() else []
-                if preset and channel_ids:
-                    result[preset] = channel_ids
-        return result
+        return preset_channels_map(self.plugin.conf)
 
     def _preset_binding_map(self) -> Dict[str, str]:
         """Expose the primary selection to legacy API consumers."""
@@ -309,6 +291,7 @@ class LinghuiDashboardApi:
 
     def _normalize_preset_bindings(
         self, incoming: Any, names: set[str], channels: List[Dict[str, Any]],
+        *, validate_channels: bool = True,
     ) -> List[Dict[str, Any]]:
         if not isinstance(incoming, list) or len(incoming) > 200:
             raise ValueError("预设渠道绑定必须是列表，最多 200 项。")
@@ -340,7 +323,7 @@ class LinghuiDashboardApi:
                 channel_ids = [channel_id.strip()] if channel_id.strip() else []
             if len(channel_ids) != len(set(channel_ids)):
                 raise ValueError(f"预设 [{preset}] 选择了重复的渠道。")
-            for channel_id in channel_ids:
+            for channel_id in channel_ids if validate_channels else []:
                 channel = targets.get(channel_id)
                 if channel is None or not self._as_bool(channel.get("enabled", True)):
                     raise ValueError(f"预设 [{preset}] 的渠道 {channel_id} 不存在或已禁用，请先更换或解除绑定。")
@@ -378,6 +361,16 @@ class LinghuiDashboardApi:
                 entries.append({"preset": name, **selection})
         else:
             entries = [{"preset": preset, "channel_ids": channel_ids} for preset, channel_ids in previous.items()]
+        # A unified row can update its route selection independently of the
+        # image fields. Omitted selections preserve the previous routes.
+        if "preset_generation_options" in payload:
+            unified = normalize_preset_generation_options(payload["preset_generation_options"], names)
+            if isinstance(entries, list):
+                explicit = {row["preset"]: row["channel_ids"] for row in unified if "channel_ids" in row}
+                entries = [entry for entry in entries
+                           if not isinstance(entry, dict) or entry.get("preset") not in explicit]
+                entries.extend({"preset": name, "channel_ids": channel_ids}
+                               for name, channel_ids in explicit.items())
         if isinstance(entries, list):
             renamed_entries = []
             for entry in entries:
@@ -551,21 +544,12 @@ class LinghuiDashboardApi:
             "plugin_version": PLUGIN_VERSION,
             "command_prefix": self._command_prefix_display(),
             "settings": {
-                "model": str(self.plugin.conf.get("model", "") or ""),
-                "text_to_image_model": str(self.plugin.conf.get("text_to_image_model", "") or ""),
-                "image_resolution": str(self.plugin.conf.get("image_resolution", "1K") or "1K"),
-                "image_quality": str(self.plugin.conf.get("image_quality", "auto") or "auto"),
-                **{key: self.plugin.conf.get(key, default) for key, default in (
-                    ("image_output_format", "auto"), ("image_frame_count", 9),
-                    ("image_frame_duration_ms", 200), ("image_complexity", "auto"),
-                )},
+                "persona_channel_ids": list(self.plugin.conf.get("persona_channel_ids", []) or []),
                 "qq_image_delivery_mode": str(self.plugin.conf.get("qq_image_delivery_mode", "auto") or "auto"),
                 "qq_image_delivery_max_mb": self._as_int(self.plugin.conf.get("qq_image_delivery_max_mb", 2), 1, 20),
                 "qq_image_delivery_max_edge": self._as_int(self.plugin.conf.get("qq_image_delivery_max_edge", 4096), 512, 8192),
                 "qq_image_delivery_jpeg_quality": self._as_int(self.plugin.conf.get("qq_image_delivery_jpeg_quality", 95), 80, 100),
                 "qq_image_send_concurrency": self._as_int(self.plugin.conf.get("qq_image_send_concurrency", 1), 1, 4),
-                "image_aspect_ratio": str(self.plugin.conf.get("image_aspect_ratio", "1:1") or "1:1"),
-                "timeout": self._as_int(self.plugin.conf.get("timeout", 120), 5, 900),
                 "command_cooldown_seconds": self._as_int(
                     self.plugin.conf.get("command_cooldown_seconds", 0), 0, 3600
                 ),
@@ -597,15 +581,6 @@ class LinghuiDashboardApi:
                 ),
                 "enable_preset_ref_images": self._as_bool(self.plugin.conf.get("enable_preset_ref_images", True)),
                 "enable_persona_mode": self._as_bool(self.plugin.conf.get("enable_persona_mode", False)),
-                "enable_binary_image_response": self._as_bool(
-                    self.plugin.conf.get("enable_binary_image_response", True)
-                ),
-                "enable_bare_base64_response": self._as_bool(
-                    self.plugin.conf.get("enable_bare_base64_response", True)
-                ),
-                "stream_heartbeat_tolerant": self._as_bool(
-                    self.plugin.conf.get("stream_heartbeat_tolerant", True)
-                ),
             },
             "channels": [self._public_channel(channel, index) for index, channel in enumerate(channels) if isinstance(channel, dict)],
             "active_drawing_channel": str(self.plugin.conf.get("active_drawing_channel", "") or ""),
@@ -811,7 +786,6 @@ class LinghuiDashboardApi:
                 "image_edit_model": str(raw.get("image_edit_model", "") or "").strip()[:160],
                 "text_to_image_model": str(raw.get("text_to_image_model", "") or "").strip()[:160],
                 "timeout": self._as_int(raw.get("timeout", 120), 5, 900),
-                "use_stream": self._as_bool(raw.get("use_stream", old.get("use_stream", False))),
             })
         return result
 
@@ -839,6 +813,21 @@ class LinghuiDashboardApi:
         return result
 
     @staticmethod
+    def _prompt_list_map(entries: List[Any]) -> Dict[str, str]:
+        """Read the same half/full-width separators accepted by DataManager."""
+        prompts: Dict[str, str] = {}
+        for entry in entries:
+            if not isinstance(entry, str):
+                continue
+            separator = ":" if ":" in entry else ("：" if "：" in entry else "")
+            if not separator:
+                continue
+            name, prompt = (value.strip() for value in entry.split(separator, 1))
+            if name and prompt:
+                prompts[name] = prompt
+        return prompts
+
+    @staticmethod
     def _normalize_persona_scenes(incoming: Any) -> List[str]:
         if not isinstance(incoming, list):
             return []
@@ -856,6 +845,23 @@ class LinghuiDashboardApi:
             names.add(name)
             result.append(f"{name[:80]}:{prompt[:12_000]}")
         return result
+
+    def _normalize_persona_channels(self, incoming: Any, channels: List[Dict[str, Any]]) -> List[str]:
+        """Validate the selfie allowlist before any related channel changes go live."""
+        if (not isinstance(incoming, list) or len(incoming) > 8
+                or any(not isinstance(value, str) or not value.strip() for value in incoming)):
+            raise ValueError("自拍渠道必须是最多 8 个渠道 ID 的有序列表。")
+        selected = [value.strip() for value in incoming]
+        if len(selected) != len(set(selected)):
+            raise ValueError("自拍渠道不能重复，请按主用、备用顺序选择。")
+        targets = {str(channel.get("id", "")): channel for channel in channels if isinstance(channel, dict)}
+        for channel_id in selected:
+            channel = targets.get(channel_id)
+            if channel is None or not self._as_bool(channel.get("enabled", True)):
+                raise ValueError(f"自拍渠道 {channel_id} 不存在或已禁用，请先更换或解除选择。")
+            if not self._as_bool(channel.get("reference_image_enabled", True)):
+                raise ValueError(f"自拍渠道 {channel_id} 不允许参考图，请先更换或解除选择。")
+        return selected
 
     async def save_config(self):
         payload = await self._json_body()
@@ -875,10 +881,17 @@ class LinghuiDashboardApi:
                 channels = (self._normalize_channels(payload["channels"]) if "channels" in payload
                             else self.plugin.conf.get("drawing_channels", []) or [])
                 channel_ids = {str(channel.get("id", "")) for channel in channels if isinstance(channel, dict)}
+                settings = payload.get("settings", {})
+                selected_persona = (settings.get("persona_channel_ids", self.plugin.conf.get("persona_channel_ids", []))
+                                    if isinstance(settings, dict) else self.plugin.conf.get("persona_channel_ids", []))
+                persona_selection_supplied = isinstance(settings, dict) and "persona_channel_ids" in settings
                 if "channels" in payload:
                     renames = {str(row.get("original_id", "")): str(row.get("id", ""))
                                for row in payload["channels"] if row.get("original_id")}
                     payload = dict(payload)
+                    if isinstance(selected_persona, list):
+                        selected_persona = [renames.get(value, value) if isinstance(value, str) else value
+                                            for value in selected_persona]
                     for key in ("active_drawing_channel", "reference_image_drawing_channel"):
                         selected = str(payload.get(key, self.plugin.conf.get(key, "")) or "").strip()
                         renamed = renames.get(selected, selected)
@@ -888,47 +901,40 @@ class LinghuiDashboardApi:
                     selected = str(payload.get(key, "") or "").strip()
                     if key in payload and selected and selected not in channel_ids:
                         raise ValueError("主渠道和带参考图渠道必须是已配置的渠道 ID。")
+                checked_persona_channels = None
+                if persona_selection_supplied or "channels" in payload:
+                    checked_persona_channels = self._normalize_persona_channels(selected_persona, channels)
                 presets = self._normalize_presets(payload["presets"]) if "presets" in payload else None
                 bindings = None
-                if any(key in payload for key in ("channels", "presets", "preset_channel_bindings")):
+                preset_keys = ("channels", "presets", "preset_channel_bindings", "preset_generation_options")
+                if any(key in payload for key in preset_keys):
                     bindings = self._prepare_preset_bindings(payload, channels, presets)
                 preset_options = None
                 if any(key in payload for key in ("presets", "preset_generation_options")):
                     preset_options = self._prepare_preset_generation_options(payload, presets)
-                settings = payload.get("settings", {})
-                image_options = {}
-                if isinstance(settings, dict):
-                    supplied = {key: settings[key] for key in (
-                        "image_output_format", "image_frame_count", "image_frame_duration_ms", "image_complexity",
-                    ) if key in settings}
-                    if supplied:
-                        validated = normalize_channel_policy(supplied)
-                        image_options = {key: validated[key] for key in supplied}
-                # Keep the native-save fallback scoped to fields that this
-                # request actually changes. This is especially important for
-                # channel selectors whose empty value has a real meaning.
+                prepared_preset_settings = None
+                if any(key in payload for key in preset_keys):
+                    prepared_preset_settings = copy.deepcopy(dict(self.plugin.conf))
+                    store_preset_settings(prepared_preset_settings, options=preset_options, bindings=bindings)
+                    names = ({entry.split(":", 1)[0] for entry in presets} if presets is not None
+                             else {row["name"] for row in self._preset_rows()})
+                    prepared_preset_settings["preset_generation_options"] = [
+                        row for row in prepared_preset_settings["preset_generation_options"] if row["preset"] in names
+                    ]
+                # Persist only currently supported settings; retired single-endpoint
+                # fields from old clients cannot become active configuration again.
                 changed_dynamic_keys: set[str] = set()
-                self.plugin.conf.update(image_options)
-                changed_dynamic_keys.update(image_options)
+                if checked_persona_channels is not None and (
+                        persona_selection_supplied or checked_persona_channels != self.plugin.conf.get("persona_channel_ids", [])):
+                    self.plugin.conf["persona_channel_ids"] = checked_persona_channels
+                    changed_dynamic_keys.add("persona_channel_ids")
                 settings = payload.get("settings", {})
                 if isinstance(settings, dict):
-                    if "image_quality" in settings:
-                        quality = str(settings["image_quality"] or "auto").strip().lower()
-                        if quality not in {"auto", "low", "medium", "high", "xhigh", "max"}:
-                            raise ValueError("Images API 质量设置无效。")
-                        self.plugin.conf["image_quality"] = quality
-                        changed_dynamic_keys.add("image_quality")
-                    for key in ("model", "text_to_image_model", "image_resolution", "image_aspect_ratio"):
-                        if key in settings:
-                            self.plugin.conf[key] = str(settings[key] or "").strip()
-                            if key in {"model", "text_to_image_model"}:
-                                changed_dynamic_keys.add(key)
                     for key, minimum, maximum in (
                         ("qq_image_delivery_max_mb", 1, 20),
                         ("qq_image_delivery_max_edge", 512, 8192),
                         ("qq_image_delivery_jpeg_quality", 80, 100),
                         ("qq_image_send_concurrency", 1, 4),
-                        ("timeout", 5, 900),
                         ("command_cooldown_seconds", 0, 3600),
                         ("generation_cache_retention_days", 1, 365),
                         ("generation_cache_max_mb", 0, 102_400),
@@ -963,27 +969,15 @@ class LinghuiDashboardApi:
                             self.plugin.conf[key] = self._as_bool(settings[key])
                     if "requester_tag_mode" in settings:
                         self.plugin.conf["requester_tag_mode"] = normalize_tag_mode(settings["requester_tag_mode"])
-                    for key in (
-                        "enable_binary_image_response",
-                        "enable_bare_base64_response",
-                        "stream_heartbeat_tolerant",
-                    ):
-                        if key in settings:
-                            self.plugin.conf[key] = self._as_bool(settings[key])
-                            changed_dynamic_keys.add(key)
 
                 if "channels" in payload:
                     self.plugin.conf["drawing_channels"] = channels
                     changed_dynamic_keys.add("drawing_channels")
-                if bindings is not None and bindings != self.plugin.conf.get("preset_channel_bindings", []):
-                    self.plugin.conf["preset_channel_bindings"] = bindings
-                    changed_dynamic_keys.add("preset_channel_bindings")
-                if preset_options is not None and (
-                    "preset_generation_options" not in self.plugin.conf
-                    or preset_options != self.plugin.conf.get("preset_generation_options", [])
-                ):
-                    self.plugin.conf["preset_generation_options"] = preset_options
-                    changed_dynamic_keys.add("preset_generation_options")
+                if prepared_preset_settings is not None:
+                    self.plugin.conf["preset_generation_options"] = prepared_preset_settings["preset_generation_options"]
+                    self.plugin.conf["preset_config_version"] = prepared_preset_settings["preset_config_version"]
+                    self.plugin.conf.pop("preset_channel_bindings", None)
+                    changed_dynamic_keys.update(("preset_generation_options", "preset_channel_bindings", "preset_config_version"))
                 if "active_drawing_channel" in payload:
                     active_channel = str(payload["active_drawing_channel"] or "").strip()
                     channel_ids = {
@@ -1203,10 +1197,11 @@ class LinghuiDashboardApi:
                     image_manager.max_retries = self._as_int(self.plugin.conf.get("download_retries", 3), 0, 10)
                     image_manager.table_quality = str(self.plugin.conf.get("preset_table_quality", "高清") or "高清")
                     image_manager.table_columns = self._as_int(self.plugin.conf.get("preset_table_columns", 5), 2, 10)
-                self.plugin._save_config(sorted(changed_dynamic_keys))
-                api_manager = getattr(self.plugin, "api_mgr", None)
-                if api_manager is not None and callable(getattr(api_manager, "refresh", None)):
-                    await api_manager.refresh()
+                if changed_dynamic_keys:
+                    self.plugin._save_config(sorted(changed_dynamic_keys))
+                    api_manager = getattr(self.plugin, "api_mgr", None)
+                    if api_manager is not None and callable(getattr(api_manager, "refresh", None)):
+                        await api_manager.refresh()
             except ValueError as exc:
                 return jsonify({"success": False, "message": str(exc)}), 400
             except Exception as exc:
@@ -1234,7 +1229,9 @@ class LinghuiDashboardApi:
             had_bindings = "preset_channel_bindings" in self.plugin.conf
             previous_options = copy.deepcopy(self.plugin.conf.get("preset_generation_options", []))
             had_options = "preset_generation_options" in self.plugin.conf
-            preset_options = previous_options
+            previous_version = self.plugin.conf.get("preset_config_version")
+            had_version = "preset_config_version" in self.plugin.conf
+            preset_options = None
             if any(key in payload for key in _PRESET_IMAGE_DEFAULTS):
                 try:
                     names = {row["name"] for row in rows}
@@ -1244,7 +1241,7 @@ class LinghuiDashboardApi:
                     preset_options = normalize_preset_generation_options(entries, names | {name})
                 except ValueError as exc:
                     return jsonify({"success": False, "message": str(exc)}), 400
-            bindings = previous_bindings
+            bindings = None
             if "channel_id" in payload or "channel_ids" in payload:
                 try:
                     selection = ({"channel_ids": payload["channel_ids"]} if "channel_ids" in payload
@@ -1258,16 +1255,23 @@ class LinghuiDashboardApi:
                     )
                 except ValueError as exc:
                     return jsonify({"success": False, "message": str(exc)}), 400
+            prepared_preset_settings = None
+            if preset_options is not None or bindings is not None or had_bindings:
+                prepared_preset_settings = copy.deepcopy(dict(self.plugin.conf))
+                store_preset_settings(prepared_preset_settings, options=preset_options, bindings=bindings)
+                names = {row["name"] for row in rows} | {name}
+                prepared_preset_settings["preset_generation_options"] = [
+                    row for row in prepared_preset_settings["preset_generation_options"] if row["preset"] in names
+                ]
             try:
                 await self.plugin.data_mgr.add_user_prompt(name, prompt)
                 self.plugin.conf["prompt_list"] = [*previous, f"{name}:{prompt}"]
                 changed_keys = ["prompt_list"]
-                if bindings != previous_bindings:
-                    self.plugin.conf["preset_channel_bindings"] = bindings
-                    changed_keys.append("preset_channel_bindings")
-                if preset_options != previous_options:
-                    self.plugin.conf["preset_generation_options"] = preset_options
-                    changed_keys.append("preset_generation_options")
+                if prepared_preset_settings is not None:
+                    self.plugin.conf["preset_generation_options"] = prepared_preset_settings["preset_generation_options"]
+                    self.plugin.conf["preset_config_version"] = prepared_preset_settings["preset_config_version"]
+                    self.plugin.conf.pop("preset_channel_bindings", None)
+                    changed_keys.extend(("preset_generation_options", "preset_channel_bindings", "preset_config_version"))
                 self.plugin._save_config(changed_keys)
             except Exception:
                 self.plugin.conf["prompt_list"] = previous
@@ -1279,6 +1283,10 @@ class LinghuiDashboardApi:
                     self.plugin.conf["preset_generation_options"] = previous_options
                 else:
                     self.plugin.conf.pop("preset_generation_options", None)
+                if had_version:
+                    self.plugin.conf["preset_config_version"] = previous_version
+                else:
+                    self.plugin.conf.pop("preset_config_version", None)
                 try:
                     await self.plugin.data_mgr.remove_user_prompt(name)
                 except Exception:
@@ -2077,6 +2085,7 @@ class LinghuiDashboardApi:
                 "resolution": str(request_meta.get("resolution", "") or "")[:40],
                 "preferred_channel_id": str(request_meta.get("preferred_channel_id", "") or "")[:80],
                 "allow_fallback": bool(request_meta.get("allow_fallback", True)),
+                "routing_profile": str(request_meta.get("routing_profile", "") or "")[:40],
             },
         }
 
@@ -2129,6 +2138,7 @@ class LinghuiDashboardApi:
         negative_prompt: str = "",
         preferred_channel_id: str = "",
         allow_fallback: bool = True,
+        routing_profile: str = "",
     ) -> None:
         try:
             result = await self.plugin._call_generation_api_task(
@@ -2142,6 +2152,8 @@ class LinghuiDashboardApi:
                 negative_prompt=negative_prompt or None,
                 preferred_channel_id=preferred_channel_id or None,
                 allow_fallback=allow_fallback,
+                routing_profile=routing_profile,
+                prefer_config_aspect_ratio=routing_profile == "persona",
                 session_id=session_id,
                 preset_name=preset,
             )
@@ -2254,8 +2266,14 @@ class LinghuiDashboardApi:
             preferred_channel_id = str(payload.get("channel_id", "") or "").strip()
             if preferred_channel_id and preferred_channel_id not in self._channel_ids():
                 return jsonify({"success": False, "message": "指定绘图渠道不存在。"}), 400
-            model = str(payload.get("model", "") or task.get("requested_model", "") or "").strip()[:200]
             request_meta = task.get("request", {}) if isinstance(task.get("request"), dict) else {}
+            routing_profile = str(request_meta.get("routing_profile", "") or "").strip()
+            if not routing_profile and ("人设拍照" in str(task.get("task_type", ""))
+                                        or str(task.get("preset", "")).startswith("人设-")):
+                routing_profile = "persona"
+            model = str(payload.get("model", "") or (
+                "" if routing_profile == "persona" else task.get("requested_model", "")
+            ) or "").strip()[:200]
             allow_fallback = self._as_bool(payload.get("allow_fallback", True))
             new_task, _ = await self.plugin.task_mgr.begin_task(
                 request_id=f"dashboard-rerun:{uuid.uuid4().hex}",
@@ -2278,6 +2296,7 @@ class LinghuiDashboardApi:
                     "resolution": str(request_meta.get("resolution", "") or ""),
                     "preferred_channel_id": preferred_channel_id,
                     "allow_fallback": allow_fallback,
+                    "routing_profile": routing_profile,
                 },
             )
             self._spawn_background_job(self._run_dashboard_generation(
@@ -2297,6 +2316,7 @@ class LinghuiDashboardApi:
                 resolution=str(request_meta.get("resolution", "") or ""),
                 preferred_channel_id=preferred_channel_id,
                 allow_fallback=allow_fallback,
+                routing_profile=routing_profile,
             ))
             return jsonify({
                 "success": True,
@@ -2543,12 +2563,8 @@ class LinghuiDashboardApi:
         if preferred_channel_id and preferred_channel_id not in self._channel_ids():
             return jsonify({"success": False, "message": "指定绘图渠道不存在。"}), 400
         model = str(payload.get("model", "") or "").strip()[:200]
-        if not model:
-            model = str(
-                self.plugin.conf.get("text_to_image_model" if use_text_to_image_api else "model", "") or ""
-            ).strip()
-        aspect_ratio = str(payload.get("aspect_ratio", self.plugin.conf.get("image_aspect_ratio", "")) or "").strip()[:40]
-        resolution = str(payload.get("resolution", self.plugin.conf.get("image_resolution", "")) or "").strip()[:40]
+        aspect_ratio = str(payload.get("aspect_ratio", "") or "").strip()[:40]
+        resolution = str(payload.get("resolution", "") or "").strip()[:40]
         allow_fallback = self._as_bool(payload.get("allow_fallback", True))
         negative_prompt = str(payload.get("negative_prompt", "") or "").strip()[:12_000]
         task_type = "工作台文生图" if use_text_to_image_api else "工作台图生图"
@@ -2609,14 +2625,7 @@ class LinghuiDashboardApi:
             first = next((copy.deepcopy(item) for item in channels if isinstance(item, dict)), None)
             if first is not None:
                 return first
-        return {
-            "id": "legacy",
-            "name": "兼容单接口",
-            "interface_mode": self.plugin.conf.get("interface_mode", "auto"),
-            "base_url": self.plugin.conf.get("base_url", ""),
-            "api_keys": self.plugin.conf.get("api_keys", ""),
-            "model": self.plugin.conf.get("model", ""),
-        }
+        return None
 
     async def channel_models(self):
         channel_id = str(request.args.get("channel_id", "") or "").strip()
@@ -2625,14 +2634,12 @@ class LinghuiDashboardApi:
             return jsonify({"success": False, "message": "未找到绘图渠道。"}), 404
 
         interface_mode = str(channel.get("interface_mode", "auto") or "auto").strip()
-        base_url = str(channel.get("base_url", "") or self.plugin.conf.get("base_url", "") or "").strip()
+        base_url = str(channel.get("base_url", "") or "").strip()
         root = normalize_api_root(base_url)
         if not root:
             return jsonify({"success": False, "message": "该渠道未配置接口地址。"}), 400
         normalize_keys = getattr(self.plugin.api_mgr, "_normalize_keys", None)
         keys = normalize_keys(channel.get("api_keys", "")) if callable(normalize_keys) else []
-        if not keys and callable(normalize_keys):
-            keys = normalize_keys(self.plugin.conf.get("api_keys", ""))
         key = keys[0] if keys else ""
         if not key:
             return jsonify({"success": False, "message": "该渠道未配置可用密钥。"}), 400
@@ -2689,7 +2696,7 @@ class LinghuiDashboardApi:
                         ordered = [unique[key] for key in sorted(unique, key=str.casefold)]
                         return jsonify({
                             "success": True,
-                            "channel_id": str(channel.get("id", "") or "legacy"),
+                            "channel_id": str(channel.get("id", "")),
                             "models": ordered,
                             "count": len(ordered),
                             "source_url": url,
@@ -2704,10 +2711,7 @@ class LinghuiDashboardApi:
     @staticmethod
     def _is_secret_config_key(key: str) -> bool:
         normalized = str(key or "").strip().lower()
-        return normalized in {
-            "api_key", "api_keys", "generic_api_keys", "gemini_api_keys",
-            "text_to_image_api_keys", "prompt_processor_api_key",
-        } or normalized.endswith("_api_key") or normalized.endswith("_api_keys")
+        return normalized in {"api_key", "api_keys"} or normalized.endswith("_api_key") or normalized.endswith("_api_keys")
 
     @staticmethod
     def _secret_placeholder(value: Any) -> str:
@@ -2732,16 +2736,13 @@ class LinghuiDashboardApi:
                 # Export the same effective presets that Dashboard edits, including
                 # chat-created entries whose prompt lives in user_prompts.json.
                 value = [f"{row['name']}:{row['prompt']}" for row in self._preset_rows()]
-            if key == "preset_channel_bindings":
-                value = [{"__template_key": "preset_channel_binding", "preset": preset,
-                          "channel_id": channel_ids[0], "channel_ids": list(channel_ids)}
-                         for preset, channel_ids in self._preset_channels_map().items()]
             if key == "preset_generation_options":
                 names = {row["name"] for row in self._preset_rows()}
                 value = normalize_preset_generation_options(
-                    [{"preset": name, **options} for name, options in preset_options_map(self.plugin.conf).items()
-                     if name in names], names,
+                    [row for row in effective_preset_settings(self.plugin.conf) if row["preset"] in names], names,
                 )
+            if key == "preset_config_version":
+                value = 1
             if key == "drawing_channels" and isinstance(value, list):
                 for index, channel in enumerate(value):
                     if not isinstance(channel, dict):
@@ -2767,17 +2768,17 @@ class LinghuiDashboardApi:
 
     def _export_channels_document(self) -> Dict[str, Any]:
         channels = copy.deepcopy(self.plugin.conf.get("drawing_channels", []) or [])
-        router = self.plugin.api_mgr
         for channel in channels:
             if isinstance(channel, dict):
-                # Make inherited keys portable without exporting unrelated settings.
-                channel["api_keys"] = "\n".join(router._channel_keys(channel))
+                own_keys = channel.get("api_keys", "")
+                channel["api_keys"] = "\n".join(own_keys) if isinstance(own_keys, list) else str(own_keys or "")
         return {
             "format": "linghui-studio-channels", "format_version": 1,
             "plugin_version": PLUGIN_VERSION, "contains_secrets": True,
             "channels": channels,
             "active_drawing_channel": self.plugin.conf.get("active_drawing_channel", ""),
             "reference_image_drawing_channel": self.plugin.conf.get("reference_image_drawing_channel", ""),
+            "persona_channel_ids": list(self.plugin.conf.get("persona_channel_ids", []) or []),
         }
 
     async def channels_export(self):
@@ -2789,7 +2790,7 @@ class LinghuiDashboardApi:
         if not isinstance(document, dict) or document.get("format") != "linghui-studio-channels" or document.get("format_version") != 1:
             return jsonify({"success": False, "message": "请选择版本 1 的灵绘工坊渠道配置 JSON。"}), 400
         async with self._lock:
-            keys = ["drawing_channels", "active_drawing_channel", "reference_image_drawing_channel"]
+            keys = ["drawing_channels", "active_drawing_channel", "reference_image_drawing_channel", "persona_channel_ids"]
             absent_keys = {key for key in keys if key not in self.plugin.conf}
             snapshot = {key: copy.deepcopy(self.plugin.conf.get(key)) for key in keys}
             try:
@@ -2807,11 +2808,14 @@ class LinghuiDashboardApi:
                 self._prepare_preset_bindings({}, normalized)
                 values = {"drawing_channels": normalized}
                 ids = {item["id"] for item in normalized}
-                for key in keys[1:]:
+                for key in keys[1:3]:
                     selected = document.get(key, "")
                     if not isinstance(selected, str) or (selected and selected not in ids):
                         raise ValueError("导入的主渠道或带参考图渠道 ID 无效。")
                     values[key] = selected
+                values["persona_channel_ids"] = self._normalize_persona_channels(
+                    document.get("persona_channel_ids", self.plugin.conf.get("persona_channel_ids", [])), normalized,
+                )
             except (ValueError, TypeError) as exc:
                 return jsonify({"success": False, "message": str(exc)}), 400
             try:
@@ -2865,27 +2869,31 @@ class LinghuiDashboardApi:
     def _normalize_import_config(self, raw_config: Dict[str, Any]) -> tuple[Dict[str, Any], List[str], List[Dict[str, Any]]]:
         schema = self._schema()
         normalized: Dict[str, Any] = {}
-        ignored = [str(key) for key in raw_config if key not in schema]
+        ignored = [str(key) for key in raw_config if key not in schema and key != "preset_channel_bindings"]
         existing_channels = self._existing_channels()
 
         for key, raw_value in raw_config.items():
+            # Pre-3.19.0 exports retain this input-only migration field even
+            # after it disappears from the native configuration schema.
+            if key == "preset_channel_bindings":
+                if not isinstance(raw_value, list):
+                    raise ValueError("预设渠道绑定必须是列表。")
+                normalized[key] = copy.deepcopy(raw_value)
+                for entry in normalized[key]:
+                    if (isinstance(entry, dict) and entry.get("channel_ids") == []
+                            and isinstance(entry.get("channel_id"), str) and entry["channel_id"].strip()):
+                        entry.pop("channel_ids")
+                continue
             definition = schema.get(key)
             if not isinstance(definition, dict):
                 continue
             if self._is_secret_config_key(key) and str(raw_value or "").strip() == "__KEEP_EXISTING_SECRET__":
                 continue
             field_type = str(definition.get("type", "string") or "string")
-            if key in {"preset_channel_bindings", "preset_generation_options"}:
+            if key == "preset_generation_options":
                 if not isinstance(raw_value, list):
-                    raise ValueError("预设渠道绑定或生成参数必须是列表。")
+                    raise ValueError("预设设置必须是列表。")
                 normalized[key] = copy.deepcopy(raw_value)
-                if key == "preset_channel_bindings":
-                    for entry in normalized[key]:
-                        # A native config export can contain the newly defaulted []
-                        # alongside a pre-existing single-channel value.
-                        if (isinstance(entry, dict) and entry.get("channel_ids") == []
-                                and isinstance(entry.get("channel_id"), str) and entry["channel_id"].strip()):
-                            entry.pop("channel_ids")
                 continue
             if key == "drawing_channels":
                 incoming = copy.deepcopy(raw_value) if isinstance(raw_value, list) else []
@@ -2926,38 +2934,59 @@ class LinghuiDashboardApi:
                 raise ValueError(f"配置项 {key} 的值不在允许范围内。")
             normalized[key] = value
 
-        if any(key in normalized for key in ("preset_channel_bindings", "prompt_list", "drawing_channels")):
+        if any(key in normalized for key in ("preset_channel_bindings", "preset_generation_options", "prompt_list", "drawing_channels")):
             names = {row["name"] for row in self._preset_rows()}
             if "prompt_list" in normalized:
-                names = {entry.split(":" if ":" in entry else "：", 1)[0].strip()
-                         for entry in normalized["prompt_list"] if isinstance(entry, str) and (":" in entry or "：" in entry)}
-                names.update(getattr(self.plugin.data_mgr, "user_prompts", {}))
-            bindings = normalized.get("preset_channel_bindings")
-            if bindings is None:
-                bindings = [{"preset": preset, "channel_ids": channel_ids}
-                            for preset, channel_ids in self._preset_channels_map().items() if preset in names]
-            checked = self._normalize_preset_bindings(
-                bindings, names, normalized.get("drawing_channels", self.plugin.conf.get("drawing_channels", []) or []),
-            )
-            if checked != self.plugin.conf.get("preset_channel_bindings", []) or "preset_channel_bindings" in normalized:
-                normalized["preset_channel_bindings"] = checked
-        if any(key in normalized for key in ("preset_generation_options", "prompt_list")):
-            names = {row["name"] for row in self._preset_rows()}
-            if "prompt_list" in normalized:
-                names = {entry.split(":" if ":" in entry else "：", 1)[0].strip()
-                         for entry in normalized["prompt_list"] if isinstance(entry, str) and (":" in entry or "：" in entry)}
-                names.update(getattr(self.plugin.data_mgr, "user_prompts", {}))
+                names = set(self._prompt_list_map(normalized["prompt_list"]))
             options = normalized.get("preset_generation_options")
             if options is None:
                 options = [{"preset": preset, **values}
                            for preset, values in preset_options_map(self.plugin.conf).items() if preset in names]
-            checked = normalize_preset_generation_options(options, names)
-            if checked != self.plugin.conf.get("preset_generation_options", []) or "preset_generation_options" in normalized:
-                normalized["preset_generation_options"] = checked
-        image_keys = ("image_output_format", "image_frame_count", "image_frame_duration_ms", "image_complexity")
-        if any(key in raw_config for key in image_keys):
-            values = normalize_channel_policy({key: raw_config[key] for key in image_keys if key in raw_config})
-            normalized.update({key: values[key] for key in image_keys if key in raw_config})
+            checked_options = normalize_preset_generation_options(options, names)
+            channels = normalized.get("drawing_channels", self.plugin.conf.get("drawing_channels", []) or [])
+            if "preset_channel_bindings" in normalized:
+                checked_legacy = self._normalize_preset_bindings(
+                    normalized["preset_channel_bindings"], names, channels, validate_channels=False,
+                )
+                selections = {row["preset"]: row["channel_ids"] for row in checked_legacy}
+            else:
+                selections = {name: channel_ids for name, channel_ids in self._preset_channels_map().items()
+                              if name in names}
+            canonical_snapshot = ("preset_generation_options" in normalized
+                                  and self._as_int(raw_config.get("preset_config_version", 0)) >= 1)
+            if canonical_snapshot:
+                # A canonical export is a complete snapshot. Missing rows or
+                # omitted channel_ids mean ordinary routing, not destination state.
+                selections = {}
+            legacy_wins = "preset_channel_bindings" in normalized and self._as_int(raw_config.get("preset_config_version", 0)) < 1
+            if not legacy_wins:
+                for row in checked_options:
+                    if canonical_snapshot or "channel_ids" in row:
+                        selections[row["preset"]] = row.get("channel_ids", [])
+            checked_bindings = self._normalize_preset_bindings(
+                [{"preset": name, "channel_ids": channel_ids} for name, channel_ids in selections.items()],
+                names, channels,
+            )
+            combined = copy.deepcopy(dict(self.plugin.conf))
+            store_preset_settings(combined, options=checked_options, bindings=checked_bindings)
+            normalized["preset_generation_options"] = [
+                row for row in combined["preset_generation_options"] if row["preset"] in names
+            ]
+            normalized["preset_config_version"] = combined["preset_config_version"]
+            normalized.pop("preset_channel_bindings", None)
+        if "persona_channel_ids" in normalized or "drawing_channels" in normalized:
+            selected = normalized.get("persona_channel_ids", self.plugin.conf.get("persona_channel_ids", []))
+            if "persona_channel_ids" not in normalized:
+                raw_channels = raw_config.get("drawing_channels", [])
+                renames = {str(row.get("original_id", "")): str(row.get("id", ""))
+                           for row in raw_channels if isinstance(row, dict) and row.get("original_id")}
+                if isinstance(selected, list):
+                    selected = [renames.get(value, value) if isinstance(value, str) else value for value in selected]
+            validated = self._normalize_persona_channels(
+                selected, normalized.get("drawing_channels", self.plugin.conf.get("drawing_channels", []) or []),
+            )
+            if "persona_channel_ids" in normalized or validated != self.plugin.conf.get("persona_channel_ids", []):
+                normalized["persona_channel_ids"] = validated
 
         preflight: List[Dict[str, Any]] = []
         channels = normalized.get("drawing_channels")
@@ -3008,11 +3037,23 @@ class LinghuiDashboardApi:
             key for key, value in normalized.items()
             if self.plugin.conf.get(key) != value
         ]
+        imported_prompts = (self._prompt_list_map(normalized["prompt_list"])
+                            if "prompt_list" in normalized else None)
+        effective_prompts = ({row["name"]: row["prompt"] for row in self._preset_rows()}
+                             if imported_prompts is not None else None)
+        if imported_prompts is not None and imported_prompts != effective_prompts and "prompt_list" not in changed:
+            changed.append("prompt_list")
+        remove_legacy_bindings = "preset_generation_options" in normalized and "preset_channel_bindings" in self.plugin.conf
+        if remove_legacy_bindings:
+            changed.append("preset_channel_bindings")
         diff = [
             {
                 "key": key,
-                "before": self._preview_config_value(key, self.plugin.conf.get(key)),
-                "after": self._preview_config_value(key, normalized[key]),
+                "before": self._preview_config_value(
+                    key, [f"{name}:{prompt}" for name, prompt in effective_prompts.items()]
+                    if key == "prompt_list" and effective_prompts is not None else self.plugin.conf.get(key),
+                ),
+                "after": self._preview_config_value(key, normalized.get(key)),
             }
             for key in changed[:300]
         ]
@@ -3029,11 +3070,19 @@ class LinghuiDashboardApi:
         if action != "apply":
             return jsonify({"success": False, "message": "未知配置导入操作。"}), 400
 
-        snapshot = {key: copy.deepcopy(self.plugin.conf.get(key)) for key in normalized}
+        snapshot_keys = set(normalized) | ({"preset_channel_bindings"} if remove_legacy_bindings else set())
+        absent_keys = {key for key in snapshot_keys if key not in self.plugin.conf}
+        snapshot = {key: copy.deepcopy(self.plugin.conf.get(key)) for key in snapshot_keys}
+        previous_user_prompts = (copy.deepcopy(self.plugin.data_mgr.user_prompts)
+                                 if imported_prompts is not None else None)
         try:
             async with self._lock:
                 for key, value in normalized.items():
                     self.plugin.conf[key] = copy.deepcopy(value)
+                if remove_legacy_bindings:
+                    self.plugin.conf.pop("preset_channel_bindings", None)
+                if imported_prompts is not None:
+                    await self.plugin.data_mgr.replace_user_prompts(imported_prompts)
                 self.plugin.data_mgr.reload_prompts()
                 self.plugin._load_persona_scenes()
                 self.plugin._persona_mode = self._as_bool(self.plugin.conf.get("enable_persona_mode", False))
@@ -3045,7 +3094,11 @@ class LinghuiDashboardApi:
         except Exception as exc:
             for key, value in snapshot.items():
                 self.plugin.conf[key] = value
+            for key in absent_keys:
+                self.plugin.conf.pop(key, None)
             try:
+                if previous_user_prompts is not None:
+                    await self.plugin.data_mgr.replace_user_prompts(previous_user_prompts)
                 self.plugin.data_mgr.reload_prompts()
                 self.plugin._load_persona_scenes()
                 self.plugin._persona_mode = self._as_bool(

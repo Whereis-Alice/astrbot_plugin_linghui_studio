@@ -12,6 +12,8 @@ _ROUTE_FAILURE_RE = re.compile(
     r"(?:^|\s+\|\s+)([A-Za-z0-9_-]{1,48})\[[^\]\n]+\]:\s*"
 )
 _SIMPLE_LOCAL_RE = re.compile(r"^[\u3400-\u9fffA-Za-z0-9 ，,。.!！?？；;：:、（）()\[\]【】_/-]+$")
+_SAFETY_STOP_MARKER = "（内容审核拦截，未继续切换渠道）"
+_SAFETY_STOP_ADVICE = "内容审核已拦截，本次未继续切换渠道。请调整提示词或参考图后重试。"
 _INTERNAL_MARKERS = (
     "traceback", "exception", "typeerror", "valueerror", "keyerror", "attributeerror",
     "runtimeerror", "http://", "https://", "/root/", "\\users\\",
@@ -84,8 +86,13 @@ def format_generation_failure(
     is only a presentation boundary; it does not change retry/fallback policy.
     """
     text = str(error or "").strip()
+    safety_stopped = text.endswith(_SAFETY_STOP_MARKER)
+    if safety_stopped:
+        # Routing metadata must not affect the classification of the final
+        # channel's own diagnostic payload.
+        text = text[:-len(_SAFETY_STOP_MARKER)].rstrip()
     if not text:
-        return default_message
+        return _SAFETY_STOP_ADVICE if safety_stopped else default_message
     failures = _route_failures(text)
     if failures:
         categories: set[str] = set()
@@ -94,10 +101,13 @@ def format_generation_failure(
             category, reason = _reason(detail, include_status)
             categories.add(category)
             rows.append(f"• {channel}：{reason}")
-        return "\n".join([*rows, _next_step(categories)])
+        advice = _SAFETY_STOP_ADVICE if safety_stopped else _next_step(categories)
+        return "\n".join([*rows, advice])
 
     category, reason = _reason(text, include_status)
     if category == "unknown":
+        if safety_stopped:
+            return _SAFETY_STOP_ADVICE
         # Local validation messages are already useful prose. Never echo an
         # arbitrary upstream body, traceback or formatted diagnostic object.
         safe = safe_error_summary(text, 180)
@@ -105,6 +115,7 @@ def format_generation_failure(
                 and _SIMPLE_LOCAL_RE.fullmatch(safe) and re.search(r"[\u3400-\u9fff]", safe)):
             return safe
         return default_message
-    if "未返回有效的 GIF 动画" in text:
+    if "未返回有效的 GIF 动画" in text and not safety_stopped:
         return f"{reason}\n请确认所选渠道支持 GIF，或更换支持 GIF 的渠道。"
-    return f"{reason}\n{_next_step({category})}"
+    advice = _SAFETY_STOP_ADVICE if safety_stopped else _next_step({category})
+    return f"{reason}\n{advice}"

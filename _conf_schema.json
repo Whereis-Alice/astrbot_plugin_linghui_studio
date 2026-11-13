@@ -1,34 +1,4 @@
 {
-  "prefix": {
-    "type": "bool",
-    "description": "【命令与帮助】遵循 AstrBot 唤醒规则",
-    "hint": "建议开启。跟随当前会话的 AstrBot 唤醒词，不固定要求 / 或 #；私聊默认可直接发命令。若 AstrBot 开启“私聊需要唤醒词”，私聊也需按该设置触发。",
-    "default": true
-  },
-  "command_namespace": {
-    "type": "string",
-    "description": "【命令与帮助】可选命令命名空间",
-    "hint": "留空时直接使用 #文生图、#预设列表、#画。填写“绘图”后，也可使用 #绘图 文生图、#绘图 画；与同类插件共存时建议设置命名空间并关闭直接命令。",
-    "default": ""
-  },
-  "enable_direct_commands": {
-    "type": "bool",
-    "description": "【命令与帮助】启用不带命名空间的直接命令",
-    "hint": "关闭后仅响应“命名空间 + 空格 + 命令”的写法，例如 #绘图 文生图。用于避免与其他绘图插件抢占相同命令。",
-    "default": true
-  },
-  "extra_prefix": {
-    "type": "string",
-    "description": "【命令与帮助】自定义绘图子命令",
-    "hint": "默认“画”：#画 <提示词>。设置命名空间后使用 #绘图 画 <提示词>。兼容 bnn [@用户 ...] <提示词>，可按顺序使用多个 QQ 头像，包括指令后的 @机器人；指令前用于唤醒的 @机器人不作参考图。# 仅为示例，前缀跟随 AstrBot。",
-    "default": "画"
-  },
-  "help_text": {
-    "type": "text",
-    "description": "【命令与帮助】帮助文本",
-    "hint": "回复“帮助”时发送的内容。可使用换行；命令前缀仍由 AstrBot 的全局设置决定。",
-    "default": "灵绘工坊使用说明\n\n基础绘图\n#画 <提示词>：自定义绘图；带图片时图生图，无图片时文生图。\n#bnn 渠道m 一只猫：临时测试渠道 ID m，失败不换渠道；也支持 --渠道 m 或 --channel=m。\n#bnn [@用户 ...] <提示词>：自定义绘图；可按艾特顺序用一个或多个 QQ 头像作参考图，并自动排除艾特名称、群名、QQ 号和 ID。\n#文生图 <提示词>：显式文生图。\n#头像图生图 <提示词>：只使用发送者自己的 QQ 头像。\n#<预设名> [追加要求]：调用图生图预设，例如 #手办化。\n#预设列表 [我的/自带/文字/说明/关键词]：查看预设图鉴；“说明”逐行显示效果，“文字”显示纯文字名称清单。\n#预设查看 <预设名>：查看某个预设的完整提示词，支持模糊匹配。\n\n预设说明\n大多数内置预设需要附带图片进行图生图；没有图片时请使用 #文生图 或无图的 #画。发送“#预设列表 说明”可查看每个预设的一行效果说明。\n\n常用\n#签到：领取签到额度。\n#额度 / #总次数：查询个人、群和所有会话共享的总次数。\n管理员：#总次数 100 设置全局总上限；#增加总次数 50 补充全局总上限；#总次数 不限 关闭全局上限。\n#通道 [渠道ID/自动]：查看或切换主渠道（管理员）。\n#帮助：查看完整帮助。\n\n共存模式：在 Dashboard 设置命名空间并关闭直接命令后，使用 #绘图 文生图、#绘图 画、#绘图 bnn、#绘图 手办化。"
-  },
   "drawing_channels": {
     "type": "template_list",
     "description": "【绘图渠道与回退】绘图渠道与回退顺序",
@@ -167,7 +137,7 @@
           "image_resolution": {
             "type": "string",
             "description": "本渠道生图分辨率",
-            "hint": "留空继承全局；显式参数和提示词尺寸优先于渠道默认值。",
+            "hint": "留空使用默认 1K；显式参数和提示词尺寸优先于本渠道默认值。",
             "options": [
               "",
               "1K",
@@ -220,14 +190,22 @@
           "image_quality": {
             "type": "string",
             "description": "本渠道 Images API 质量",
-            "hint": "留空继承全局。仅用于 gpt-image-* 的 Images 请求，质量与分辨率独立；高质量通常增加耗时与用量。xhigh/max 仅在模型与渠道支持时使用，不会自动降级。",
-            "options": ["", "auto", "low", "medium", "high", "xhigh", "max"],
+            "hint": "留空使用模型默认。仅用于 gpt-image-* 的 Images 请求，质量与分辨率独立；xhigh/max 需要模型与渠道支持。",
+            "options": [
+              "",
+              "auto",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
             "default": ""
           },
           "image_aspect_ratio": {
             "type": "string",
             "description": "本渠道默认比例",
-            "hint": "留空沿用全局和参考图比例；非空同时用于文生图和图生图。显式参数和提示词比例优先。",
+            "hint": "留空沿用参考图比例或默认 1:1；显式参数和提示词比例优先于本渠道默认值。",
             "options": [
               "",
               "1:1",
@@ -292,7 +270,7 @@
   "enable_session_model_override": {
     "type": "bool",
     "description": "【绘图渠道与回退】允许会话级模型选择",
-    "hint": "开启后，管理员发送“模型 <序号/名称>”只改当前群或私聊的模型，不动全局默认；加“全局”二字才写入全局配置。关闭后该指令恢复为直接改全局。",
+    "hint": "开启后，管理员发送“模型 <序号/名称>”只改当前群或私聊的模型。关闭后请在渠道条目中维护默认模型；模型指令不修改渠道配置。",
     "default": true
   },
   "enable_session_channel_override": {
@@ -304,264 +282,390 @@
   "session_override_ttl_minutes": {
     "type": "int",
     "description": "【绘图渠道与回退】会话级选择有效时长（分钟）",
-    "hint": "会话级模型/渠道选择在多久后自动失效并回到全局默认。填 0 表示永不过期（仍可手动清除）。默认 720 分钟即 12 小时。",
+    "hint": "会话级模型/渠道选择在多久后自动失效并跟随渠道与默认路由。填 0 表示永不过期（仍可手动清除）。默认 720 分钟即 12 小时。",
     "default": 720,
     "min": 0,
     "max": 43200
   },
-  "interface_mode": {
-    "type": "string",
-    "description": "【兼容单接口】兼容单接口模式",
-    "hint": "仅在绘图渠道列表为空时使用。auto 按模型类型选择优先协议；openai_image/openai_chat 指定优先协议，仅遇到明确的协议或格式不兼容时有限回退。完整 custom_endpoint 不跨协议。新安装建议使用上方的绘图渠道列表。",
-    "options": [
-      "auto",
-      "openai_image",
-      "openai_chat",
-      "gemini_official",
-      "custom_endpoint"
-    ],
-    "default": "auto"
-  },
-  "image_edit_transport": {
-    "type": "string",
-    "description": "【兼容单接口】兼容单接口图生图上传格式",
-    "hint": "仅在绘图渠道列表为空时使用。Images API 带参考图请求的 auto 模式为 gpt-image-* 优先 multipart，其他模型优先 JSON，格式不兼容时有限回退；显式选择 multipart 或 json 后不会切换上传格式。",
-    "options": [
-      "auto",
-      "multipart",
-      "json"
-    ],
-    "default": "auto"
-  },
-  "base_url": {
-    "type": "string",
-    "description": "【兼容单接口】兼容单接口地址",
-    "hint": "仅在“绘图渠道”列表为空时使用。OpenAI Images/New API 填写站点基础地址，例如 https://example.com；自定义接口才填写完整请求地址。",
-    "default": ""
-  },
-  "api_keys": {
+  "custom_drawing_negative_prompt": {
     "type": "text",
-    "description": "【兼容单接口】兼容单接口 API Key",
-    "hint": "仅在“绘图渠道”列表为空时使用。每行一个 Key，可轮换使用。",
+    "description": "【提示词与预设】自定义绘图反向提示词",
+    "hint": "仅对 #bnn 和“自定义绘图子命令”（默认 #画）生效，包含带图和不带图两种请求。会在翻译/优化完成后以 Negative prompt: ... 形式追加；留空则关闭，不影响预设、#文生图、头像图生图、人设拍照或 LLM 工具。",
     "default": ""
   },
-  "text_to_image_api_url": {
-    "type": "string",
-    "description": "【兼容单接口】文生图专用接口地址",
-    "hint": "保留主上游的独立文生图接口能力。仅在绘图渠道列表为空时使用；填写服务基础地址即可，留空时沿用兼容单接口地址。",
-    "default": ""
+  "preset_generation_options": {
+    "type": "template_list",
+    "description": "【提示词与预设】预设设置",
+    "hint": "预设可在现有渠道上指定 GIF 或静图格式，无需复制渠道。auto 跟随渠道默认；GIF 帧数与时长只作用于该预设的请求。请为 GIF 预设选择支持动画的渠道。",
+    "default": [
+      {
+        "__template_key": "preset_generation_option",
+        "preset": "GIF表情",
+        "channel_ids": [],
+        "image_output_format": "gif",
+        "image_frame_count": 9,
+        "image_frame_duration_ms": 200,
+        "image_complexity": "auto"
+      }
+    ],
+    "templates": {
+      "preset_generation_option": {
+        "name": "预设设置",
+        "items": {
+          "preset": {
+            "type": "string",
+            "description": "预设名称",
+            "hint": "填写已经存在的预设名称，与提示词名称完全一致。",
+            "default": ""
+          },
+          "channel_ids": {
+            "type": "list",
+            "description": "渠道列表（按顺序回退）",
+            "hint": "填写已启用的渠道 ID，首项主用，其余备用；留空跟随会话和默认路由。GIF 预设只选择支持动画的渠道。",
+            "default": [],
+            "items": {
+              "type": "string"
+            }
+          },
+          "image_output_format": {
+            "type": "string",
+            "description": "输出格式",
+            "hint": "auto 跟随渠道；gif 明确请求动画。",
+            "options": [
+              "auto",
+              "png",
+              "jpeg",
+              "webp",
+              "gif"
+            ],
+            "default": "auto"
+          },
+          "image_frame_count": {
+            "type": "int",
+            "description": "GIF 帧数",
+            "hint": "2–16 帧，仅 GIF 生效。",
+            "default": 9,
+            "min": 2,
+            "max": 16
+          },
+          "image_frame_duration_ms": {
+            "type": "int",
+            "description": "GIF 每帧时长（毫秒）",
+            "hint": "20–2000 毫秒，必须为10的倍数。",
+            "default": 200,
+            "min": 20,
+            "max": 2000
+          },
+          "image_complexity": {
+            "type": "string",
+            "description": "复杂度",
+            "hint": "仅在服务商支持时指定；auto 使用模型默认。",
+            "options": [
+              "auto",
+              "low",
+              "medium",
+              "high"
+            ],
+            "default": "auto"
+          }
+        }
+      }
+    }
   },
-  "text_to_image_api_keys": {
+  "prompt_list": {
     "type": "list",
-    "description": "【兼容单接口】文生图专用 API Key 池",
-    "hint": "保留主上游的独立文生图 Key 池。每项一个 Key；留空时沿用兼容单接口 Key。新安装更建议在“绘图渠道”中为文生图配置模型和渠道。",
+    "description": "【提示词与预设】提示词预设",
+    "hint": "格式为“预设名:提示词”。可在灵绘工坊 Dashboard 中以表格方式维护。",
     "items": {
-      "type": "string",
-      "description": "文生图 API Key",
-      "hint": "填写一个文生图专用 API Key。"
+      "type": "string"
     },
-    "default": []
+    "default": [
+      "手办化:Your task is to create a photorealistic, masterpiece-quality image of a 1/7 scale commercialized figurine based on the user's character. The final image must be in a realistic style and environment.\n\n**Crucial Instruction on Face & Likeness:** The figurine's face is the most critical element. It must be a perfect, high-fidelity 3D translation of the character from the source image. The sculpt must be sharp, clean, and intricately detailed, accurately capturing the original artwork's facial structure, eye style, expression, and hair. The final result must be immediately recognizable as the same character, elevated to a premium physical product standard. Do NOT generate a generic or abstract face.\n\n**Scene Composition (Strictly follow these details):**\n1. **Figurine & Base:** Place the figure on a computer desk. It must stand on a simple, circular, transparent acrylic base WITHOUT any text or markings.\n2. **Computer Monitor:** In the background, a computer monitor must display 3D modeling software (like ZBrush or Blender) with the digital sculpt of the very same figurine visible on the screen.\n3. **Artwork Display:** Next to the computer screen, include a transparent acrylic board with a wooden base. This board holds a print of the original 2D artwork that the figurine is based on.\n4. **Environment:** The overall setting is a desk, with elements like a keyboard to enhance realism. The lighting should be natural and well-lit, as if in a room.",
+      "手办化2:Use the nano-banana model to create a 1/7 scale commercialized figure of thecharacter in the illustration, in a realistic styie and environment.Place the figure on a computer desk, using a circular transparent acrylic basewithout any text.On the computer screen, display the ZBrush modeling process of the figure.Next to the computer screen, place a BANDAl-style toy packaging box printedwith the original artwork.",
+      "手办化3:Your primary mission is to accurately convert the subject from the user's photo into a photorealistic, masterpiece quality, 1/7 scale PVC figurine, presented in its commercial packaging.\n\n**Crucial First Step: Analyze the image to identify the subject's key attributes (e.g., human male, human female, animal, specific creature) and defining features (hair style, clothing, expression). The generated figurine must strictly adhere to these identified attributes.** This is a mandatory instruction to avoid generating a generic female figure.\n\n**Top Priority - Character Likeness:** The figurine's face MUST maintain a strong likeness to the original character. Your task is to translate the 2D facial features into a 3D sculpt, preserving the identity, expression, and core characteristics. If the source is blurry, interpret the features to create a sharp, well-defined version that is clearly recognizable as the same character.\n\n**Scene Details:**\n1. **Figurine:** The figure version of the photo I gave you, with a clear representation of PVC material, placed on a round plastic base.\n2. **Packaging:** Behind the figure, there should be a partially transparent plastic and paper box, with the character from the photo printed on it.\n3. **Environment:** The entire scene should be in an indoor setting with good lighting.",
+      "手办化4:Please accurately transform the subject in this photo into a realistic, masterpiece-worthy 1/7 scale PVC figurine. This figurine must possess 3D dimensionality, and the PVC texture must be clearly represented. The figurine is placed in a figurine display cabinet made of multi-layered glass; appropriate space should be left between the top of the figurine and the upper shelf, and the figurine must be paired with a transparent base. The indoor scene must be visible through the glass. Different figurines can be placed on other shelves, but they should exhibit a natural depth of field and blurred effect to further enhance the sense of spatial depth and highlight the main figurine. The scene requires a bright main light source, and the display cabinet should be embedded with dim LED strip lights; the overall light and reflections must blend naturally with the scene. The frame angle does not need to be fixed in a specific orientation.\nDetail Specifications: Every part of the figurine must be 3D dimensional, and flat or two-dimensional effects are prohibited; under no circumstances shall contour lines or outlines appear; when repairing missing parts of the figurine, no low-quality content shall appear; if repairing a human figure, it is necessary to ensure normal limb shape, coordinated movements, and reasonable proportions of all parts; if the original photo is not a full-body shot, try to supplement the figurine into a full-body form as much as possible; the expression, movements, and angle of the human figurine must be completely consistent with the original photo, but it must be 3D dimensional; the head of the human figurine must not be too large, the legs must not be too short, and the overall figure must not look short; for chibi cartoon subjects, their original proportions shall be retained, but they must be 3D dimensional; if the subject is an animal, its fur should be simplified to make it more like a figurine product; attention must be paid to following the perspective principle of objects appearing larger when closer and smaller when farther away.",
+      "手办化5:Realistic PVC figure based on the game screenshot character, exact pose replication highly detailed textures PVC material with subtle sheen and smooth paint finish, placed on an indoor wooden computer desk (with subtle desk items like a figure box/mouse), illuminated by soft indoor light (mix of desk lamp and natural window light) for realistic shadows and highlights, macro photography style,high resolution,sharp focus on the figure,shallow depth of field (desk background slightly blurred but visible), no stylization,true-to-reference color and design, 1:1scale.",
+      "手办化6:Create a premium, collectible 1/7 scale standalone figurine based on the image, meticulously replicating the character, made from smooth PVC and ABS plastic with a professional matte finish. It stands on a minimalist transparent acrylic base. Next to it is its retail packaging box displaying the price and brand information, with the figure wrapped in plastic inside the slightly larger box. They are naturally arranged on a clean wooden table surrounded by reference books, with a bookshelf in the background and soft afternoon sunlight streaming through the window. Photo-realistic, DSLR effect, depth of field, bokeh background.",
+      "Q版化:((chibi style)), ((super-deformed)), ((head-to-body ratio 1:2)), ((huge head, tiny body)), ((smooth rounded limbs)), ((soft balloon-like hands and feet)), ((plump cheeks)), ((childlike big eyes)), ((simplified facial features)), ((smooth matte skin, no pores)), ((soft pastel color palette)), ((gentle ambient lighting, natural shadows)), ((same facial expression, same pose, same background scene)), ((seamless integration with original environment, correct perspective and scale)), ((no outline or thin soft outline)), ((high resolution, sharp focus, 8k, ultra-detailed)), avoid: realistic proportions, long limbs, sharp edges, harsh lighting, wrinkles, blemishes, thick black outlines, low resolution, blurry, extra limbs, distorted face",
+      "cos化:Generate a highly detailed photo of a real-life girl cosplaying this illustration, at Comiket. Exactly replicate the same pose, body posture, hand gestures, facial expression, and camera framing as in the original illustration. Keep the same angle, perspective, and composition, without any deviation.",
+      "cos自拍:Generate a first-person perspective (POV) snapshot of a cosplayer in a cluttered bedroom. The cosplayer's hairstyle and anime costume must exactly match the subject in the reference image. She holds a phone in front of her face with both hands, completely covering her face. The phone screen is the focal point of the image, displaying the uploaded picture. The background is a room filled with posters on the walls and a slightly messy bed. The image should have a casual, informal snapshot quality with a slightly low-resolution and grainy texture, lit by natural indoor lighting.",
+      "痛屋化:[ABSOLUTE PRIORITY AND NON-NEGOTIABLE DIRECTIVE] Based on the provided reference image, generate a hyper-detailed photograph of a maximalist otaku shrine with a strict, uncompromising requirement: all character-related elements—including figures, posters, bedding patterns, and the PC wallpaper—must be a 90%+ faithful, pixel-perfect replication of the character in the reference image. Strictly maintain the precise facial features, hairstyle, outfit, and expression with zero artistic reinterpretation or stylistic variation. With this core rule, create the scene at a 16:9 aspect ratio. The room is densely packed from floor to ceiling with merchandise that is an exact reproduction of this source character. The entire space is bathed in a moody, immersive ambient glow dominated by the reference character's primary color scheme (e.g., deep purple), which is sharply contrasted by a focused, brighter white light from a monitor screen bar lamp, creating dramatic visual layers. The walls are a collage made of posters and prints that are direct, unaltered copies of the reference image itself; the glass cabinets are cluttered with high-poly figures that are perfect 1:1 replicas of the reference character model; and the ultrawide monitor clearly displays the original reference image as its wallpaper. The final image must be a photorealistic, lived-in sanctuary, defined by its obsessive and flawless fidelity to the source character.",
+      "痛屋化2:Transform the uploaded indoor photo into a Japanese-style ita-room with the following specific requirements: Walls: Generate multi-size posters/scrolls (A2/A3/banner mixed arrangement) in an orderly matrix; no watermarks or garbled text. Curtains and bedding: Fully replace with themed patterns while retaining fabric folds and textures; pillowcases and life-sized cushions use the same character design. Display: Add glass display cabinets and open shelves, densely displaying themed figurines, acrylic stands, badge boards, and boxed peripherals of the same theme; arrange them in groups by height and color system. Desk: Keep the original equipment and light and shadow, only replace the screensaver/wallpaper with themed images; organize the wires neatly. Lighting: Add soft RGB light strips (along the ceiling and desk edges), coordinated with the main color, avoiding overexposure and color overflow. Texture: Realistic materials for PVC figurines, spray-painted paper, acrylic, and cotton fabrics; natural glass reflections without ghosting. Consistency: The face, hair color, and clothing details of the character on all carriers (posters/cushions/stands/box art) must maintain the same character and art style. Constraints (negative): No brand logos, watermarks, typos, distorted-face, perspective errors, repeated textures, over-sharpening, or noise.",
+      "痛车化:A Xiaomi SU7 electric sedan with a professional 'itasha' wrap, parked on a rain-slicked, neon-lit city street at dusk. Accurately depict the Xiaomi SU7 body shape, grille-less front fascia, slim headlights, taillights, wheel design, and logo placements. The entire car is covered in a vibrant, high-resolution decal featuring multiple dynamic poses and expressions of ONLY the provided anime character. The glossy finish reflects colorful city lights, making the character artwork pop.Seamless full-body wrap integrating hood, doors, and rear quarter panels. Dynamic three-quarter front view showcasing the hood and side artwork.",
+      "孤独的我:Generate a hyper-realistic photograph with RAW photo quality, captured by a top-tier camera. The image must exhibit realistic skin textures, rich lighting layers, and a natural depth of field. Absolutely no anime, cartoon, CG, or painted elements are allowed—the result must be a 100% authentic photographic representation. The scene is set in a restaurant, captured from a first-person perspective. I am sitting alone, holding chopsticks in one hand and a phone in the other, displaying a photo of a beautiful cosplayer. In the background, the same cosplayer (dressed as the anime character) is dining with her boyfriend, feeding him a bite of food. The composition should evoke a sense of loneliness and contrast between the observer and the observed.",
+      "第一视角:At the venue of Japan's Comic Market Doujinshi Sales Event commonly known as Comiket a real Chinese boy or girl of the same gender as the character in the original image is sitting directly opposite you wearing a costume consistent with the one in the original image. A double meal set including hamburgers and French fries is placed on your table with crumpled tissues and some food scraps scattered beside it creating a strong sense of realism. Your Android phone is casually laid on the table and its screen displays an unedited original image of the character. The person is engaging in intimate interaction with you gazing gently into your eyes leaning slightly towards you and placing one hand softly on your arm.You are holding a hamburger or a few French fries.",
+      "第三视角:A scene in a bright, modern McDonald’s or KFC restaurant at night, consistent with the visual style of the provided original image (no AI-generated imagery). In front of you (the viewer), there are foods like a hamburger and a small serving of French fries (with a visibly small portion) on the table, along with a crumpled used tissue, a few food crumbs (adding a sense of realism), and an Android phone (with a character displayed on the screen)—you are holding a hamburger or a French fry in your hand. At a very nearby separate table (not a shared table)—so close that it’s within easy sight—two Chinese people are sitting and engaging in intimate interactions (e.g., gentle eye contact, leaning slightly towards each other, or one resting a hand lightly on the other’s arm). One of them is a coser dressed exactly as the character on your Android phone, with the coser’s gender strictly corresponding to the character’s gender (male coser remains male, female coser remains female, no gender reversal) and matching that of the character in the provided original image; the other is a man. On their table, there is a two-person set meal, and both figures are slightly blurred (not overly so). The overall atmosphere blends a relaxed dining vibe with character-related elements, featuring natural lighting, and adheres to the visual style of the original image.",
+      "鬼图:Convert the Input Image into a Convincing, Found-Footage Style Cryptid Sighting Photograph 1. The image should depict a [insert creature name or description - e.g., slender, pale humanoid; multi-limbed, insect-like entity; shadowy, canine-like beast], and the creature’s appearance must be highly similar to that in the original image. The creature should be spotted in a hyperrealistic and eerily desolate location, such as [e.g., an abandoned industrial complex at night, a remote, snow-covered mountain pass, the murky depths of a forgotten urban canal, a desolate rural road in the dead of winter].​2. The shot must appear accidental, amateurish, and raw, as if captured spontaneously by a low-fidelity device like a [e.g., degraded VHS camcorder, grainy security camera, old disposable camera with flash, an infrared trail cam that's seen better days].​3. To maximize the unsettling authenticity, the image quality should be significantly imperfect: featuring extreme [e.g., heavy digital noise, pronounced film grain, severe motion blur making details indistinct, a strong, disorienting lens flare, being significantly out of focus, or displaying visible static and tracking lines]. The creature should be partially obscured and difficult to clearly discern, perhaps hidden by [e.g., dense, skeletal tree branches; thick, unnatural fog; distorted reflections on murky water; the jagged silhouette of derelict machinery; or existing within deep, oppressive shadows].​4. The lighting is critically dim and unsettling, possibly at [e.g., the darkest hour before dawn, a moonless midnight, or starkly illuminated by a harsh, direct, and slightly malfunctioning camera flash that overexposes parts of the scene].5. The overall feeling should evoke profound unease, dread, and a sense of witnessing something truly inexplicable and horrifying. Emphasize an atmosphere of isolation, decay, and the uncanny.​6. Keywords: cryptozoology, urban legend, paranormal, faked sighting, unsettling, horror, cryptid, grotesque, eerie, found footage, degraded quality, creature feature.",
+      "贴纸化:Generate A creative collage artwork based on the provided input image. The artwork should be created using a variety of materials such as paper, fabric, and found objects to achieve a textured, layered look. The composition should capture the essence of the original subject while incorporating collage techniques such as cutting, layering, and mixed media. The final piece should have a dynamic",
+      "玉足:Use the attached image as the exact protagonist (identity lock), maintaining exact facial features, hairstyle, and distinctive characteristics from the reference image. 1/7 scale commercial figurine, nano-banana model, hyper-detailed PVC figure. A character sitting on the ground with body positioned on the left side of the frame. From the character's perspective: RIGHT LEG fully extended straight forward, while LEFT LEG bent at the knee with foot flat on the ground. From viewer's perspective: The extended RIGHT LEG of the character appears on the LEFT SIDE of the frame, creating strong forced perspective with LOW ANGLE SHOT (foot size 2x larger than head). The character's extended right foot (viewer's left side) must be in sharp focus with soft milky-white skin tone, subtle pink undertones, and sole facing viewer at 45°, showing exactly 5 distinct toes with natural nail beds and delicate skin texture. Smooth, soft skin with a healthy, supple appearance. Arms crossed on chest, realistic hand-painted details, translucent PVC material effect. No background elements - focus entirely on the figurine's pose and foot details.",
+      "玩偶化:Reshape the character in the picture into a top-tier collectible *fumo*, with a fully soft and dynamic pose, and place it on the character theme fur pad. High-precision material, hand-stitched, the texture of the plush fabric and the clothing is truly distinct.\nIts eyes are the signature large embroidered semi-oval ones, without pupils, presenting a flat, sleepy or listless expression.\nThe main light source is soft diffused light, highlighting the fluffy feeling and soft texture, without overexposure. Powerful fill light eliminates dead black, and details are fully visible. The background is a blurred depth of field by the window, and the product packaging box is faintly visible on the side and rear. The sticker on the packaging box should be the original uploaded image.\nMuseum-level photography quality, every detail of the body is intact, and the embroidered facial features are exquisite and accurate.\nProhibited: Any 2D elements or direct copying of the original image, plastic feel, hard texture, blurred face, misaligned facial features, and loss of details.",
+      "cos相遇:A lively comic convention scene with a bustling real-world environment, featuring the original manga-style character from the input image, retaining her exact colorful design, unique art style, and distinct features (including her specific hair color, outfit, and expression). The character remains a vibrant, non-realistic manga-style figure, not a 2D flat plane but preserving her original artistic depth and color palette. She stands in a crowded convention hall with colorful cosplay booths and attendees. Facing her is a cosplayer dressed in an identical outfit, mimicking her pose, both positioned at a 45-degree angle toward the viewer. The background is a detailed, realistic comic convention with vivid colors, dynamic crowd, and cosplay elements, creating a surreal blend of the manga character’s vibrant, non-realistic style with a real-world setting. Emphasize the magical encounter between the manga character and her cosplayer counterpart.",
+      "三视图:a 3-view orthographic drawing of a young woman from a photo, showing front, right side, and back views. Realistic rendering, professional character sheet style, on a white background",
+      "穿搭拆解:A professional e-commerce fashion showcase featuring the clothing worn by the character from the input image, presented in a clean, studio-style setting. The outfit is decomposed into individual pieces (e.g., top, bottom, jacket, shoes, accessories), each clearly displayed and arranged in an organized, visually appealing layout. Each clothing item retains the exact design, color, texture, and details from the original image, showcased with crisp lighting and high-definition clarity. The background is minimalistic, white or neutral, to emphasize the clothing details, suitable for an online retail platform. The presentation includes subtle annotations or labels for each item, ensuring a polished, catalog-style look for wear and styling inspiration.",
+      "拆解图:Convert the people in the photos to the style of a model kit box, rendered in isometric perspective. Label the box with the title“Zhogue”. Inside the box, a gouda-styled robotic version of the person in the photo is displayed, along with its essentials (such as cosmetics, bags, or other items) redesigned as a futuristic mechanical accessory. The box should resemble a real Gunpla box, with technical illustrations, manual-style details, and sci-fi fonts. Next to the box, the actual gouda-style robot itself is also displayed, rendered in a realistic and lifelike style on the outside of the packaging, similar to the official Bandai propaganda renderings.",
+      "角色界面:Transform the input person image into a game character selection interface. Display the character on the right side as a full-body portrait, standing upright at a 45-degree angle facing both the screen and the left-side selection module, mimicking a selected state in a video game. Retain the person image's facial features, expression, and hairstyle, but adapt the clothing to a game-inspired style (e.g., fantasy armor, sci-fi suit, or RPG adventurer outfit) with intricate details, vibrant textures, and thematic accessories, while preserving the original clothing's color scheme and general aesthetic. If the input is a half-body image, seamlessly complete the lower body, matching the game-style clothing and proportions. On the left side, present a sleek interface with selectable options including game-style clothing variations (e.g., different armor sets, robes, tactical gear), martial stats (e.g., strength, agility), equipment (e.g., swords, gadgets, shields), and health points, styled as interactive game UI elements with clear labels and modern design. Arrange the layout to mimic a video game character selection screen, with a smooth, unified background gradient (e.g., dark blue to soft gray) for a cohesive, natural transition across the image. Use consistent, cinematic lighting and subtle glow effects to enhance the game-like atmosphere while maintaining the character's real-world facial essence.",
+      "角色设定:为我生成人物的角色设定（Character Design）,比例设定（不同身高对比、头身比等）,三视图（正面、侧面、背面）,表情设定（Expression Sheet） → 就是你发的那种图,动作设定（Pose Sheet） → 各种常见姿ises,服装设定（Costume Design）",
+      "3D打印:Please transform the object in the uploaded image into a collectible figurine.Behind it, place a figurine box printed with the object's image and its name. Next to it, add a high-end 3D printer that is currently printing the figurine. In front of the figurine box, add a round plastic base for the figurine to stand on.The PVC material of the base should have a crystal-clear, translucent texture, and set the entire scene indoors.",
+      "微型化:A high-resolution advertising photograph of a realistic, miniature [PRODUCT] held delicately between a person's thumb and index finger. clean and white background, studio lighting, soft shadows. The hand is well-groomed, natural skin tone, and positioned to highlight the product's shape and details. The product appears extremely small but hyper-detailed and brand-accurate, centered in the frame with a shallow depth of field. Emulates luxury product photography and minimalist commercial style.",
+      "挂件化:Turn this photo into a cute charm / a flat acrylic keychain / a flat rubber keychain to hang on an LV bag / the bag in photo 2.",
+      "姿势表:请为这幅插图创建一个姿势表，摆出各种姿势",
+      "高清修复:Enhance this image to high resolution",
+      "人物转身:show me this scene from behind the subjects. keep the details and the lighting identical",
+      "绘画四宫格:Step 1: line drawing. Step 2: tile colors. Step 3: Add Shadows. Step 4: Refine and shape. No words",
+      "发型九宫格:A professional hairstyle showcase based on the input image of a person's upper body and face, displaying the character with nine distinct hairstyles arranged in a clean, grid-like layout (3x3 grid) on a single image. Each hairstyle replaces the original hair while preserving the person's facial features, skin tone, and clothing details from the input image. The hairstyles include a variety of styles: short pixie cut, long wavy hair, sleek bob, voluminous curls, high ponytail, messy bun, side-swept bangs, braided updo, and straight layered cut, each rendered with realistic textures and natural lighting. The background is a consistent, neutral color (pure white or light gray) to emphasize the hairstyles and maintain a polished, professional look suitable for hairstyle selection. Subtle labels beneath each hairstyle indicate the style name for clarity.",
+      "头像九宫格:Id photos of the person in the picture with 9 different hairstyles, showing close-ups of the person with each hairstyle (Japanese, Korean, n) , keeping the features and clothes, and integration of the output for a nine grid picture",
+      "表情九宫格:Transform the input person image (half-body portrait) into a 3x3 grid of nine distinct images, each showcasing a different facial expression with the corresponding text label below the face, while retaining the original character's facial features, hairstyle, and clothing details. Arrange the expressions as follows: top row (happy with raised corners and squinted eyes labeled 'Happy', sad with downturned mouth and raised inner brows labeled 'Sad', angry with furrowed brows and narrowed eyes labeled 'Angry'); middle row (surprised with wide eyes and open mouth labeled 'Surprised', fearful with wide eyes and tense brows labeled 'Fearful', disgusted with wrinkled nose and pursed lips labeled 'Disgusted'); bottom row (confused with uneven brows and asymmetrical mouth labeled 'Confused', proud with lifted chin and firm gaze labeled 'Proud', embarrassed with tense smile and downward gaze labeled 'Embarrassed'). Ensure each cell reflects the described expression naturally, with seamless completion of the lower body to match the original clothing style. Use a soft, unified background (e.g., light gray) and consistent lighting across all grids to maintain coherence and focus on the expressions.",
+      "多机位:生成这张图片的正脸特写、侧身照、远景、背影的四种多机位镜头，然后整合输出到一张照片里，保持人物高度的一致性，适合生成连续剧情感镜头",
+      "电影分镜:用这图里的角色创作一个令人上瘾的12部分故事，包含12张图像，讲述经典的黑色电影侦探故事。故事关于他们寻找线索并最终发现的失落的宝藏。整个故事充满刺激，有情感的高潮和低谷，以精彩的转折和高潮结尾。不要在图像中包含任何文字或文本，纯粹通过图像本身讲述故事",
+      "动漫分镜:According to the content of the picture to generate nine frames of comics, with pictures and lenses to tell a story.",
+      "真人化:in Studio, pure white background, a cosplayer dressed in an identical outfit, as the girl in the reference image, mimicking her pose and outfit. enhanced with film grain for a gritty, authentic particle effect reminiscent of 35mm film stock; 8K ultra-HD, sharp and believable, no abstraction.",
+      "真人化2:Generate a highly detailed photo of a girl cosplaying this illustration, at Comiket. Exactly replicate the same pose, body posture, hand gestures, facial expression, and camera framing as in the original illustration. Keep the same angle, perspective, and composition, without any deviation",
+      "半真人:Take the image of the woman in [Input Photo]. Apply a creative split-style effect. Keep the lower half of her body (legs and boots) as the original photograph. Transform the upper half of her body (torso, arms, head) into a vibrant, 2D anime style with bold outlines and flat colors, similar to the anime 'Cyberpunk: Edgerunners'. The transition between the two styles should be a clean, slightly curved line.",
+      "捧脸:Create a polished close-up portrait based on the reference subject. Preserve identity, hairstyle, facial proportions, age appearance, and visual style. Pose the subject with both hands gently framing the cheeks, relaxed shoulders, warm eye contact, and a natural soft expression. Use flattering diffused light, clean composition, detailed hands, and an uncluttered background.",
+      "变真人:Translate the referenced illustrated or anime character into a believable real-person portrait while preserving the exact identity cues: face shape, eye impression, hairstyle, hair color, outfit design, accessories, age appearance, and expression. Use natural skin texture, realistic anatomy, cinematic but credible lighting, and photographic detail. Do not turn the character into a generic model.",
+      "果冻化:Transform the referenced subject into a charming translucent jelly sculpture. Preserve the recognizable silhouette, face design, hairstyle, colors, outfit shapes, and signature accessories. Use glossy soft-gel material, subtle internal bubbles, subsurface scattering, rounded edges, colorful reflections, and a neat studio display surface.",
+      "变COS:Create a high-quality real-world cosplay photograph of the referenced character. The cosplayer must match the character's identity, hairstyle, hair color, costume structure, patterns, accessories, makeup language, and pose as closely as possible. Use carefully crafted costume materials, natural human anatomy, realistic lighting, and a professional camera look.",
+      "漫画封面:Design a premium vertical manga cover featuring the referenced subject as the clear protagonist. Preserve the original identity and art style, then build a strong cover composition with expressive posing, layered background storytelling, dynamic lighting, clean negative space for a title, refined linework, rich color separation, and print-ready detail. Do not add unreadable random text.",
+      "证件照:Create a clean formal ID-photo portrait of the referenced subject. Preserve identity, face shape, hairstyle, age appearance, and core character features. Use a centered front-facing pose, neutral pleasant expression, tidy clothing, even shadow-free lighting, plain light background, accurate proportions, and crisp professional photo quality.",
+      "男友视角:Create a natural first-person companion-perspective lifestyle photo of the referenced adult subject. Preserve identity, hairstyle, outfit details, and age appearance. Use comfortable conversational distance, candid eye contact, relaxed body language, realistic surroundings, and gentle everyday lighting. Keep the composition tasteful and non-explicit.",
+      "漏腰:Restyle the referenced adult subject in a tasteful modern outfit with a small fashion-oriented midriff detail, such as a cropped jacket or coordinated high-waist set. Preserve identity, hairstyle, age appearance, body proportions, and the original design language. Use confident natural posing and a fully clothed, non-explicit composition.",
+      "半融合:A striking, high-definition frontal portrait of the character from the input photo, with the face perfectly centered. The image blends two styles seamlessly: the left half retains the character's original realistic appearance, including detailed skin textures, natural lighting, and exact facial features from the input image, while the right half transitions into a vibrant manga-style version, featuring bold outlines, expressive eyes, and stylized features typical of high-quality anime art, while preserving recognizable traits (e.g., hair shape, facial structure). The transition between the realistic and manga halves is smooth and gradual, with no visible dividing line, ensuring a natural, cohesive fusion at the center of the face. The blending emphasizes the contrast between realistic and manga aesthetics while maintaining a unified appearance. The background is a neutral, solid color (e.g., soft gray or white) to highlight the fusion effect, with consistent lighting to enhance the artistic impact and no harsh separation.",
+      "洗澡:`任务：根据给出图片中的人物，生成一张场景细节丰富画风精美的二次元图片。必须健全的图片不要露点\n前景与主体（床铺）：\n- 画面下方和中心是一张铺着粉红色床单的大床。床单看起来非常凌乱，布满褶皱，并且布满湿痕和黏液。\n- 床上分布散落着图中人物的各种衣服和饰品（上衣，下衣，内衣，袜子/裤袜，腿环，choker，手套等全身衣着），需要分开零散放置，衣服也潮湿且褶皱。\n床上一角放置一张与原来参照图相同的照片。\n- 床上还放置了用过的润滑液瓶\n后景（磨砂玻璃）：\n- 画面的上方是一面巨大的半透明磨砂玻璃\n- 透过磨砂玻璃可以极端模糊看到图中人物除了头发以外无衣物无身体细节一丝不挂但身材完美的外轮廓的面向镜头，趴在玻璃上```",
+      "洗澡2:`任务：根据给出图片中的人物，生成一张场景细节丰富画风精美的二次元图片。必须健全的图片不要露点 前景与主体（床铺）： - 画面下方和中心是一张铺着粉红色床单的大床。床单看起来非常凌乱，布满褶皱，并且布满湿痕和黏液。 - 床上分布散落着图中人物的各种衣服和饰品（上衣，下衣，内衣，袜子/裤袜，腿环，choker，手套等全身衣着），需要分开零散放置，衣服也潮湿且褶皱。 床上一角放置一张与原来参照图相同的照片。 - 床上还放置了用过的润滑液瓶 后景（磨砂玻璃）： - 画面的上方是一面巨大的半透明磨砂玻璃 - 透过磨砂玻璃可以极端模糊看到图中人物除了头发以外无衣物无身体细节一丝不挂但身材完美的外轮廓的面向镜头，趴在玻璃上```",
+      "GIF表情:Create a real animated GIF, not a contact sheet or a still image. Animate the referenced subject with a gentle blink, a small head tilt, and a friendly wave, forming a smooth seamless loop. Preserve the subject's identity, hairstyle, outfit, colors, and original visual style across every frame. Use a fixed camera, a clean background, consistent lighting, and no captions or watermarks. If no reference image is supplied, follow the user's subject description."
+    ]
   },
-  "model_list": {
+  "enable_preset_ref_images": {
+    "type": "bool",
+    "description": "【提示词与预设】启用预设参考图",
+    "hint": "开启后，调用预设会自动附带该预设保存的参考图；关闭后保留图片但不自动发送。",
+    "default": true
+  },
+  "enable_preset_safety_suffix": {
+    "type": "bool",
+    "description": "【提示词与预设】为预设追加安全限制",
+    "hint": "开启后，调用预设时会在提示词末尾追加下方安全限制文本；自定义绘图不受影响。",
+    "default": true
+  },
+  "preset_safety_suffix": {
+    "type": "text",
+    "description": "【提示词与预设】预设安全限制文本",
+    "hint": "追加到预设提示词末尾的安全要求。关闭“为预设追加安全限制”后不会使用此文本。",
+    "default": "Keep the result non-explicit, age-appropriate, fully clothed where people appear, and free of sexual or exploitative content."
+  },
+  "enable_persona_mode": {
+    "type": "bool",
+    "description": "【人设拍照】启用人设拍照",
+    "hint": "开启后可使用人设拍照功能和人设参考图；关闭后不会响应该功能入口。",
+    "default": false
+  },
+  "persona_name": {
+    "type": "string",
+    "description": "【人设拍照】人设名称",
+    "hint": "用于人设提示词中的称呼，不会修改插件名称。",
+    "default": "灵绘助手"
+  },
+  "persona_description": {
+    "type": "text",
+    "description": "【人设拍照】外观描述",
+    "hint": "仅描述脸型、发型、发色、身份等稳定外观特征。默认服装请填到独立衣着字段；旧描述保留原样，由你自行整理。",
+    "default": "一个友好、自然的虚拟角色。"
+  },
+  "persona_default_outfit": {
+    "type": "text",
+    "description": "【人设拍照】默认衣着描述",
+    "hint": "优先级最低。仅在用户、LLM 本次方向和今日穿搭都未决定衣着时兜底；明确服装出现后不会加入提示词。留空由模型参考人物图选择。",
+    "default": ""
+  },
+  "persona_photo_style": {
+    "type": "string",
+    "description": "【人设拍照】人设照片风格",
+    "hint": "附加到人设拍照请求的视觉风格，例如自然光、胶片或棚拍风格。",
+    "default": "natural lifestyle photography, soft daylight, detailed"
+  },
+  "persona_negative_prompt": {
+    "type": "text",
+    "description": "【人设拍照】人设照片反向提示词",
+    "hint": "填写自拍、写真和人设合影中不要出现的元素。工具自拍、指令拍照和多张照片均生效；留空关闭，不影响普通绘图或图片编辑。",
+    "default": ""
+  },
+  "persona_trigger_keywords": {
     "type": "list",
-    "description": "【兼容单接口】可切换模型列表",
-    "hint": "供管理员使用“模型”命令查看或切换。每项填写一个模型 ID；留空时仅使用默认模型。",
+    "description": "【人设拍照】人设触发关键词",
+    "hint": "每项填写一个关键词，用于智能识别与人设相关的拍照意图。",
+    "items": {
+      "type": "string"
+    },
+    "default": [
+      "拍照",
+      "自拍"
+    ]
+  },
+  "persona_scene_prompts": {
+    "type": "list",
+    "description": "【人设拍照】人设场景预设",
+    "hint": "格式为 场景:提示词。",
     "items": {
       "type": "string"
     },
     "default": []
   },
-  "model": {
+  "persona_default_prompt": {
     "type": "string",
-    "description": "【兼容单接口】兼容单接口默认模型",
-    "hint": "仅在“绘图渠道”列表为空时使用，供图生图和未指定模型的请求调用。",
-    "default": ""
+    "description": "【人设拍照】人设默认场景提示词",
+    "hint": "未指定人设场景时使用的默认环境与构图要求。",
+    "default": "a natural everyday portrait"
   },
-  "text_to_image_model": {
+  "persona_character_type": {
     "type": "string",
-    "description": "【兼容单接口】兼容单接口文生图模型",
-    "hint": "仅在“绘图渠道”列表为空时使用。留空时文生图会使用兼容默认模型。",
-    "default": ""
-  },
-  "image_resolution": {
-    "type": "string",
-    "description": "【兼容单接口】默认分辨率",
-    "hint": "文生图和图生图都会先保留所选分辨率。gpt-image-* 的 Images 请求只有遇到尺寸拒绝，或仅含 openai_error/bad_response_status_code 的 400/422 时，才以 1024x1024 重试一次；不会无条件改成方图，也不会改写此配置。实际尺寸支持以渠道为准。",
-    "options": [
-      "1K",
-      "2K",
-      "4K"
-    ],
-    "default": "1K"
-  },
-  "image_output_format": {
-    "type": "string",
-    "description": "【图片设置】输出格式",
-    "hint": "auto 不发送格式参数，由模型决定。GIF 需要模型和 Images 渠道支持，例如 GPT Image 2.6；GIF 使用自动尺寸并保留动画原文件。",
+    "description": "【人设拍照】人设形象类型",
+    "hint": "auto 会按人设参考图判断真人或动漫并保持原类型；real 强制真人摄影逻辑；anime 强制保留动漫/插画身份，避免错误真人化。",
     "options": [
       "auto",
-      "png",
-      "jpeg",
-      "webp",
-      "gif"
+      "real",
+      "anime"
     ],
     "default": "auto"
   },
-  "image_frame_count": {
+  "persona_outfit_mode": {
+    "type": "string",
+    "description": "【人设拍照】自拍穿搭模式",
+    "hint": "llm（默认）让当前聊天模型按人格、聊天和用户要求决定穿搭，每日穿搭仅作参考；daily 固定今日穿搭。明确换装要求始终优先。直接使用调用自拍工具的 LLM 在 scene_hint、extra_request 或 photo_plan 中决定的穿搭，不额外请求 LLM；未指定时沿用日状态或参考图。",
+    "options": [
+      "llm",
+      "daily"
+    ],
+    "default": "llm"
+  },
+  "persona_expression_mode": {
+    "type": "string",
+    "description": "【人设拍照】自拍表情模式",
+    "hint": "context（默认）尊重调用工具的 LLM 已结合人格和聊天决定的神态；diverse 在合适范围内主动变化；fixed 沿用今日心情。每日心情在前两种模式下只作基调，用户指定表情优先，多张逐张规划。直接使用本次工具参数中的决定，不另行请求 LLM；未提供方向时交给生图模型自然表现。",
+    "options": [
+      "context",
+      "diverse",
+      "fixed"
+    ],
+    "default": "context"
+  },
+  "persona_expression_history": {
     "type": "int",
-    "description": "【图片设置】GIF 帧数",
-    "hint": "仅 GIF 请求生效。范围 2–16，更多帧通常增加耗时和用量。",
-    "default": 9,
-    "min": 2,
-    "max": 16
+    "description": "【人设拍照】自拍表情避免重复范围",
+    "hint": "参考同一会话最近多少张成功自拍的规划神态来减少重复，默认 3，0 关闭。用户明确指定表情和固定模式不受影响；历史会持久化，最多保留 100 个会话各 10 条，不保存聊天文本。",
+    "default": 3,
+    "min": 0,
+    "max": 10
   },
-  "image_frame_duration_ms": {
+  "persona_photo_max_count": {
     "type": "int",
-    "description": "【图片设置】GIF 每帧时长（毫秒）",
-    "hint": "仅 GIF 请求生效。范围 20–2000，必须为 10 的倍数。",
-    "default": 200,
-    "min": 20,
-    "max": 2000
-  },
-  "image_complexity": {
-    "type": "string",
-    "description": "【图片设置】Images API 复杂度",
-    "hint": "auto 不发送该参数；low/medium/high 仅在模型和渠道支持时使用。",
-    "options": [
-      "auto",
-      "low",
-      "medium",
-      "high"
-    ],
-    "default": "auto"
-  },
-  "image_quality": {
-    "type": "string",
-    "description": "【绘图渠道与回退】Images API 默认质量",
-    "hint": "仅用于 gpt-image-* 的 Images API。auto 交给模型选择；high 适合较精细的成图，耗时与用量通常更高。xhigh/max 需要对应模型与渠道支持。渠道可单独覆盖，与 1K/2K/4K 分辨率独立。",
-    "options": ["auto", "low", "medium", "high", "xhigh", "max"],
-    "default": "auto"
-  },
-  "image_aspect_ratio": {
-    "type": "string",
-    "description": "【兼容单接口】文生图默认比例",
-    "hint": "文生图请求的默认画面比例；实际可用范围以渠道服务端能力为准。",
-    "options": [
-      "1:1",
-      "16:9",
-      "9:16",
-      "5:4",
-      "4:5",
-      "4:3",
-      "3:4",
-      "3:2",
-      "2:3",
-      "21:9"
-    ],
-    "default": "1:1"
-  },
-  "timeout": {
-    "type": "int",
-    "description": "【兼容单接口】兼容单接口超时（秒）",
-    "hint": "仅在“绘图渠道”列表为空时使用；超过时间后该请求会失败。",
-    "default": 120,
-    "min": 5,
-    "max": 900
-  },
-  "use_stream": {
-    "type": "bool",
-    "description": "【兼容单接口】OpenAI Chat 流式请求",
-    "hint": "保留主上游的 SSE 流式兼容能力，仅对 openai_chat/兼容聊天接口生效；可用于降低部分反向代理长请求超时风险。OpenAI Images 接口不使用此项。",
-    "default": false
-  },
-  "enable_binary_image_response": {
-    "type": "bool",
-    "description": "【兼容单接口】接受直接返回图片二进制的接口",
-    "hint": "部分中转站不返回 JSON，而是直接把 PNG/JPEG/WebP 字节流写进响应体。开启后会自动识别这类裸图片响应（含 ZIP 打包的单图），避免误判为“接口返回异常”。",
-    "default": true
-  },
-  "enable_bare_base64_response": {
-    "type": "bool",
-    "description": "【兼容单接口】接受纯 Base64 文本响应",
-    "hint": "有些接口只回一长串 Base64（可能带 data:image/png;base64, 前缀）而没有 JSON 包装。开启后会自动解码这类响应。若你的接口会返回长文本说明，可关闭以免误判。",
-    "default": true
-  },
-  "stream_heartbeat_tolerant": {
-    "type": "bool",
-    "description": "【兼容单接口】宽松解析流式与心跳响应",
-    "hint": "开启后会兼容 SSE、NDJSON、纯 data: 行、心跳空包与“文字 + 图片”混排的响应，从其中挑出可用的图片数据。遇到流式接口频繁报“未获取到图片”时请保持开启。",
-    "default": true
-  },
-  "use_proxy": {
-    "type": "bool",
-    "description": "【兼容单接口】使用代理",
-    "hint": "开启后，绘图请求使用下方代理地址。请填写服务端可访问的 HTTP(S) 代理。",
-    "default": false
-  },
-  "proxy_url": {
-    "type": "string",
-    "description": "【兼容单接口】代理地址",
-    "hint": "例如 http://127.0.0.1:7890。只有“使用代理”开启时才会生效。",
-    "default": ""
-  },
-  "show_model_info": {
-    "type": "bool",
-    "description": "【绘图运行与排障】成功消息显示模型信息",
-    "hint": "开启后，生成成功消息会附带实际使用的模型名称，便于排查渠道路由。",
-    "default": false
-  },
-  "debug_mode": {
-    "type": "bool",
-    "description": "【绘图运行与排障】向用户显示上游错误详情",
-    "hint": "开启后，生成失败的提示会附带上游返回的状态码与报错正文，便于自己排查是渠道问题还是提示词问题。接口地址、主机名和密钥会自动隐去，不会暴露你用的是哪家服务。",
-    "default": false
-  },
-  "requester_tag_mode": {
-    "type": "string",
-    "description": "【绘图运行与排障】群聊结果标注请求者",
-    "hint": "群里多人同时抢着生图时，用来分清每条结果和报错分别属于谁。off=不标注（和旧版本一样）；name=在结果与报错前标注「昵称(QQ号)」，推荐；at=在标注的同时 @ 提醒本人，每张结果图前也会带上 @。私聊只有一个人，任何模式下都不标注；昵称只用于显示，识别始终按 QQ 号。",
-    "obvious_hint": true,
-    "options": [
-      "off",
-      "name",
-      "at"
-    ],
-    "default": "name"
-  },
-  "generation_execution_mode": {
-    "type": "string",
-    "description": "【绘图运行与排障】生图任务执行方式",
-    "hint": "wait=工具等待图片完成后再返回；background=提交任务后立即返回，图片完成后由插件主动发回。后台模式允许 Bot 在等待期间继续处理聊天，推荐使用 background。",
-    "options": [
-      "background",
-      "wait"
-    ],
-    "default": "background"
-  },
-  "background_result_text_mode": {
-    "type": "string",
-    "description": "【绘图运行与排障】后台完成消息文字",
-    "hint": "image_only=后台任务完成时只发送图片，不附加成功文字；name=附带请求者和简短完成信息；full=沿用完整成功信息（预设、额度、模型等）。",
-    "options": [
-      "image_only",
-      "name",
-      "full"
-    ],
-    "default": "image_only"
-  },
-  "enable_luxury_mode": {
-    "type": "bool",
-    "description": "【绘图运行与排障】并发抢占模式",
-    "hint": "会同时发送多次请求，只保留第一张成功结果，消耗会增加。",
-    "default": false
-  },
-  "luxury_request_count": {
-    "type": "int",
-    "description": "【绘图运行与排障】并发抢占请求数",
-    "hint": "仅在开启“并发抢占模式”时生效。会并发发送同一请求，只保留首个成功结果，可能增加上游调用和额度消耗。",
-    "default": 2,
+    "description": "【人设拍照】人设拍照最大张数",
+    "hint": "用户一次明确索要多张自拍或写真时允许的最大张数，默认仍只拍 1 张。",
+    "default": 10,
     "min": 1,
-    "max": 8
+    "max": 50
+  },
+  "persona_channel_ids": {
+    "type": "list",
+    "description": "【人设拍照】自拍渠道顺序",
+    "hint": "填写已启用且允许参考图的渠道 ID，首项主用，其余备用；仅在所选范围按顺序回退。留空跟随普通路由。",
+    "default": [],
+    "items": {
+      "type": "string"
+    }
+  },
+  "enable_persona_daily_state": {
+    "type": "bool",
+    "description": "【人设每日状态】启用每日稳定人设状态",
+    "hint": "开启后保存当日穿搭、心情及时间段状态。自拍穿搭和表情是否固定由下方模式决定；LLM 模式只把日状态作为参考。用户明确要求始终优先。",
+    "default": true
+  },
+  "persona_daily_outfits": {
+    "type": "list",
+    "description": "【人设每日状态】每日穿搭候选",
+    "hint": "每天从候选中稳定选择一项并持久化。每项写完整穿搭描述；明确换装或 COS 请求会临时覆盖当天穿搭。",
+    "items": {
+      "type": "string"
+    },
+    "default": [
+      "舒适的浅色针织上衣、百褶短裙和简洁的小配饰",
+      "干净的白衬衫、深色高腰裙和低调发饰",
+      "柔软连帽外套、休闲短裙和轻便运动鞋",
+      "简约连衣裙、薄款开衫和小巧耳饰",
+      "宽松卫衣、百褶裙和日常帆布鞋"
+    ]
+  },
+  "persona_daily_moods": {
+    "type": "list",
+    "description": "【人设每日状态】每日心情候选",
+    "hint": "每天从候选中稳定选择一项。用户明确指定开心、生气、哭泣等表情时会覆盖当天心情。",
+    "items": {
+      "type": "string"
+    },
+    "default": [
+      "轻松愉快，表情自然温柔",
+      "有一点俏皮，眼神灵动",
+      "安静放松，带着浅浅微笑",
+      "精神很好，显得活力十足",
+      "略微慵懒，但心情平稳"
+    ]
+  },
+  "persona_time_period_prompts": {
+    "type": "list",
+    "description": "【人设每日状态】时间段状态提示词",
+    "hint": "格式为 早晨:提示词、白天:提示词、傍晚:提示词、夜间:提示词，也支持 morning/day/evening/night。用于调整光线与生活状态，不会强制覆盖用户指定场景。",
+    "items": {
+      "type": "string"
+    },
+    "default": [
+      "早晨:清晨状态，光线柔和清透，刚开始一天，精神自然",
+      "白天:白天状态，自然日光充足，动作从容，生活感真实",
+      "傍晚:傍晚状态，暖色余晖或室内灯光，氛围舒缓",
+      "夜间:夜间状态，环境光柔和，带一点安静放松的夜晚氛围"
+    ]
+  },
+  "persona_state_timezone": {
+    "type": "string",
+    "description": "【人设每日状态】每日状态时区",
+    "hint": "使用 IANA 时区名称决定日期和时间段，例如 Asia/Shanghai。填写无效时会回退到 AstrBot 服务器本地时区。",
+    "default": "Asia/Shanghai"
+  },
+  "persona_daily_state_salt": {
+    "type": "string",
+    "description": "【人设每日状态】每日状态选择种子",
+    "hint": "用于稳定选择每天的穿搭和心情。修改后当天及未来的组合会变化；普通用户无需修改。",
+    "default": "linghui"
+  },
+  "command_namespace": {
+    "type": "string",
+    "description": "【命令与帮助】可选命令命名空间",
+    "hint": "留空时直接使用 #文生图、#预设列表、#画。填写“绘图”后，也可使用 #绘图 文生图、#绘图 画；与同类插件共存时建议设置命名空间并关闭直接命令。",
+    "default": ""
+  },
+  "enable_direct_commands": {
+    "type": "bool",
+    "description": "【命令与帮助】启用不带命名空间的直接命令",
+    "hint": "关闭后仅响应“命名空间 + 空格 + 命令”的写法，例如 #绘图 文生图。用于避免与其他绘图插件抢占相同命令。",
+    "default": true
+  },
+  "extra_prefix": {
+    "type": "string",
+    "description": "【命令与帮助】自定义绘图子命令",
+    "hint": "默认“画”：#画 <提示词>。设置命名空间后使用 #绘图 画 <提示词>。兼容 bnn [@用户 ...] <提示词>，可按顺序使用多个 QQ 头像，包括指令后的 @机器人；指令前用于唤醒的 @机器人不作参考图。# 仅为示例，前缀跟随 AstrBot。",
+    "default": "画"
+  },
+  "help_text": {
+    "type": "text",
+    "description": "【命令与帮助】帮助文本",
+    "hint": "回复“帮助”时发送的内容。可使用换行；命令前缀仍由 AstrBot 的全局设置决定。",
+    "default": "灵绘工坊使用说明\n\n基础绘图\n#画 <提示词>：自定义绘图；带图片时图生图，无图片时文生图。\n#bnn 渠道m 一只猫：临时测试渠道 ID m，失败不换渠道；也支持 --渠道 m 或 --channel=m。\n#bnn [@用户 ...] <提示词>：自定义绘图；可按艾特顺序用一个或多个 QQ 头像作参考图，并自动排除艾特名称、群名、QQ 号和 ID。\n#文生图 <提示词>：显式文生图。\n#头像图生图 <提示词>：只使用发送者自己的 QQ 头像。\n#<预设名> [追加要求]：调用图生图预设，例如 #手办化。\n#预设列表 [我的/自带/文字/说明/关键词]：查看预设图鉴；“说明”逐行显示效果，“文字”显示纯文字名称清单。\n#预设查看 <预设名>：查看某个预设的完整提示词，支持模糊匹配。\n\n预设说明\n大多数内置预设需要附带图片进行图生图；没有图片时请使用 #文生图 或无图的 #画。发送“#预设列表 说明”可查看每个预设的一行效果说明。\n\n常用\n#签到：领取签到额度。\n#额度 / #总次数：查询个人、群和所有会话共享的总次数。\n管理员：#总次数 100 设置全局总上限；#增加总次数 50 补充全局总上限；#总次数 不限 关闭全局上限。\n#通道 [渠道ID/自动]：查看或切换主渠道（管理员）。\n#帮助：查看完整帮助。\n\n共存模式：在 Dashboard 设置命名空间并关闭直接命令后，使用 #绘图 文生图、#绘图 画、#绘图 bnn、#绘图 手办化。"
+  },
+  "command_cooldown_seconds": {
+    "type": "int",
+    "description": "【命令与帮助】手动指令生图冷却（秒）",
+    "hint": "仅限制 #画、#bnn、#文生图、#头像图生图、#人设拍照和预设指令，不影响 LLM 工具或普通聊天。按“QQ 用户 ID + 群号”独立计时；同一用户在不同群互不影响。私聊按用户单独计时。设置为 0 可关闭。",
+    "default": 0,
+    "min": 0,
+    "max": 3600
   },
   "group_access_mode": {
     "type": "string",
@@ -613,30 +717,6 @@
       "type": "string"
     },
     "default": []
-  },
-  "user_whitelist": {
-    "type": "list",
-    "description": "【访问权限】旧版用户白名单（自动迁移）",
-    "hint": "仅用于保留主上游旧配置，启动时会自动合并到“用户白名单（可选）”。新配置请使用 allowed_users。",
-    "items": {
-      "type": "string",
-      "description": "旧版用户 ID",
-      "hint": "兼容旧配置，无需手动新增。"
-    },
-    "default": [],
-    "invisible": true
-  },
-  "user_blacklist": {
-    "type": "list",
-    "description": "【访问权限】旧版用户黑名单（自动迁移）",
-    "hint": "仅用于保留主上游旧配置，启动时会自动合并到“用户黑名单”。新配置请使用 blocked_users。",
-    "items": {
-      "type": "string",
-      "description": "旧版用户 ID",
-      "hint": "兼容旧配置，无需手动新增。"
-    },
-    "default": [],
-    "invisible": true
   },
   "allow_private_messages": {
     "type": "bool",
@@ -780,410 +860,33 @@
     "hint": "发送给翻译模型的系统说明。建议要求模型只输出保留原意的英文生图提示词。",
     "default": "Translate the image-generation prompt into concise English. Preserve all constraints, proper nouns, composition, aspect ratio, and safety requirements. Output only the prompt."
   },
-  "custom_drawing_negative_prompt": {
-    "type": "text",
-    "description": "【提示词与预设】自定义绘图反向提示词",
-    "hint": "仅对 #bnn 和“自定义绘图子命令”（默认 #画）生效，包含带图和不带图两种请求。会在翻译/优化完成后以 Negative prompt: ... 形式追加；留空则关闭，不影响预设、#文生图、头像图生图、人设拍照或 LLM 工具。",
-    "default": ""
-  },
-  "preset_channel_bindings": {
-    "type": "template_list",
-    "description": "【提示词处理】预设指定渠道",
-    "hint": "每个预设可选择一个或多个渠道，按列表顺序回退且不使用未选渠道；未绑定则跟随会话和默认路由。",
-    "default": [],
-    "templates": {
-      "preset_channel_binding": {
-        "name": "预设渠道绑定",
-        "items": {
-          "preset": {
-            "type": "string",
-            "description": "预设名称",
-            "hint": "填写已存在的预设名称，必须与提示词预设名称完全一致。",
-            "default": ""
-          },
-          "channel_ids": {
-            "type": "list",
-            "description": "渠道列表（按顺序回退）",
-            "hint": "填写已启用的渠道 ID，首项为主用，其余为备用。GIF 预设只选择支持动画的渠道。",
-            "default": [],
-            "items": {"type": "string"}
-          },
-          "channel_id": {
-            "type": "string",
-            "description": "渠道 ID",
-            "hint": "兼容旧版的首选渠道。多渠道请填写 channel_ids 有序列表。",
-            "default": ""
-          }
-        }
-      }
-    }
-  },
-  "preset_generation_options": {
-    "type": "template_list",
-    "description": "【提示词与预设】预设图片参数",
-    "hint": "预设可在现有渠道上指定 GIF 或静图格式，无需复制渠道。auto 跟随渠道默认；GIF 帧数与时长只作用于该预设的请求。请为 GIF 预设选择支持动画的渠道。",
-    "default": [
-      {
-        "__template_key": "preset_generation_option",
-        "preset": "GIF表情",
-        "image_output_format": "gif",
-        "image_frame_count": 9,
-        "image_frame_duration_ms": 200,
-        "image_complexity": "auto"
-      }
-    ],
-    "templates": {
-      "preset_generation_option": {
-        "name": "预设图片参数",
-        "items": {
-          "preset": {
-            "type": "string",
-            "description": "预设名称",
-            "hint": "填写已经存在的预设名称，与提示词名称完全一致。",
-            "default": ""
-          },
-          "image_output_format": {
-            "type": "string",
-            "description": "输出格式",
-            "hint": "auto 跟随渠道；gif 明确请求动画。",
-            "options": [
-              "auto",
-              "png",
-              "jpeg",
-              "webp",
-              "gif"
-            ],
-            "default": "auto"
-          },
-          "image_frame_count": {
-            "type": "int",
-            "description": "GIF 帧数",
-            "hint": "2–16 帧，仅 GIF 生效。",
-            "default": 9,
-            "min": 2,
-            "max": 16
-          },
-          "image_frame_duration_ms": {
-            "type": "int",
-            "description": "GIF 每帧时长（毫秒）",
-            "hint": "20–2000 毫秒，必须为10的倍数。",
-            "default": 200,
-            "min": 20,
-            "max": 2000
-          },
-          "image_complexity": {
-            "type": "string",
-            "description": "复杂度",
-            "hint": "仅在服务商支持时指定；auto 使用模型默认。",
-            "options": [
-              "auto",
-              "low",
-              "medium",
-              "high"
-            ],
-            "default": "auto"
-          }
-        }
-      }
-    }
-  },
-  "prompt_list": {
-    "type": "list",
-    "description": "【提示词与预设】提示词预设",
-    "hint": "格式为“预设名:提示词”。可在灵绘工坊 Dashboard 中以表格方式维护。",
-    "items": {
-      "type": "string"
-    },
-    "default": [
-      "手办化:Your task is to create a photorealistic, masterpiece-quality image of a 1/7 scale commercialized figurine based on the user's character. The final image must be in a realistic style and environment.\n\n**Crucial Instruction on Face & Likeness:** The figurine's face is the most critical element. It must be a perfect, high-fidelity 3D translation of the character from the source image. The sculpt must be sharp, clean, and intricately detailed, accurately capturing the original artwork's facial structure, eye style, expression, and hair. The final result must be immediately recognizable as the same character, elevated to a premium physical product standard. Do NOT generate a generic or abstract face.\n\n**Scene Composition (Strictly follow these details):**\n1. **Figurine & Base:** Place the figure on a computer desk. It must stand on a simple, circular, transparent acrylic base WITHOUT any text or markings.\n2. **Computer Monitor:** In the background, a computer monitor must display 3D modeling software (like ZBrush or Blender) with the digital sculpt of the very same figurine visible on the screen.\n3. **Artwork Display:** Next to the computer screen, include a transparent acrylic board with a wooden base. This board holds a print of the original 2D artwork that the figurine is based on.\n4. **Environment:** The overall setting is a desk, with elements like a keyboard to enhance realism. The lighting should be natural and well-lit, as if in a room.",
-      "手办化2:Use the nano-banana model to create a 1/7 scale commercialized figure of thecharacter in the illustration, in a realistic styie and environment.Place the figure on a computer desk, using a circular transparent acrylic basewithout any text.On the computer screen, display the ZBrush modeling process of the figure.Next to the computer screen, place a BANDAl-style toy packaging box printedwith the original artwork.",
-      "手办化3:Your primary mission is to accurately convert the subject from the user's photo into a photorealistic, masterpiece quality, 1/7 scale PVC figurine, presented in its commercial packaging.\n\n**Crucial First Step: Analyze the image to identify the subject's key attributes (e.g., human male, human female, animal, specific creature) and defining features (hair style, clothing, expression). The generated figurine must strictly adhere to these identified attributes.** This is a mandatory instruction to avoid generating a generic female figure.\n\n**Top Priority - Character Likeness:** The figurine's face MUST maintain a strong likeness to the original character. Your task is to translate the 2D facial features into a 3D sculpt, preserving the identity, expression, and core characteristics. If the source is blurry, interpret the features to create a sharp, well-defined version that is clearly recognizable as the same character.\n\n**Scene Details:**\n1. **Figurine:** The figure version of the photo I gave you, with a clear representation of PVC material, placed on a round plastic base.\n2. **Packaging:** Behind the figure, there should be a partially transparent plastic and paper box, with the character from the photo printed on it.\n3. **Environment:** The entire scene should be in an indoor setting with good lighting.",
-      "手办化4:Please accurately transform the subject in this photo into a realistic, masterpiece-worthy 1/7 scale PVC figurine. This figurine must possess 3D dimensionality, and the PVC texture must be clearly represented. The figurine is placed in a figurine display cabinet made of multi-layered glass; appropriate space should be left between the top of the figurine and the upper shelf, and the figurine must be paired with a transparent base. The indoor scene must be visible through the glass. Different figurines can be placed on other shelves, but they should exhibit a natural depth of field and blurred effect to further enhance the sense of spatial depth and highlight the main figurine. The scene requires a bright main light source, and the display cabinet should be embedded with dim LED strip lights; the overall light and reflections must blend naturally with the scene. The frame angle does not need to be fixed in a specific orientation.\nDetail Specifications: Every part of the figurine must be 3D dimensional, and flat or two-dimensional effects are prohibited; under no circumstances shall contour lines or outlines appear; when repairing missing parts of the figurine, no low-quality content shall appear; if repairing a human figure, it is necessary to ensure normal limb shape, coordinated movements, and reasonable proportions of all parts; if the original photo is not a full-body shot, try to supplement the figurine into a full-body form as much as possible; the expression, movements, and angle of the human figurine must be completely consistent with the original photo, but it must be 3D dimensional; the head of the human figurine must not be too large, the legs must not be too short, and the overall figure must not look short; for chibi cartoon subjects, their original proportions shall be retained, but they must be 3D dimensional; if the subject is an animal, its fur should be simplified to make it more like a figurine product; attention must be paid to following the perspective principle of objects appearing larger when closer and smaller when farther away.",
-      "手办化5:Realistic PVC figure based on the game screenshot character, exact pose replication highly detailed textures PVC material with subtle sheen and smooth paint finish, placed on an indoor wooden computer desk (with subtle desk items like a figure box/mouse), illuminated by soft indoor light (mix of desk lamp and natural window light) for realistic shadows and highlights, macro photography style,high resolution,sharp focus on the figure,shallow depth of field (desk background slightly blurred but visible), no stylization,true-to-reference color and design, 1:1scale.",
-      "手办化6:Create a premium, collectible 1/7 scale standalone figurine based on the image, meticulously replicating the character, made from smooth PVC and ABS plastic with a professional matte finish. It stands on a minimalist transparent acrylic base. Next to it is its retail packaging box displaying the price and brand information, with the figure wrapped in plastic inside the slightly larger box. They are naturally arranged on a clean wooden table surrounded by reference books, with a bookshelf in the background and soft afternoon sunlight streaming through the window. Photo-realistic, DSLR effect, depth of field, bokeh background.",
-      "Q版化:((chibi style)), ((super-deformed)), ((head-to-body ratio 1:2)), ((huge head, tiny body)), ((smooth rounded limbs)), ((soft balloon-like hands and feet)), ((plump cheeks)), ((childlike big eyes)), ((simplified facial features)), ((smooth matte skin, no pores)), ((soft pastel color palette)), ((gentle ambient lighting, natural shadows)), ((same facial expression, same pose, same background scene)), ((seamless integration with original environment, correct perspective and scale)), ((no outline or thin soft outline)), ((high resolution, sharp focus, 8k, ultra-detailed)), avoid: realistic proportions, long limbs, sharp edges, harsh lighting, wrinkles, blemishes, thick black outlines, low resolution, blurry, extra limbs, distorted face",
-      "cos化:Generate a highly detailed photo of a real-life girl cosplaying this illustration, at Comiket. Exactly replicate the same pose, body posture, hand gestures, facial expression, and camera framing as in the original illustration. Keep the same angle, perspective, and composition, without any deviation.",
-      "cos自拍:Generate a first-person perspective (POV) snapshot of a cosplayer in a cluttered bedroom. The cosplayer's hairstyle and anime costume must exactly match the subject in the reference image. She holds a phone in front of her face with both hands, completely covering her face. The phone screen is the focal point of the image, displaying the uploaded picture. The background is a room filled with posters on the walls and a slightly messy bed. The image should have a casual, informal snapshot quality with a slightly low-resolution and grainy texture, lit by natural indoor lighting.",
-      "痛屋化:[ABSOLUTE PRIORITY AND NON-NEGOTIABLE DIRECTIVE] Based on the provided reference image, generate a hyper-detailed photograph of a maximalist otaku shrine with a strict, uncompromising requirement: all character-related elements—including figures, posters, bedding patterns, and the PC wallpaper—must be a 90%+ faithful, pixel-perfect replication of the character in the reference image. Strictly maintain the precise facial features, hairstyle, outfit, and expression with zero artistic reinterpretation or stylistic variation. With this core rule, create the scene at a 16:9 aspect ratio. The room is densely packed from floor to ceiling with merchandise that is an exact reproduction of this source character. The entire space is bathed in a moody, immersive ambient glow dominated by the reference character's primary color scheme (e.g., deep purple), which is sharply contrasted by a focused, brighter white light from a monitor screen bar lamp, creating dramatic visual layers. The walls are a collage made of posters and prints that are direct, unaltered copies of the reference image itself; the glass cabinets are cluttered with high-poly figures that are perfect 1:1 replicas of the reference character model; and the ultrawide monitor clearly displays the original reference image as its wallpaper. The final image must be a photorealistic, lived-in sanctuary, defined by its obsessive and flawless fidelity to the source character.",
-      "痛屋化2:Transform the uploaded indoor photo into a Japanese-style ita-room with the following specific requirements: Walls: Generate multi-size posters/scrolls (A2/A3/banner mixed arrangement) in an orderly matrix; no watermarks or garbled text. Curtains and bedding: Fully replace with themed patterns while retaining fabric folds and textures; pillowcases and life-sized cushions use the same character design. Display: Add glass display cabinets and open shelves, densely displaying themed figurines, acrylic stands, badge boards, and boxed peripherals of the same theme; arrange them in groups by height and color system. Desk: Keep the original equipment and light and shadow, only replace the screensaver/wallpaper with themed images; organize the wires neatly. Lighting: Add soft RGB light strips (along the ceiling and desk edges), coordinated with the main color, avoiding overexposure and color overflow. Texture: Realistic materials for PVC figurines, spray-painted paper, acrylic, and cotton fabrics; natural glass reflections without ghosting. Consistency: The face, hair color, and clothing details of the character on all carriers (posters/cushions/stands/box art) must maintain the same character and art style. Constraints (negative): No brand logos, watermarks, typos, distorted-face, perspective errors, repeated textures, over-sharpening, or noise.",
-      "痛车化:A Xiaomi SU7 electric sedan with a professional 'itasha' wrap, parked on a rain-slicked, neon-lit city street at dusk. Accurately depict the Xiaomi SU7 body shape, grille-less front fascia, slim headlights, taillights, wheel design, and logo placements. The entire car is covered in a vibrant, high-resolution decal featuring multiple dynamic poses and expressions of ONLY the provided anime character. The glossy finish reflects colorful city lights, making the character artwork pop.Seamless full-body wrap integrating hood, doors, and rear quarter panels. Dynamic three-quarter front view showcasing the hood and side artwork.",
-      "孤独的我:Generate a hyper-realistic photograph with RAW photo quality, captured by a top-tier camera. The image must exhibit realistic skin textures, rich lighting layers, and a natural depth of field. Absolutely no anime, cartoon, CG, or painted elements are allowed—the result must be a 100% authentic photographic representation. The scene is set in a restaurant, captured from a first-person perspective. I am sitting alone, holding chopsticks in one hand and a phone in the other, displaying a photo of a beautiful cosplayer. In the background, the same cosplayer (dressed as the anime character) is dining with her boyfriend, feeding him a bite of food. The composition should evoke a sense of loneliness and contrast between the observer and the observed.",
-      "第一视角:At the venue of Japan's Comic Market Doujinshi Sales Event commonly known as Comiket a real Chinese boy or girl of the same gender as the character in the original image is sitting directly opposite you wearing a costume consistent with the one in the original image. A double meal set including hamburgers and French fries is placed on your table with crumpled tissues and some food scraps scattered beside it creating a strong sense of realism. Your Android phone is casually laid on the table and its screen displays an unedited original image of the character. The person is engaging in intimate interaction with you gazing gently into your eyes leaning slightly towards you and placing one hand softly on your arm.You are holding a hamburger or a few French fries.",
-      "第三视角:A scene in a bright, modern McDonald’s or KFC restaurant at night, consistent with the visual style of the provided original image (no AI-generated imagery). In front of you (the viewer), there are foods like a hamburger and a small serving of French fries (with a visibly small portion) on the table, along with a crumpled used tissue, a few food crumbs (adding a sense of realism), and an Android phone (with a character displayed on the screen)—you are holding a hamburger or a French fry in your hand. At a very nearby separate table (not a shared table)—so close that it’s within easy sight—two Chinese people are sitting and engaging in intimate interactions (e.g., gentle eye contact, leaning slightly towards each other, or one resting a hand lightly on the other’s arm). One of them is a coser dressed exactly as the character on your Android phone, with the coser’s gender strictly corresponding to the character’s gender (male coser remains male, female coser remains female, no gender reversal) and matching that of the character in the provided original image; the other is a man. On their table, there is a two-person set meal, and both figures are slightly blurred (not overly so). The overall atmosphere blends a relaxed dining vibe with character-related elements, featuring natural lighting, and adheres to the visual style of the original image.",
-      "鬼图:Convert the Input Image into a Convincing, Found-Footage Style Cryptid Sighting Photograph 1. The image should depict a [insert creature name or description - e.g., slender, pale humanoid; multi-limbed, insect-like entity; shadowy, canine-like beast], and the creature’s appearance must be highly similar to that in the original image. The creature should be spotted in a hyperrealistic and eerily desolate location, such as [e.g., an abandoned industrial complex at night, a remote, snow-covered mountain pass, the murky depths of a forgotten urban canal, a desolate rural road in the dead of winter].​2. The shot must appear accidental, amateurish, and raw, as if captured spontaneously by a low-fidelity device like a [e.g., degraded VHS camcorder, grainy security camera, old disposable camera with flash, an infrared trail cam that's seen better days].​3. To maximize the unsettling authenticity, the image quality should be significantly imperfect: featuring extreme [e.g., heavy digital noise, pronounced film grain, severe motion blur making details indistinct, a strong, disorienting lens flare, being significantly out of focus, or displaying visible static and tracking lines]. The creature should be partially obscured and difficult to clearly discern, perhaps hidden by [e.g., dense, skeletal tree branches; thick, unnatural fog; distorted reflections on murky water; the jagged silhouette of derelict machinery; or existing within deep, oppressive shadows].​4. The lighting is critically dim and unsettling, possibly at [e.g., the darkest hour before dawn, a moonless midnight, or starkly illuminated by a harsh, direct, and slightly malfunctioning camera flash that overexposes parts of the scene].5. The overall feeling should evoke profound unease, dread, and a sense of witnessing something truly inexplicable and horrifying. Emphasize an atmosphere of isolation, decay, and the uncanny.​6. Keywords: cryptozoology, urban legend, paranormal, faked sighting, unsettling, horror, cryptid, grotesque, eerie, found footage, degraded quality, creature feature.",
-      "贴纸化:Generate A creative collage artwork based on the provided input image. The artwork should be created using a variety of materials such as paper, fabric, and found objects to achieve a textured, layered look. The composition should capture the essence of the original subject while incorporating collage techniques such as cutting, layering, and mixed media. The final piece should have a dynamic",
-      "玉足:Use the attached image as the exact protagonist (identity lock), maintaining exact facial features, hairstyle, and distinctive characteristics from the reference image. 1/7 scale commercial figurine, nano-banana model, hyper-detailed PVC figure. A character sitting on the ground with body positioned on the left side of the frame. From the character's perspective: RIGHT LEG fully extended straight forward, while LEFT LEG bent at the knee with foot flat on the ground. From viewer's perspective: The extended RIGHT LEG of the character appears on the LEFT SIDE of the frame, creating strong forced perspective with LOW ANGLE SHOT (foot size 2x larger than head). The character's extended right foot (viewer's left side) must be in sharp focus with soft milky-white skin tone, subtle pink undertones, and sole facing viewer at 45°, showing exactly 5 distinct toes with natural nail beds and delicate skin texture. Smooth, soft skin with a healthy, supple appearance. Arms crossed on chest, realistic hand-painted details, translucent PVC material effect. No background elements - focus entirely on the figurine's pose and foot details.",
-      "玩偶化:Reshape the character in the picture into a top-tier collectible *fumo*, with a fully soft and dynamic pose, and place it on the character theme fur pad. High-precision material, hand-stitched, the texture of the plush fabric and the clothing is truly distinct.\nIts eyes are the signature large embroidered semi-oval ones, without pupils, presenting a flat, sleepy or listless expression.\nThe main light source is soft diffused light, highlighting the fluffy feeling and soft texture, without overexposure. Powerful fill light eliminates dead black, and details are fully visible. The background is a blurred depth of field by the window, and the product packaging box is faintly visible on the side and rear. The sticker on the packaging box should be the original uploaded image.\nMuseum-level photography quality, every detail of the body is intact, and the embroidered facial features are exquisite and accurate.\nProhibited: Any 2D elements or direct copying of the original image, plastic feel, hard texture, blurred face, misaligned facial features, and loss of details.",
-      "cos相遇:A lively comic convention scene with a bustling real-world environment, featuring the original manga-style character from the input image, retaining her exact colorful design, unique art style, and distinct features (including her specific hair color, outfit, and expression). The character remains a vibrant, non-realistic manga-style figure, not a 2D flat plane but preserving her original artistic depth and color palette. She stands in a crowded convention hall with colorful cosplay booths and attendees. Facing her is a cosplayer dressed in an identical outfit, mimicking her pose, both positioned at a 45-degree angle toward the viewer. The background is a detailed, realistic comic convention with vivid colors, dynamic crowd, and cosplay elements, creating a surreal blend of the manga character’s vibrant, non-realistic style with a real-world setting. Emphasize the magical encounter between the manga character and her cosplayer counterpart.",
-      "三视图:a 3-view orthographic drawing of a young woman from a photo, showing front, right side, and back views. Realistic rendering, professional character sheet style, on a white background",
-      "穿搭拆解:A professional e-commerce fashion showcase featuring the clothing worn by the character from the input image, presented in a clean, studio-style setting. The outfit is decomposed into individual pieces (e.g., top, bottom, jacket, shoes, accessories), each clearly displayed and arranged in an organized, visually appealing layout. Each clothing item retains the exact design, color, texture, and details from the original image, showcased with crisp lighting and high-definition clarity. The background is minimalistic, white or neutral, to emphasize the clothing details, suitable for an online retail platform. The presentation includes subtle annotations or labels for each item, ensuring a polished, catalog-style look for wear and styling inspiration.",
-      "拆解图:Convert the people in the photos to the style of a model kit box, rendered in isometric perspective. Label the box with the title“Zhogue”. Inside the box, a gouda-styled robotic version of the person in the photo is displayed, along with its essentials (such as cosmetics, bags, or other items) redesigned as a futuristic mechanical accessory. The box should resemble a real Gunpla box, with technical illustrations, manual-style details, and sci-fi fonts. Next to the box, the actual gouda-style robot itself is also displayed, rendered in a realistic and lifelike style on the outside of the packaging, similar to the official Bandai propaganda renderings.",
-      "角色界面:Transform the input person image into a game character selection interface. Display the character on the right side as a full-body portrait, standing upright at a 45-degree angle facing both the screen and the left-side selection module, mimicking a selected state in a video game. Retain the person image's facial features, expression, and hairstyle, but adapt the clothing to a game-inspired style (e.g., fantasy armor, sci-fi suit, or RPG adventurer outfit) with intricate details, vibrant textures, and thematic accessories, while preserving the original clothing's color scheme and general aesthetic. If the input is a half-body image, seamlessly complete the lower body, matching the game-style clothing and proportions. On the left side, present a sleek interface with selectable options including game-style clothing variations (e.g., different armor sets, robes, tactical gear), martial stats (e.g., strength, agility), equipment (e.g., swords, gadgets, shields), and health points, styled as interactive game UI elements with clear labels and modern design. Arrange the layout to mimic a video game character selection screen, with a smooth, unified background gradient (e.g., dark blue to soft gray) for a cohesive, natural transition across the image. Use consistent, cinematic lighting and subtle glow effects to enhance the game-like atmosphere while maintaining the character's real-world facial essence.",
-      "角色设定:为我生成人物的角色设定（Character Design）,比例设定（不同身高对比、头身比等）,三视图（正面、侧面、背面）,表情设定（Expression Sheet） → 就是你发的那种图,动作设定（Pose Sheet） → 各种常见姿ises,服装设定（Costume Design）",
-      "3D打印:Please transform the object in the uploaded image into a collectible figurine.Behind it, place a figurine box printed with the object's image and its name. Next to it, add a high-end 3D printer that is currently printing the figurine. In front of the figurine box, add a round plastic base for the figurine to stand on.The PVC material of the base should have a crystal-clear, translucent texture, and set the entire scene indoors.",
-      "微型化:A high-resolution advertising photograph of a realistic, miniature [PRODUCT] held delicately between a person's thumb and index finger. clean and white background, studio lighting, soft shadows. The hand is well-groomed, natural skin tone, and positioned to highlight the product's shape and details. The product appears extremely small but hyper-detailed and brand-accurate, centered in the frame with a shallow depth of field. Emulates luxury product photography and minimalist commercial style.",
-      "挂件化:Turn this photo into a cute charm / a flat acrylic keychain / a flat rubber keychain to hang on an LV bag / the bag in photo 2.",
-      "姿势表:请为这幅插图创建一个姿势表，摆出各种姿势",
-      "高清修复:Enhance this image to high resolution",
-      "人物转身:show me this scene from behind the subjects. keep the details and the lighting identical",
-      "绘画四宫格:Step 1: line drawing. Step 2: tile colors. Step 3: Add Shadows. Step 4: Refine and shape. No words",
-      "发型九宫格:A professional hairstyle showcase based on the input image of a person's upper body and face, displaying the character with nine distinct hairstyles arranged in a clean, grid-like layout (3x3 grid) on a single image. Each hairstyle replaces the original hair while preserving the person's facial features, skin tone, and clothing details from the input image. The hairstyles include a variety of styles: short pixie cut, long wavy hair, sleek bob, voluminous curls, high ponytail, messy bun, side-swept bangs, braided updo, and straight layered cut, each rendered with realistic textures and natural lighting. The background is a consistent, neutral color (pure white or light gray) to emphasize the hairstyles and maintain a polished, professional look suitable for hairstyle selection. Subtle labels beneath each hairstyle indicate the style name for clarity.",
-      "头像九宫格:Id photos of the person in the picture with 9 different hairstyles, showing close-ups of the person with each hairstyle (Japanese, Korean, n) , keeping the features and clothes, and integration of the output for a nine grid picture",
-      "表情九宫格:Transform the input person image (half-body portrait) into a 3x3 grid of nine distinct images, each showcasing a different facial expression with the corresponding text label below the face, while retaining the original character's facial features, hairstyle, and clothing details. Arrange the expressions as follows: top row (happy with raised corners and squinted eyes labeled 'Happy', sad with downturned mouth and raised inner brows labeled 'Sad', angry with furrowed brows and narrowed eyes labeled 'Angry'); middle row (surprised with wide eyes and open mouth labeled 'Surprised', fearful with wide eyes and tense brows labeled 'Fearful', disgusted with wrinkled nose and pursed lips labeled 'Disgusted'); bottom row (confused with uneven brows and asymmetrical mouth labeled 'Confused', proud with lifted chin and firm gaze labeled 'Proud', embarrassed with tense smile and downward gaze labeled 'Embarrassed'). Ensure each cell reflects the described expression naturally, with seamless completion of the lower body to match the original clothing style. Use a soft, unified background (e.g., light gray) and consistent lighting across all grids to maintain coherence and focus on the expressions.",
-      "多机位:生成这张图片的正脸特写、侧身照、远景、背影的四种多机位镜头，然后整合输出到一张照片里，保持人物高度的一致性，适合生成连续剧情感镜头",
-      "电影分镜:用这图里的角色创作一个令人上瘾的12部分故事，包含12张图像，讲述经典的黑色电影侦探故事。故事关于他们寻找线索并最终发现的失落的宝藏。整个故事充满刺激，有情感的高潮和低谷，以精彩的转折和高潮结尾。不要在图像中包含任何文字或文本，纯粹通过图像本身讲述故事",
-      "动漫分镜:According to the content of the picture to generate nine frames of comics, with pictures and lenses to tell a story.",
-      "真人化:in Studio, pure white background, a cosplayer dressed in an identical outfit, as the girl in the reference image, mimicking her pose and outfit. enhanced with film grain for a gritty, authentic particle effect reminiscent of 35mm film stock; 8K ultra-HD, sharp and believable, no abstraction.",
-      "真人化2:Generate a highly detailed photo of a girl cosplaying this illustration, at Comiket. Exactly replicate the same pose, body posture, hand gestures, facial expression, and camera framing as in the original illustration. Keep the same angle, perspective, and composition, without any deviation",
-      "半真人:Take the image of the woman in [Input Photo]. Apply a creative split-style effect. Keep the lower half of her body (legs and boots) as the original photograph. Transform the upper half of her body (torso, arms, head) into a vibrant, 2D anime style with bold outlines and flat colors, similar to the anime 'Cyberpunk: Edgerunners'. The transition between the two styles should be a clean, slightly curved line.",
-      "捧脸:Create a polished close-up portrait based on the reference subject. Preserve identity, hairstyle, facial proportions, age appearance, and visual style. Pose the subject with both hands gently framing the cheeks, relaxed shoulders, warm eye contact, and a natural soft expression. Use flattering diffused light, clean composition, detailed hands, and an uncluttered background.",
-      "变真人:Translate the referenced illustrated or anime character into a believable real-person portrait while preserving the exact identity cues: face shape, eye impression, hairstyle, hair color, outfit design, accessories, age appearance, and expression. Use natural skin texture, realistic anatomy, cinematic but credible lighting, and photographic detail. Do not turn the character into a generic model.",
-      "果冻化:Transform the referenced subject into a charming translucent jelly sculpture. Preserve the recognizable silhouette, face design, hairstyle, colors, outfit shapes, and signature accessories. Use glossy soft-gel material, subtle internal bubbles, subsurface scattering, rounded edges, colorful reflections, and a neat studio display surface.",
-      "变COS:Create a high-quality real-world cosplay photograph of the referenced character. The cosplayer must match the character's identity, hairstyle, hair color, costume structure, patterns, accessories, makeup language, and pose as closely as possible. Use carefully crafted costume materials, natural human anatomy, realistic lighting, and a professional camera look.",
-      "漫画封面:Design a premium vertical manga cover featuring the referenced subject as the clear protagonist. Preserve the original identity and art style, then build a strong cover composition with expressive posing, layered background storytelling, dynamic lighting, clean negative space for a title, refined linework, rich color separation, and print-ready detail. Do not add unreadable random text.",
-      "证件照:Create a clean formal ID-photo portrait of the referenced subject. Preserve identity, face shape, hairstyle, age appearance, and core character features. Use a centered front-facing pose, neutral pleasant expression, tidy clothing, even shadow-free lighting, plain light background, accurate proportions, and crisp professional photo quality.",
-      "男友视角:Create a natural first-person companion-perspective lifestyle photo of the referenced adult subject. Preserve identity, hairstyle, outfit details, and age appearance. Use comfortable conversational distance, candid eye contact, relaxed body language, realistic surroundings, and gentle everyday lighting. Keep the composition tasteful and non-explicit.",
-      "漏腰:Restyle the referenced adult subject in a tasteful modern outfit with a small fashion-oriented midriff detail, such as a cropped jacket or coordinated high-waist set. Preserve identity, hairstyle, age appearance, body proportions, and the original design language. Use confident natural posing and a fully clothed, non-explicit composition.",
-      "半融合:A striking, high-definition frontal portrait of the character from the input photo, with the face perfectly centered. The image blends two styles seamlessly: the left half retains the character's original realistic appearance, including detailed skin textures, natural lighting, and exact facial features from the input image, while the right half transitions into a vibrant manga-style version, featuring bold outlines, expressive eyes, and stylized features typical of high-quality anime art, while preserving recognizable traits (e.g., hair shape, facial structure). The transition between the realistic and manga halves is smooth and gradual, with no visible dividing line, ensuring a natural, cohesive fusion at the center of the face. The blending emphasizes the contrast between realistic and manga aesthetics while maintaining a unified appearance. The background is a neutral, solid color (e.g., soft gray or white) to highlight the fusion effect, with consistent lighting to enhance the artistic impact and no harsh separation.",
-      "洗澡:`任务：根据给出图片中的人物，生成一张场景细节丰富画风精美的二次元图片。必须健全的图片不要露点\n前景与主体（床铺）：\n- 画面下方和中心是一张铺着粉红色床单的大床。床单看起来非常凌乱，布满褶皱，并且布满湿痕和黏液。\n- 床上分布散落着图中人物的各种衣服和饰品（上衣，下衣，内衣，袜子/裤袜，腿环，choker，手套等全身衣着），需要分开零散放置，衣服也潮湿且褶皱。\n床上一角放置一张与原来参照图相同的照片。\n- 床上还放置了用过的润滑液瓶\n后景（磨砂玻璃）：\n- 画面的上方是一面巨大的半透明磨砂玻璃\n- 透过磨砂玻璃可以极端模糊看到图中人物除了头发以外无衣物无身体细节一丝不挂但身材完美的外轮廓的面向镜头，趴在玻璃上```",
-      "洗澡2:`任务：根据给出图片中的人物，生成一张场景细节丰富画风精美的二次元图片。必须健全的图片不要露点 前景与主体（床铺）： - 画面下方和中心是一张铺着粉红色床单的大床。床单看起来非常凌乱，布满褶皱，并且布满湿痕和黏液。 - 床上分布散落着图中人物的各种衣服和饰品（上衣，下衣，内衣，袜子/裤袜，腿环，choker，手套等全身衣着），需要分开零散放置，衣服也潮湿且褶皱。 床上一角放置一张与原来参照图相同的照片。 - 床上还放置了用过的润滑液瓶 后景（磨砂玻璃）： - 画面的上方是一面巨大的半透明磨砂玻璃 - 透过磨砂玻璃可以极端模糊看到图中人物除了头发以外无衣物无身体细节一丝不挂但身材完美的外轮廓的面向镜头，趴在玻璃上```",
-      "GIF表情:Create a real animated GIF, not a contact sheet or a still image. Animate the referenced subject with a gentle blink, a small head tilt, and a friendly wave, forming a smooth seamless loop. Preserve the subject's identity, hairstyle, outfit, colors, and original visual style across every frame. Use a fixed camera, a clean background, consistent lighting, and no captions or watermarks. If no reference image is supplied, follow the user's subject description."
-    ]
-  },
-  "enable_preset_ref_images": {
-    "type": "bool",
-    "description": "【提示词与预设】启用预设参考图",
-    "hint": "开启后，调用预设会自动附带该预设保存的参考图；关闭后保留图片但不自动发送。",
-    "default": true
-  },
-  "enable_preset_safety_suffix": {
-    "type": "bool",
-    "description": "【提示词与预设】为预设追加安全限制",
-    "hint": "开启后，调用预设时会在提示词末尾追加下方安全限制文本；自定义绘图不受影响。",
-    "default": true
-  },
-  "preset_safety_suffix": {
-    "type": "text",
-    "description": "【提示词与预设】预设安全限制文本",
-    "hint": "追加到预设提示词末尾的安全要求。关闭“为预设追加安全限制”后不会使用此文本。",
-    "default": "Keep the result non-explicit, age-appropriate, fully clothed where people appear, and free of sexual or exploitative content."
-  },
-  "enable_persona_mode": {
-    "type": "bool",
-    "description": "【人设与参考图】启用人设拍照",
-    "hint": "开启后可使用人设拍照功能和人设参考图；关闭后不会响应该功能入口。",
-    "default": false
-  },
-  "persona_name": {
-    "type": "string",
-    "description": "【人设与参考图】人设名称",
-    "hint": "用于人设提示词中的称呼，不会修改插件名称。",
-    "default": "灵绘助手"
-  },
-  "persona_description": {
-    "type": "text",
-    "description": "【人设与参考图】外观描述",
-    "hint": "仅描述脸型、发型、发色、身份等稳定外观特征。默认服装请填到独立衣着字段；旧描述保留原样，由你自行整理。",
-    "default": "一个友好、自然的虚拟角色。"
-  },
-  "persona_default_outfit": {
-    "type": "text",
-    "description": "【人设与参考图】默认衣着描述",
-    "hint": "优先级最低。仅在用户、LLM 本次方向和今日穿搭都未决定衣着时兜底；明确服装出现后不会加入提示词。留空由模型参考人物图选择。",
-    "default": ""
-  },
-  "persona_photo_style": {
-    "type": "string",
-    "description": "【人设与参考图】人设照片风格",
-    "hint": "附加到人设拍照请求的视觉风格，例如自然光、胶片或棚拍风格。",
-    "default": "natural lifestyle photography, soft daylight, detailed"
-  },
-  "persona_negative_prompt": {
-    "type": "text",
-    "description": "【人设与参考图】人设照片反向提示词",
-    "hint": "填写自拍、写真和人设合影中不要出现的元素。工具自拍、指令拍照和多张照片均生效；留空关闭，不影响普通绘图或图片编辑。",
-    "default": ""
-  },
-  "persona_trigger_keywords": {
-    "type": "list",
-    "description": "【人设与参考图】人设触发关键词",
-    "hint": "每项填写一个关键词，用于智能识别与人设相关的拍照意图。",
-    "items": {
-      "type": "string"
-    },
-    "default": [
-      "拍照",
-      "自拍"
-    ]
-  },
-  "persona_scene_prompts": {
-    "type": "list",
-    "description": "【人设与参考图】人设场景预设",
-    "hint": "格式为 场景:提示词。",
-    "items": {
-      "type": "string"
-    },
-    "default": []
-  },
-  "persona_default_prompt": {
-    "type": "string",
-    "description": "【人设与参考图】人设默认场景提示词",
-    "hint": "未指定人设场景时使用的默认环境与构图要求。",
-    "default": "a natural everyday portrait"
-  },
-  "persona_character_type": {
-    "type": "string",
-    "description": "【人设与参考图】人设形象类型",
-    "hint": "auto 会按人设参考图判断真人或动漫并保持原类型；real 强制真人摄影逻辑；anime 强制保留动漫/插画身份，避免错误真人化。",
-    "options": [
-      "auto",
-      "real",
-      "anime"
-    ],
-    "default": "auto"
-  },
-  "enable_persona_daily_state": {
-    "type": "bool",
-    "description": "【人设与参考图】启用每日稳定人设状态",
-    "hint": "开启后保存当日穿搭、心情及时间段状态。自拍穿搭和表情是否固定由下方模式决定；LLM 模式只把日状态作为参考。用户明确要求始终优先。",
-    "default": true
-  },
-  "persona_outfit_mode": {
-    "type": "string",
-    "description": "【人设与参考图】自拍穿搭模式",
-    "hint": "llm（默认）让当前聊天模型按人格、聊天和用户要求决定穿搭，每日穿搭仅作参考；daily 固定今日穿搭。明确换装要求始终优先。直接使用调用自拍工具的 LLM 在 scene_hint、extra_request 或 photo_plan 中决定的穿搭，不额外请求 LLM；未指定时沿用日状态或参考图。",
-    "options": ["llm", "daily"],
-    "default": "llm"
-  },
-  "persona_expression_mode": {
-    "type": "string",
-    "description": "【人设与参考图】自拍表情模式",
-    "hint": "context（默认）尊重调用工具的 LLM 已结合人格和聊天决定的神态；diverse 在合适范围内主动变化；fixed 沿用今日心情。每日心情在前两种模式下只作基调，用户指定表情优先，多张逐张规划。直接使用本次工具参数中的决定，不另行请求 LLM；未提供方向时交给生图模型自然表现。",
-    "options": ["context", "diverse", "fixed"],
-    "default": "context"
-  },
-  "persona_expression_history": {
-    "type": "int",
-    "description": "【人设与参考图】自拍表情避免重复范围",
-    "hint": "参考同一会话最近多少张成功自拍的规划神态来减少重复，默认 3，0 关闭。用户明确指定表情和固定模式不受影响；历史会持久化，最多保留 100 个会话各 10 条，不保存聊天文本。",
-    "default": 3,
-    "min": 0,
-    "max": 10
-  },
-  "persona_daily_outfits": {
-    "type": "list",
-    "description": "【人设与参考图】每日穿搭候选",
-    "hint": "每天从候选中稳定选择一项并持久化。每项写完整穿搭描述；明确换装或 COS 请求会临时覆盖当天穿搭。",
-    "items": {
-      "type": "string"
-    },
-    "default": [
-      "舒适的浅色针织上衣、百褶短裙和简洁的小配饰",
-      "干净的白衬衫、深色高腰裙和低调发饰",
-      "柔软连帽外套、休闲短裙和轻便运动鞋",
-      "简约连衣裙、薄款开衫和小巧耳饰",
-      "宽松卫衣、百褶裙和日常帆布鞋"
-    ]
-  },
-  "persona_daily_moods": {
-    "type": "list",
-    "description": "【人设与参考图】每日心情候选",
-    "hint": "每天从候选中稳定选择一项。用户明确指定开心、生气、哭泣等表情时会覆盖当天心情。",
-    "items": {
-      "type": "string"
-    },
-    "default": [
-      "轻松愉快，表情自然温柔",
-      "有一点俏皮，眼神灵动",
-      "安静放松，带着浅浅微笑",
-      "精神很好，显得活力十足",
-      "略微慵懒，但心情平稳"
-    ]
-  },
-  "persona_time_period_prompts": {
-    "type": "list",
-    "description": "【人设与参考图】时间段状态提示词",
-    "hint": "格式为 早晨:提示词、白天:提示词、傍晚:提示词、夜间:提示词，也支持 morning/day/evening/night。用于调整光线与生活状态，不会强制覆盖用户指定场景。",
-    "items": {
-      "type": "string"
-    },
-    "default": [
-      "早晨:清晨状态，光线柔和清透，刚开始一天，精神自然",
-      "白天:白天状态，自然日光充足，动作从容，生活感真实",
-      "傍晚:傍晚状态，暖色余晖或室内灯光，氛围舒缓",
-      "夜间:夜间状态，环境光柔和，带一点安静放松的夜晚氛围"
-    ]
-  },
-  "persona_state_timezone": {
-    "type": "string",
-    "description": "【人设与参考图】每日状态时区",
-    "hint": "使用 IANA 时区名称决定日期和时间段，例如 Asia/Shanghai。填写无效时会回退到 AstrBot 服务器本地时区。",
-    "default": "Asia/Shanghai"
-  },
-  "persona_daily_state_salt": {
-    "type": "string",
-    "description": "【人设与参考图】每日状态选择种子",
-    "hint": "用于稳定选择每天的穿搭和心情。修改后当天及未来的组合会变化；普通用户无需修改。",
-    "default": "linghui"
-  },
   "enable_llm_tool": {
     "type": "bool",
-    "description": "【智能工具与批量处理】启用 Linghui LLM 工具",
+    "description": "【智能工具】启用 Linghui LLM 工具",
     "hint": "控制 AstrBot Agent 是否能调用本插件提供的生图、图生图、批量处理和人设工具。",
     "default": true
   },
   "llm_show_progress": {
     "type": "bool",
-    "description": "【智能工具与批量处理】使用当前人格发送开始提示",
+    "description": "【智能工具】使用当前人格发送开始提示",
     "hint": "开启时，Agent 调用生图、图生图、批量或人设拍照工具前，会额外使用当前会话的 Chat Provider 和 AstrBot 当前人格生成一句简短承接话，因此每次任务会多一次小型模型请求。人格读取或请求失败时会静默继续，不会回退到插件固定口吻；关闭后不发送开始提示。",
     "default": true
   },
   "llm_report_image_path": {
     "type": "bool",
-    "description": "【智能工具与批量处理】向模型补送生成图片的缓存路径",
+    "description": "【智能工具】向模型补送生成图片的缓存路径",
     "hint": "开启时，Agent 通过工具成功生成图片后，插件会把该图片在本地缓存目录中的文件名与完整路径作为内部参考补送给模型，方便它后续自行引用、改名或继续处理这些文件；路径信息只对模型可见，插件会要求模型不要向用户展示。关闭后不再补送。",
     "default": true
   },
-  "enable_obedient_mode": {
-    "type": "bool",
-    "description": "【人格互动】启用偏爱名单",
-    "hint": "开启后，偏爱名单中的用户会获得更温柔、耐心和配合的互动提示；最终措辞仍由 AstrBot 当前人格与上下文组织。",
-    "default": false
-  },
-  "obedient_whitelist": {
-    "type": "list",
-    "description": "【人格互动】偏爱用户名单",
-    "hint": "每项填写一个用户 ID。仅影响 Agent 调用后的语气和叛逆触发，不授予插件访问权限，也不会免除生图额度。需同时开启“启用偏爱名单”。",
-    "items": {
-      "type": "string",
-      "description": "用户 ID",
-      "hint": "填写需要更温柔互动的用户 ID。"
-    },
-    "default": []
-  },
-  "enable_rebellious_mode": {
-    "type": "bool",
-    "description": "【人格互动】启用可选叛逆提示",
-    "hint": "开启后，Agent 生图工具可按触发词或概率得到傲娇、调侃等互动建议；是否采用及具体表达仍由当前 AstrBot 人格决定。",
-    "default": true
-  },
-  "rebellious_probability": {
-    "type": "float",
-    "description": "【人格互动】无关键词时叛逆触发概率",
-    "hint": "取值 0 到 1。0 表示仅命中触发词时出现，1 表示每次都提供叛逆建议；偏爱名单用户不会触发。",
-    "default": 0.3,
-    "min": 0,
-    "max": 1
-  },
   "enable_llm_auto_detect": {
     "type": "bool",
-    "description": "【智能工具与批量处理】启用 LLM 智能判断文生图/图生图",
+    "description": "【智能工具】启用 LLM 智能判断文生图/图生图",
     "hint": "开启后会根据会话上下文判断生成类型，可能增加模型调用和误判风险；普通命令不受此开关影响。",
     "default": false
   },
   "context_rounds": {
     "type": "int",
-    "description": "【智能工具与批量处理】智能判断上下文轮数",
+    "description": "【智能工具】智能判断上下文轮数",
     "hint": "LLM 智能判断或上下文取图时读取的最近会话轮数。数值越大，上下文越完整但资源消耗越高。",
     "default": 20,
     "min": 1,
@@ -1191,7 +894,7 @@
   },
   "context_max_messages": {
     "type": "int",
-    "description": "【智能工具与批量处理】每会话上下文消息上限",
+    "description": "【智能工具】每会话上下文消息上限",
     "hint": "每个会话最多保留的消息数。达到上限后较早消息会被移出内存上下文。",
     "default": 50,
     "min": 1,
@@ -1199,7 +902,7 @@
   },
   "context_max_sessions": {
     "type": "int",
-    "description": "【智能工具与批量处理】上下文会话上限",
+    "description": "【智能工具】上下文会话上限",
     "hint": "插件内存中最多维护的会话数量。达到上限后较早的不活跃会话会被清理。",
     "default": 100,
     "min": 1,
@@ -1207,23 +910,15 @@
   },
   "llm_cooldown_seconds": {
     "type": "int",
-    "description": "【智能工具与批量处理】LLM 生图冷却（秒）",
+    "description": "【智能工具】LLM 生图冷却（秒）",
     "hint": "仅限制通过 LLM 工具或智能判断触发的生图频率，不影响常规聊天命令。设置为 0 可关闭冷却。",
     "default": 30,
     "min": 0,
     "max": 3600
   },
-  "command_cooldown_seconds": {
-    "type": "int",
-    "description": "【命令与帮助】手动指令生图冷却（秒）",
-    "hint": "仅限制 #画、#bnn、#文生图、#头像图生图、#人设拍照和预设指令，不影响 LLM 工具或普通聊天。按“QQ 用户 ID + 群号”独立计时；同一用户在不同群互不影响。私聊按用户单独计时。设置为 0 可关闭。",
-    "default": 0,
-    "min": 0,
-    "max": 3600
-  },
   "auto_detect_confidence": {
     "type": "float",
-    "description": "【智能工具与批量处理】智能判断最低置信度",
+    "description": "【智能工具】智能判断最低置信度",
     "hint": "只有智能判断置信度达到此值才自动生图。提高可减少误触发，降低会更积极。建议保持 0.75 至 0.9。",
     "default": 0.8,
     "min": 0.1,
@@ -1231,7 +926,7 @@
   },
   "llm_max_count": {
     "type": "int",
-    "description": "【智能工具与批量处理】LLM 工具通用最大张数",
+    "description": "【智能工具】LLM 工具通用最大张数",
     "hint": "LLM 工具一次调用允许的通用张数上限；具体绘图、编辑和人设工具还可使用下方独立上限。",
     "default": 10,
     "min": 1,
@@ -1239,7 +934,7 @@
   },
   "draw_max_count": {
     "type": "int",
-    "description": "【智能工具与批量处理】LLM 文生图最大张数",
+    "description": "【智能工具】LLM 文生图最大张数",
     "hint": "限制 linghui_draw_image 和相关智能文生图一次最多输出的图片数量。",
     "default": 10,
     "min": 1,
@@ -1247,29 +942,21 @@
   },
   "edit_max_count": {
     "type": "int",
-    "description": "【智能工具与批量处理】LLM 图生图最大张数",
+    "description": "【智能工具】LLM 图生图最大张数",
     "hint": "限制 linghui_edit_image 和相关智能图生图一次最多输出的图片数量。",
-    "default": 10,
-    "min": 1,
-    "max": 50
-  },
-  "persona_photo_max_count": {
-    "type": "int",
-    "description": "【智能工具与批量处理】人设拍照最大张数",
-    "hint": "用户一次明确索要多张自拍或写真时允许的最大张数，默认仍只拍 1 张。",
     "default": 10,
     "min": 1,
     "max": 50
   },
   "generating_msg_template": {
     "type": "string",
-    "description": "【智能工具与批量处理】命令处理中提示模板",
+    "description": "【智能工具】命令处理中提示模板",
     "hint": "命令开始时发送的提示。可使用 {preset} 代表预设名；自定义绘图会自动移除空预设占位。",
     "default": "🎨 收到请求，正在生成 [{preset}]..."
   },
   "batch_max_images": {
     "type": "int",
-    "description": "【智能工具与批量处理】批量处理最大图片数",
+    "description": "【批量与任务】批量处理最大图片数",
     "hint": "一次批量处理或 LLM 工具调用最多接受的图片数量，用于限制耗时与额度消耗。",
     "default": 10,
     "min": 1,
@@ -1277,7 +964,7 @@
   },
   "batch_concurrency": {
     "type": "int",
-    "description": "【智能工具与批量处理】批量处理并发数",
+    "description": "【批量与任务】批量处理并发数",
     "hint": "批量图片同时请求绘图渠道的数量。提高可加快处理，但会增加接口压力和并发额度消耗。",
     "default": 3,
     "min": 1,
@@ -1285,7 +972,7 @@
   },
   "batch_retries": {
     "type": "int",
-    "description": "【智能工具与批量处理】单图重试次数",
+    "description": "【批量与任务】单图重试次数",
     "hint": "单张图片失败后额外尝试的次数。提高此值可能增加请求耗时和上游调用量。",
     "default": 1,
     "min": 0,
@@ -1293,7 +980,7 @@
   },
   "batch_failure_policy": {
     "type": "string",
-    "description": "【智能工具与批量处理】批量任务失败策略",
+    "description": "【批量与任务】批量任务失败策略",
     "hint": "skip=某张失败也继续跑完剩余的（默认，与旧版行为一致）；stop=第一张失败就立刻中止剩余任务；skip_limit=失败数超过下面的上限后再中止。被策略跳过而未执行的张数会自动退还次数。",
     "options": [
       "skip",
@@ -1304,7 +991,7 @@
   },
   "batch_max_skips": {
     "type": "int",
-    "description": "【智能工具与批量处理】最多允许跳过的失败张数",
+    "description": "【批量与任务】最多允许跳过的失败张数",
     "hint": "仅在上面选择 skip_limit 时生效：累计失败超过这个数量后中止剩余任务，未执行的张数会退还次数。",
     "default": 3,
     "min": 0,
@@ -1312,7 +999,7 @@
   },
   "task_dedup_seconds": {
     "type": "int",
-    "description": "【任务中心】重复请求判定窗口（秒）",
+    "description": "【批量与任务】重复请求判定窗口（秒）",
     "hint": "同一消息、提示词、模型和参考图在此时间内重复触发时只执行一次；Dashboard 的“强制重跑”会绕过该限制。",
     "default": 180,
     "min": 0,
@@ -1320,7 +1007,7 @@
   },
   "task_history_limit": {
     "type": "int",
-    "description": "【任务中心】任务历史最大条数",
+    "description": "【批量与任务】任务历史最大条数",
     "hint": "任务中心最多保留的任务元数据条数。进行中的任务不会因达到上限被清理。",
     "default": 500,
     "min": 50,
@@ -1328,42 +1015,21 @@
   },
   "task_request_retention_days": {
     "type": "int",
-    "description": "【任务中心】失败任务请求素材保留天数",
+    "description": "【批量与任务】失败任务请求素材保留天数",
     "hint": "为了支持强制重跑，任务中心会暂存失败请求的参考图；超过期限后清理。成功结果仍按成功记录缓存规则管理。",
     "default": 7,
     "min": 1,
     "max": 90
-  },
-  "generation_cache_retention_days": {
-    "type": "int",
-    "description": "【Dashboard 与缓存】成功记录缓存保留天数",
-    "hint": "成功图片会连同提示词、用户和群信息保存到 Dashboard 的“成功记录”；图生图还会缓存实际输入原图。插件启动时及之后每 24 小时清理一次超过此期限的未收藏、未锁定内容；收藏或锁定的结果图、输入原图、提示词和缩略图都不会被自动清理。",
-    "default": 7,
-    "min": 1,
-    "max": 365
-  },
-  "generation_cache_max_mb": {
-    "type": "int",
-    "description": "【Dashboard 与缓存】成功记录最大容量（MB）",
-    "hint": "结果图、图生图输入原图和缩略图合计超过此容量时，会从最旧的未收藏、未锁定记录开始清理。设置为 0 表示不限制容量。",
-    "default": 2048,
-    "min": 0,
-    "max": 102400
-  },
-  "generation_cache_trim_ratio": {
-    "type": "float",
-    "description": "【Dashboard 与缓存】超容量清理余量比例",
-    "hint": "达到容量上限后额外腾出的比例。例如 0.15 表示清理到上限的 85%，避免每新增一张图就立即再次清理。",
-    "default": 0.15,
-    "min": 0.01,
-    "max": 0.9
   },
   "qq_image_delivery_mode": {
     "type": "string",
     "description": "【图片发送】QQ 图片发送方式",
     "hint": "auto：仅对 OneBot/aiocqhttp 聊天发送准备副本，大图优先转高质量 JPEG，透明图保留透明度，动图保持原样；original：直接发送原图。Dashboard 缓存、下载、参考图和 PDF 始终保留上游原图。此设置不改变模型生图质量，也不能修复 QQ 客户端或协议端的资源异常。",
     "default": "auto",
-    "options": ["auto", "original"]
+    "options": [
+      "auto",
+      "original"
+    ]
   },
   "qq_image_delivery_max_mb": {
     "type": "int",
@@ -1397,9 +1063,33 @@
     "min": 1,
     "max": 4
   },
+  "generation_cache_retention_days": {
+    "type": "int",
+    "description": "【缓存与外观】成功记录缓存保留天数",
+    "hint": "成功图片会连同提示词、用户和群信息保存到 Dashboard 的“成功记录”；图生图还会缓存实际输入原图。插件启动时及之后每 24 小时清理一次超过此期限的未收藏、未锁定内容；收藏或锁定的结果图、输入原图、提示词和缩略图都不会被自动清理。",
+    "default": 7,
+    "min": 1,
+    "max": 365
+  },
+  "generation_cache_max_mb": {
+    "type": "int",
+    "description": "【缓存与外观】成功记录最大容量（MB）",
+    "hint": "结果图、图生图输入原图和缩略图合计超过此容量时，会从最旧的未收藏、未锁定记录开始清理。设置为 0 表示不限制容量。",
+    "default": 2048,
+    "min": 0,
+    "max": 102400
+  },
+  "generation_cache_trim_ratio": {
+    "type": "float",
+    "description": "【缓存与外观】超容量清理余量比例",
+    "hint": "达到容量上限后额外腾出的比例。例如 0.15 表示清理到上限的 85%，避免每新增一张图就立即再次清理。",
+    "default": 0.15,
+    "min": 0.01,
+    "max": 0.9
+  },
   "result_image_download_timeout": {
     "type": "int",
-    "description": "【Dashboard 与缓存】结果图片下载超时（秒）",
+    "description": "【缓存与外观】结果图片下载超时（秒）",
     "hint": "当上游返回图片 URL 而不是 Base64 时，单次下载结果图的超时时间。",
     "default": 45,
     "min": 5,
@@ -1407,7 +1097,7 @@
   },
   "result_image_download_retries": {
     "type": "int",
-    "description": "【Dashboard 与缓存】结果图片下载重试次数",
+    "description": "【缓存与外观】结果图片下载重试次数",
     "hint": "上游图片 URL 下载失败后的额外重试次数；程序会结合直连、代理和可信来源转发路线处理。",
     "default": 2,
     "min": 0,
@@ -1415,7 +1105,7 @@
   },
   "download_retries": {
     "type": "int",
-    "description": "【Dashboard 与缓存】用户与参考图下载重试次数",
+    "description": "【缓存与外观】用户与参考图下载重试次数",
     "hint": "下载用户消息图片、QQ 头像、预设参考图和字体等素材时的额外重试次数。",
     "default": 3,
     "min": 0,
@@ -1423,7 +1113,7 @@
   },
   "preset_table_quality": {
     "type": "string",
-    "description": "【Dashboard 与缓存】预设列表图片清晰度",
+    "description": "【缓存与外观】预设列表图片清晰度",
     "hint": "控制聊天中“预设列表”图片的缩略图尺寸和字体大小；越高越清晰，也会占用更多内存。",
     "options": [
       "标准",
@@ -1434,22 +1124,15 @@
   },
   "preset_table_columns": {
     "type": "int",
-    "description": "【Dashboard 与缓存】预设列表图片列数",
+    "description": "【缓存与外观】预设列表图片列数",
     "hint": "控制聊天中“预设列表”图片每行显示多少个预设。屏幕较窄时可降低。",
     "default": 5,
     "min": 2,
     "max": 10
   },
-  "installed_default_preset_pack_version": {
-    "type": "int",
-    "description": "【内部迁移】已安装默认预设包版本",
-    "hint": "用于确保新默认预设只追加一次，避免你以后手动删除的预设在重启后重新出现。请勿手动修改。",
-    "default": 0,
-    "invisible": true
-  },
   "dashboard_theme": {
     "type": "string",
-    "description": "【Dashboard 与缓存】Dashboard 外观主题",
+    "description": "【缓存与外观】Dashboard 外观主题",
     "hint": "深色为默认的玻璃霓虹界面；另有浅色、爱丽丝、采用独立终端布局的黑客终端，以及深蓝紫渐变的星云主题。Dashboard 顶部工具栏切换后会立即保存到插件配置，重新打开页面或更换浏览器仍会保持此选择。",
     "options": [
       "dark",
@@ -1462,12 +1145,116 @@
   },
   "dashboard_density": {
     "type": "string",
-    "description": "【Dashboard 与缓存】Dashboard 界面密度",
+    "description": "【缓存与外观】Dashboard 界面密度",
     "hint": "comfortable 为默认的宽松密度，标签栏带图标、间距更舒适；compact 为紧凑密度，会隐藏标签图标并压缩页头与内边距，让小屏幕或笔记本一屏看到更多图片记录。也可以直接点击 Dashboard 右上角的“紧凑/宽松”按钮切换，切换后会立即保存到插件配置。",
     "options": [
       "comfortable",
       "compact"
     ],
     "default": "comfortable"
+  },
+  "show_model_info": {
+    "type": "bool",
+    "description": "【排障高级】成功消息显示模型信息",
+    "hint": "开启后，生成成功消息会附带实际使用的模型名称，便于排查渠道路由。",
+    "default": false
+  },
+  "debug_mode": {
+    "type": "bool",
+    "description": "【排障高级】向用户显示上游错误详情",
+    "hint": "开启后，生成失败的提示会附带上游返回的状态码与报错正文，便于自己排查是渠道问题还是提示词问题。接口地址、主机名和密钥会自动隐去，不会暴露你用的是哪家服务。",
+    "default": false
+  },
+  "requester_tag_mode": {
+    "type": "string",
+    "description": "【排障高级】群聊结果标注请求者",
+    "hint": "群里多人同时抢着生图时，用来分清每条结果和报错分别属于谁。off=不标注（和旧版本一样）；name=在结果与报错前标注「昵称(QQ号)」，推荐；at=在标注的同时 @ 提醒本人，每张结果图前也会带上 @。私聊只有一个人，任何模式下都不标注；昵称只用于显示，识别始终按 QQ 号。",
+    "obvious_hint": true,
+    "options": [
+      "off",
+      "name",
+      "at"
+    ],
+    "default": "name"
+  },
+  "generation_execution_mode": {
+    "type": "string",
+    "description": "【排障高级】生图任务执行方式",
+    "hint": "wait=工具等待图片完成后再返回；background=提交任务后立即返回，图片完成后由插件主动发回。后台模式允许 Bot 在等待期间继续处理聊天，推荐使用 background。",
+    "options": [
+      "background",
+      "wait"
+    ],
+    "default": "background"
+  },
+  "background_result_text_mode": {
+    "type": "string",
+    "description": "【排障高级】后台完成消息文字",
+    "hint": "image_only=后台任务完成时只发送图片，不附加成功文字；name=附带请求者和简短完成信息；full=沿用完整成功信息（预设、额度、模型等）。",
+    "options": [
+      "image_only",
+      "name",
+      "full"
+    ],
+    "default": "image_only"
+  },
+  "enable_luxury_mode": {
+    "type": "bool",
+    "description": "【排障高级】并发抢占模式",
+    "hint": "会同时发送多次请求，只保留第一张成功结果，消耗会增加。",
+    "default": false
+  },
+  "luxury_request_count": {
+    "type": "int",
+    "description": "【排障高级】并发抢占请求数",
+    "hint": "仅在开启“并发抢占模式”时生效。会并发发送同一请求，只保留首个成功结果，可能增加上游调用和额度消耗。",
+    "default": 2,
+    "min": 1,
+    "max": 8
+  },
+  "enable_obedient_mode": {
+    "type": "bool",
+    "description": "【排障高级】启用偏爱名单",
+    "hint": "开启后，偏爱名单中的用户会获得更温柔、耐心和配合的互动提示；最终措辞仍由 AstrBot 当前人格与上下文组织。",
+    "default": false
+  },
+  "obedient_whitelist": {
+    "type": "list",
+    "description": "【排障高级】偏爱用户名单",
+    "hint": "每项填写一个用户 ID。仅影响 Agent 调用后的语气和叛逆触发，不授予插件访问权限，也不会免除生图额度。需同时开启“启用偏爱名单”。",
+    "items": {
+      "type": "string",
+      "description": "用户 ID",
+      "hint": "填写需要更温柔互动的用户 ID。"
+    },
+    "default": []
+  },
+  "enable_rebellious_mode": {
+    "type": "bool",
+    "description": "【排障高级】启用可选叛逆提示",
+    "hint": "开启后，Agent 生图工具可按触发词或概率得到傲娇、调侃等互动建议；是否采用及具体表达仍由当前 AstrBot 人格决定。",
+    "default": true
+  },
+  "rebellious_probability": {
+    "type": "float",
+    "description": "【排障高级】无关键词时叛逆触发概率",
+    "hint": "取值 0 到 1。0 表示仅命中触发词时出现，1 表示每次都提供叛逆建议；偏爱名单用户不会触发。",
+    "default": 0.3,
+    "min": 0,
+    "max": 1
+  },
+  "preset_config_version": {
+    "type": "int",
+    "description": "【内部迁移】预设设置数据版本",
+    "hint": "插件自动迁移使用，请勿手动修改。",
+    "default": 0,
+    "invisible": true
+  },
+  "installed_default_preset_pack_version": {
+    "type": "int",
+    "description": "【内部迁移】已安装默认预设包版本",
+    "hint": "用于确保新默认预设只追加一次，避免你以后手动删除的预设在重启后重新出现。请勿手动修改。",
+    "default": 0,
+    "invisible": true
   }
 }

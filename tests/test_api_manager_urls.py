@@ -165,6 +165,59 @@ class ImageEditTransportTest(unittest.IsolatedAsyncioTestCase):
     def setUpClass(cls):
         cls.ApiManager = load_api_manager()
 
+    async def test_channel_credentials_are_the_only_key_pool_and_keep_rotation(self):
+        manager = self.ApiManager({
+            "api_keys": "channel-one\nchannel-two", "generic_api_keys": "obsolete-generic",
+            "gemini_api_keys": "obsolete-gemini", "text_to_image_api_keys": "obsolete-text",
+        })
+        self.assertEqual([await manager.get_key() for _ in range(3)], ["channel-one", "channel-two", "channel-one"])
+
+    async def test_removed_key_pools_never_authorize_an_upstream_request(self):
+        manager = self.ApiManager({
+            "interface_mode": "openai_image", "base_url": "https://channel.example",
+            "generic_api_keys": "obsolete-generic", "gemini_api_keys": "obsolete-gemini",
+            "text_to_image_api_keys": "obsolete-text",
+        })
+        self.assertIsNone(await manager.get_key())
+        self.assertEqual(await manager._call_api_once([], "cat", "gpt-image-2", use_text_to_image_api=True), "无可用 API Key")
+
+    async def test_removed_addresses_never_restore_a_service(self):
+        manager = self.ApiManager({
+            "api_mode": "openai_image", "generic_prefer_images_api": True,
+            "generic_api_url": "https://obsolete-generic.example",
+            "gemini_api_url": "https://obsolete-gemini.example",
+            "text_to_image_api_url": "https://obsolete-text.example", "api_keys": "channel-key",
+        })
+        self.assertEqual(manager._get_interface_mode(), "auto")
+        self.assertEqual(manager._get_base_url("openai_image"), "")
+        self.assertEqual(await manager._call_api_once([], "cat", "gpt-image-2", use_text_to_image_api=True), "API URL 未配置")
+
+    async def test_channel_mode_and_address_are_used_for_text_and_reference_requests(self):
+        manager = self.ApiManager({
+            "interface_mode": "openai_image", "base_url": "https://channel.example",
+            "api_keys": "channel-key", "api_mode": "gemini_official",
+            "text_to_image_api_url": "https://obsolete-text.example",
+        })
+        requests = []
+
+        async def fake_transport(images, prompt, model, key, interface_mode, *args, **kwargs):
+            requests.append((bool(images), key, interface_mode, manager._get_base_url(interface_mode), kwargs["use_text_to_image_api"]))
+            return b"image-result"
+
+        manager._call_api_transport = fake_transport
+        for images, text_only in (([], True), ([b"reference"], False)):
+            self.assertEqual(await manager._call_api_once(images, "cat", "gpt-image-2", use_text_to_image_api=text_only), b"image-result")
+        self.assertEqual(requests, [
+            (False, "channel-key", "openai_image", "https://channel.example", True),
+            (True, "channel-key", "openai_image", "https://channel.example", False),
+        ])
+
+    async def test_official_gemini_default_and_explicit_modes_remain_available(self):
+        manager = self.ApiManager({"gemini_api_url": "https://obsolete.example"})
+        self.assertEqual(manager._get_base_url("gemini_official"), "https://generativelanguage.googleapis.com")
+        for mode in ("auto", "openai_image", "openai_chat", "gemini_official", "custom_endpoint"):
+            self.assertEqual(self.ApiManager({"interface_mode": mode})._get_interface_mode(), mode)
+
     async def test_gpt_image_reference_request_directly_uses_multipart(self):
         manager = self.ApiManager({"image_edit_transport": "auto"})
         captured = {}

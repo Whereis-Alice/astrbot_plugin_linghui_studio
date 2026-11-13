@@ -25,11 +25,16 @@ from .image_delivery import bounded_int, prepare_generated_chain
 from .access_control import AccessPolicy
 from .channel_router import DrawingChannelRouter
 from .channel_policy import extract_channel_option
+from .configuration_cleanup import REMOVED_CONFIG_KEYS, cleanup_removed_config, restore_legacy_access_snapshot
 from .error_classify import safe_error_summary
 from .session_overrides import SessionOverrideStore
 from .batch_policy import BatchFailureGuard, policy_label
 from .default_presets import DEFAULT_PRESET_PACK_VERSION, presets_for_upgrade
 from .preset_descriptions import preset_description
+from .preset_options import (
+    effective_preset_settings, store_preset_settings, PRESET_SETTINGS_KEYS,
+    snapshot_native_preset_settings, restore_legacy_preset_snapshot,
+)
 from .persona_profile import PersonaProfileManager
 from .persona_planner import PersonaPhotoPlanner, photo_plan_prompt, parse_photo_plan, has_outfit_request, has_expression_request
 from .persona_prompt import build_persona_base_prompt, resolve_persona_scene, keep_unspecified_suggestions
@@ -70,6 +75,17 @@ from .requester_tag import (
     normalize_tag_mode,
     should_mention_requester,
 )
+
+# AstrBot imports this module before loading its schema and removing old keys.
+# Capture only our migration fields here; all mutation/persistence stays in initialize().
+try:
+    from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+    _PRE_SCHEMA_CONFIG_PATH = os.path.abspath(os.path.join(
+        get_astrbot_data_path(), "config", f"{os.path.basename(os.path.dirname(__file__))}_config.json",
+    ))
+    _PRE_SCHEMA_PRESET_SNAPSHOT = snapshot_native_preset_settings(_PRE_SCHEMA_CONFIG_PATH)
+except (ImportError, OSError, TypeError, ValueError):
+    _PRE_SCHEMA_CONFIG_PATH, _PRE_SCHEMA_PRESET_SNAPSHOT = "", {}
 
 # 内置叛逆词库 - 用于LLM判断时增加个性化回复
 # 注意：避免使用"画"字，因为人设拍照等场景不适合
@@ -188,6 +204,7 @@ def _direct_command_only(handler):
 )
 class LinghuiStudioPlugin(Star):
     _DEPRECATED_CONFIG_KEYS = [
+        *REMOVED_CONFIG_KEYS,
         "enable_power_model",
         "power_model_keyword",
         "power_model_id",
@@ -201,26 +218,15 @@ class LinghuiStudioPlugin(Star):
     ]
     _DYNAMIC_CONFIG_KEYS = [
         "global_total_limit",
-        "model",
-        "text_to_image_model",
-        "text_to_image_api_url",
-        "text_to_image_api_keys",
-        "interface_mode",
-        "base_url",
-        "api_keys",
-        "api_mode",
         "prompt_list",
         "preset_channel_bindings",
         "preset_generation_options",
-        "image_output_format",
-        "image_frame_count",
-        "image_frame_duration_ms",
-        "image_complexity",
+        "preset_config_version",
         "custom_drawing_negative_prompt",
         "persona_negative_prompt",
+        "persona_channel_ids",
         "persona_description",
         "persona_default_outfit",
-        "image_quality",
         "generation_cache_retention_days",
         "generation_cache_max_mb",
         "generation_cache_trim_ratio",
@@ -235,10 +241,6 @@ class LinghuiStudioPlugin(Star):
         "command_cooldown_seconds",
         "generation_execution_mode",
         "background_result_text_mode",
-        "generic_api_url",
-        "generic_api_keys",
-        "gemini_api_url",
-        "gemini_api_keys",
         "persona_character_type",
         "enable_persona_daily_state",
         "persona_daily_outfits",
@@ -260,15 +262,8 @@ class LinghuiStudioPlugin(Star):
     _DYNAMIC_CONFIG_NATIVE_SNAPSHOT_KEY = "__native_values_at_fallback__"
     _DYNAMIC_CONFIG_VERSION = 6
     _LEGACY_DYNAMIC_RESTORE_KEYS = {
-        "model",
-        "text_to_image_model",
-        "interface_mode",
-        "api_mode",
         "prompt_list",
         "active_drawing_channel",
-        "generic_api_keys",
-        "gemini_api_keys",
-        "text_to_image_api_keys",
     }
     _COMMAND_ROUTES = (
         (("总次数", "全局次数", "设置总次数"), "on_global_quota", "灵绘总次数"),
@@ -295,10 +290,6 @@ class LinghuiStudioPlugin(Star):
         (("文生图",), "on_txt2img", "灵绘文生图"),
         (("加用户额度", "手办化增加用户次数"), "on_add_user_counts", "灵绘加用户额度"),
         (("加群额度", "手办化增加群组次数"), "on_add_group_counts", "灵绘加群额度"),
-        (("添加密钥", "手办化添加key"), "on_add_key", "灵绘添加密钥"),
-        (("密钥列表", "手办化key列表"), "on_list_keys", "灵绘密钥列表"),
-        (("删除密钥", "手办化删除key"), "on_delete_key", "灵绘删除密钥"),
-        (("接口模式", "切换API模式"), "on_switch_mode", "灵绘接口模式"),
         (("模型", "切换模型"), "on_switch_model", "灵绘模型"),
         (("通道", "渠道"), "on_switch_channel", "灵绘通道"),
         (("统计", "今日统计", "手办化今日统计"), "on_daily_stats", "灵绘统计"),
@@ -315,6 +306,14 @@ class LinghuiStudioPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.conf = config
+        # The removed schema entry may be absent from the runtime config. Read
+        # it before any startup save can overwrite the old native JSON.
+        native_path = getattr(config, "config_path", "")
+        snapshot = self._read_native_config_values(PRESET_SETTINGS_KEYS)
+        if native_path and os.path.normcase(os.path.abspath(native_path)) == os.path.normcase(_PRE_SCHEMA_CONFIG_PATH):
+            snapshot = {**_PRE_SCHEMA_PRESET_SNAPSHOT, **snapshot}
+        restore_legacy_preset_snapshot(config, snapshot)
+        restore_legacy_access_snapshot(config, snapshot)
 
         self.data_mgr = DataManager(StarTools.get_data_dir(), config)
         self.img_mgr = ImageManager(config)
@@ -484,7 +483,7 @@ class LinghuiStudioPlugin(Star):
     def _purge_deprecated_config_keys(self, config_obj=None) -> int:
         """清理已经废弃的旧配置字段，避免面板继续显示历史残留项。"""
         target = config_obj if config_obj is not None else self.conf
-        removed = 0
+        removed = len(cleanup_removed_config(target))
 
         for key in self._DEPRECATED_CONFIG_KEYS:
             try:
@@ -1042,6 +1041,13 @@ class LinghuiStudioPlugin(Star):
             normalize_for_generation=True,
         )
 
+    def _migrate_preset_settings(self) -> bool:
+        if (str(self.conf.get("preset_config_version", 0)) == "1"
+                and "preset_channel_bindings" not in self.conf):
+            return False
+        store_preset_settings(self.conf)
+        return True
+
     async def initialize(self):
         if self._migrate_drawing_channel_template_keys():
             self._save_config(["drawing_channels"])
@@ -1057,7 +1063,7 @@ class LinghuiStudioPlugin(Star):
 
         removed_from_runtime = self._purge_deprecated_config_keys()
         if removed_from_runtime > 0:
-            logger.info(f"LinghuiStudio: 已从运行时配置中清理 {removed_from_runtime} 个废弃强力模式字段")
+            logger.info(f"LinghuiStudio: 已从运行时配置中清理 {removed_from_runtime} 个已移除的配置字段")
 
         # dynamic_config.json is a persistence fallback for environments where
         # AstrBot cannot save plugin configuration. Each fallback can retain a
@@ -1079,7 +1085,7 @@ class LinghuiStudioPlugin(Star):
                 if removed_from_backup > 0:
                     dynamic_backup_changed = True
                     logger.info(
-                        f"LinghuiStudio: 已从 dynamic_config.json 清理 {removed_from_backup} 个废弃强力模式字段")
+                        f"LinghuiStudio: 已从 dynamic_config.json 清理 {removed_from_backup} 个已移除的配置字段")
 
                 restored_count = 0
                 skipped_count = 0
@@ -1158,6 +1164,13 @@ class LinghuiStudioPlugin(Star):
                     logger.info("LinghuiStudio: 已规范化 dynamic_config.json，后续不会反复覆盖面板配置")
             except Exception as e:
                 logger.error(f"LinghuiStudio: 恢复动态配置失败 {e}")
+
+        try:
+            if self._migrate_preset_settings():
+                self._save_config(PRESET_SETTINGS_KEYS)
+                logger.info("LinghuiStudio: 已将预设渠道与图片参数合并为统一预设设置")
+        except ValueError as exc:
+            logger.warning("LinghuiStudio: 预设设置迁移未完成，请检查配置：%s", exc)
 
         if self._install_default_preset_pack_once():
             self._save_config(["prompt_list", "installed_default_preset_pack_version"])
@@ -2095,8 +2108,6 @@ class LinghuiStudioPlugin(Star):
         metrics = route_metrics if isinstance(route_metrics, dict) else {}
         channel_id = re.sub(r"\s+", " ", str(metrics.get("channel_id", "") or "")).strip()[:80]
         channel_name = re.sub(r"\s+", " ", str(metrics.get("channel_name", "") or "")).strip()[:160]
-        if channel_id.lower() == "legacy" and not channel_name:
-            channel_name = "兼容单接口"
         actual_model = str(metrics.get("model", "") or model or "").strip()[:200]
         event_user_name, event_group_name = self._event_identity_labels(event)
         user_name = str(user_name or event_user_name or "").strip()[:160]
@@ -3136,6 +3147,7 @@ class LinghuiStudioPlugin(Star):
             rerun_of: str = "",
             preferred_channel_id: str = "",
             allow_fallback: bool = True,
+            routing_profile: str = "",
     ) -> Tuple[Dict[str, Any], bool]:
         user_name, group_name = self._event_identity_labels(event)
         return await self.task_mgr.begin_task(
@@ -3159,6 +3171,7 @@ class LinghuiStudioPlugin(Star):
                 "resolution": str(resolution or ""),
                 "preferred_channel_id": preferred_channel_id,
                 "allow_fallback": bool(allow_fallback),
+                "routing_profile": routing_profile,
             },
         )
 
@@ -3179,6 +3192,7 @@ class LinghuiStudioPlugin(Star):
             session_id: str = "",
             preset_name: str = "",
             prefer_config_aspect_ratio: bool = False,
+            routing_profile: str = "",
     ) -> bytes | str:
         runtime_task = asyncio.create_task(self.api_mgr.call_api(
             images,
@@ -3196,6 +3210,7 @@ class LinghuiStudioPlugin(Star):
             session_id=session_id,
             prefer_config_aspect_ratio=prefer_config_aspect_ratio,
             preset_name=preset_name,
+            routing_profile=routing_profile,
         ))
         await self.task_mgr.attach_runtime_task(task_id, runtime_task)
         try:
@@ -3452,7 +3467,8 @@ class LinghuiStudioPlugin(Star):
                                    llm_tool_call: bool = False,
                                    record_sink: Optional[List[Dict[str, Any]]] = None,
                                    negative_prompt: str = "",
-                                   prefer_config_aspect_ratio: bool = False) -> Tuple[bool, str]:
+                                   prefer_config_aspect_ratio: bool = False,
+                                   routing_profile: str = "") -> Tuple[bool, str]:
         """
         后台执行生成任务，并在完成后主动发送消息。
 
@@ -3479,7 +3495,7 @@ class LinghuiStudioPlugin(Star):
                     images = ref_images + images
                     logger.info(f"已加载 {len(ref_images)} 张预设参考图: {preset_name}")
 
-            model = model_override if model_override else self.conf.get("model", "nano-banana")
+            model = model_override if model_override else ""
             task_type = task_type_override or ("文生图" if use_text_to_image_api else (
                 "人设拍照" if preset_name.startswith("人设-") else "图生图"
             ))
@@ -3496,6 +3512,7 @@ class LinghuiStudioPlugin(Star):
                 resolution=resolution,
                 force=force_task,
                 nonce=task_nonce,
+                routing_profile=routing_profile,
             )
             task_id = str(task.get("id", "") or "")
             if duplicate:
@@ -3519,6 +3536,7 @@ class LinghuiStudioPlugin(Star):
                     negative_prompt=negative_prompt,
                     prefer_config_aspect_ratio=prefer_config_aspect_ratio,
                     preset_name=preset_name,
+                    routing_profile=routing_profile,
                 )
                 if isinstance(res, bytes) or not self._is_transient_generation_error(res) or attempt == 1:
                     break
@@ -3700,7 +3718,7 @@ class LinghuiStudioPlugin(Star):
                     logger.info(f"已加载 {len(ref_images)} 张预设参考图: {preset_name}")
 
             # 3. 获取文生图模型
-            model = self._get_text_to_image_model()
+            model = ""
 
             concurrency = max(1, self.conf.get("batch_concurrency", 3))
             max_retries = self.conf.get("batch_retries", 2)
@@ -3839,7 +3857,8 @@ class LinghuiStudioPlugin(Star):
                                         photo_prompts: Optional[List[str]] = None,
                                         photo_completion: Optional[Callable[[int, bool], Awaitable[None]]] = None,
                                         aspect_ratio: str = None, negative_prompt: str = "",
-                                        prefer_config_aspect_ratio: bool = False) -> Dict[str, Any]:
+                                        prefer_config_aspect_ratio: bool = False,
+                                        routing_profile: str = "") -> Dict[str, Any]:
         """
         批量图生图后台任务 - 对同一张图片生成多个不同版本
 
@@ -3873,7 +3892,7 @@ class LinghuiStudioPlugin(Star):
                     logger.info(f"已加载 {len(ref_images)} 张预设参考图: {preset_name}")
 
             # 3. 获取模型
-            model = self.conf.get("model", "nano-banana")
+            model = ""
 
             concurrency = max(1, self.conf.get("batch_concurrency", 3))
             max_retries = self.conf.get("batch_retries", 2)
@@ -3887,6 +3906,10 @@ class LinghuiStudioPlugin(Star):
             async def process_single(index: int):
                 async with semaphore:
                     success = False
+                    task_id = ""
+                    record_id = ""
+                    delivery_status = "pending"
+                    route_metrics = {}
                     photo_prompt = photo_prompts[index - 1] if photo_prompts is not None else prompt
                     try:
                         if guard.aborted:
@@ -3898,21 +3921,35 @@ class LinghuiStudioPlugin(Star):
                         success = False
                         error_msg = ""
 
+                        if routing_profile:
+                            task, _ = await self._begin_generation_task(
+                                event, images=images,
+                                prompt=append_negative_prompt(photo_prompt, negative_prompt),
+                                model=model, preset_name=preset_name, task_type="人设拍照",
+                                aspect_ratio=aspect_ratio, force=True,
+                                nonce=f"persona:{index}:{datetime.now().timestamp()}",
+                                routing_profile=routing_profile,
+                            )
+                            task_id = str(task.get("id", "") or "")
+
                         while retry_count <= max_retries:
                             start_time = datetime.now()
-                            res = await self.api_mgr.call_api(
-                                images, photo_prompt, model, False, self.img_mgr.proxy,
+                            call = self._call_generation_api_task if task_id else self.api_mgr.call_api
+                            call_args = (task_id, images, photo_prompt, model) if task_id else (images, photo_prompt, model, False, self.img_mgr.proxy)
+                            res = await call(
+                                *call_args,
                                 session_id=event.unified_msg_origin,
                                 aspect_ratio=aspect_ratio, negative_prompt=negative_prompt,
                                 prefer_config_aspect_ratio=prefer_config_aspect_ratio,
                                 preset_name=preset_name,
+                                routing_profile=routing_profile,
                             )
 
                             if isinstance(res, bytes):
                                 route_metrics = self._snapshot_generation_route_metrics()
                                 res = await self._prepare_send_image_bytes(res)
                                 elapsed = (datetime.now() - start_time).total_seconds()
-                                await self._record_generation_result(
+                                record = await self._record_generation_result(
                                     event.unified_msg_origin,
                                     res,
                                     user_id=uid,
@@ -3924,11 +3961,16 @@ class LinghuiStudioPlugin(Star):
                                     reference_images=images,
                                     route_metrics=route_metrics,
                                     event=event,
+                                    task_id=task_id,
                                 )
+                                record_id = str(record.get("id", "") or "") if isinstance(record, dict) else ""
+                                if task_id:
+                                    await self.task_mgr.mark_generated(task_id, metrics=route_metrics, result_record_id=record_id)
 
                                 # PDF 暂存模式：不发送单张图片，用 index 保证顺序
                                 if await self._maybe_stage_after_grace(event.unified_msg_origin, res, staging_index=index):
                                     success = True
+                                    delivery_status = "staged"
                                     break
 
                                 chain_nodes = [Image.fromBytes(res)]
@@ -3939,11 +3981,14 @@ class LinghuiStudioPlugin(Star):
                                         info_text += f" | 规则: {extra_rules[:15]}..."
                                     chain_nodes.append(Plain(info_text))
 
-                                await self._send_generated_result(event, event.chain_result(chain_nodes))
+                                delivery_status = await self._send_generated_result(event, event.chain_result(chain_nodes))
                                 success = True
                                 break
                             else:
+                                route_metrics = self._snapshot_generation_route_metrics()
                                 error_msg = self._translate_error_to_chinese(res)
+                                if not self._is_transient_generation_error(res):
+                                    break
 
                             retry_count += 1
                             if retry_count <= max_retries:
@@ -3973,6 +4018,13 @@ class LinghuiStudioPlugin(Star):
                         if (not suppress_user_error) or self._should_show_debug_errors():
                             await self._send_task_notice(event, f"第 {index} 个版本出了点问题：\n{error_msg}")
                     finally:
+                        if task_id:
+                            if success:
+                                await self._finalize_generated_delivery(
+                                    task_id, record_id, delivery_status, metrics=route_metrics,
+                                )
+                            else:
+                                await self.task_mgr.finish_failure(task_id, error_msg, metrics=route_metrics)
                         if photo_completion is not None:
                             await photo_completion(index - 1, success)
                         await self._complete_pending_generation(event.unified_msg_origin, 1)
@@ -4005,12 +4057,13 @@ class LinghuiStudioPlugin(Star):
             return {"success": 0, "fail": count, "errors": [final_error]}
     # ================= LLM 工具调用 (Tool Calling) =================
 
-    def _get_text_to_image_model(self) -> str:
-        """获取文生图使用的模型"""
-        t2i_model = self.conf.get("text_to_image_model", "")
-        if t2i_model:
-            return t2i_model
-        return self.conf.get("model", "nano-banana")
+    def _configured_channel_models(self) -> List[str]:
+        values = []
+        for channel in self.api_mgr.channels():
+            values.extend([channel.get("model", ""), channel.get("image_edit_model", ""),
+                           channel.get("text_to_image_model", "")])
+            values.extend(normalize_model_list(channel.get("models", [])))
+        return list(dict.fromkeys(str(value).strip() for value in values if str(value or "").strip()))
 
     def _is_vip_user(self, uid: str, event=None) -> bool:
         """
@@ -4178,7 +4231,7 @@ class LinghuiStudioPlugin(Star):
             generation_coro = self._run_background_task(
                 event, [], final_prompt, preset_name, deduction, uid, gid, total_cost,
                 extra_rules,
-                model_override=self._get_text_to_image_model(), hide_text=hide_llm_result_text,
+                model_override="", hide_text=hide_llm_result_text,
                 use_text_to_image_api=True, suppress_user_error=True,
                 aspect_ratio=requested_aspect_ratio, resolution=requested_resolution,
                 llm_tool_call=True, record_sink=generation_records
@@ -4523,7 +4576,7 @@ class LinghuiStudioPlugin(Star):
     @filter.event_message_type(filter.EventMessageType.ALL, priority=20)
     async def on_namespaced_command(self, event: AstrMessageEvent, ctx=None):
         """Route configurable namespace commands without reserving global names."""
-        if self.conf.get("prefix", True) and not event.is_at_or_wake_command:
+        if not event.is_at_or_wake_command:
             return
         command_text = self._namespaced_command_text(event)
         if command_text is None:
@@ -4542,7 +4595,7 @@ class LinghuiStudioPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=5)
     async def on_figurine_request(self, event: AstrMessageEvent, ctx=None):
-        if self.conf.get("prefix", True) and not event.is_at_or_wake_command:
+        if not event.is_at_or_wake_command:
             return
 
         # Build prompts from user-authored Plain components. QQ adapters may
@@ -4713,14 +4766,11 @@ class LinghuiStudioPlugin(Star):
         # A custom command without an image is text-to-image.
         is_text_to_image = is_custom_command and not images and user_prompt
 
-        if is_text_to_image:
-            # 纯文生图使用专用模型
-            model = self._get_text_to_image_model()
-        else:
-            model = self.conf.get("model", "nano-banana")
+        # The chosen channel resolves its own default or specialized model.
+        model = ""
 
         if model_idx_override is not None:
-            all_models = normalize_model_list(self.conf.get("model_list", []))
+            all_models = self._configured_channel_models()
             if 0 <= model_idx_override < len(all_models):
                 model = all_models[model_idx_override]
 
@@ -4879,7 +4929,7 @@ class LinghuiStudioPlugin(Star):
             "[{preset}]", "")
         await event.send(event.chain_result([Plain(feedback)]))
 
-        model = self._get_text_to_image_model()
+        model = ""
         self._log_prompt_preview("command:文生图", final_prompt)
         group_id = norm_id(event.get_group_id())
         await self._register_pending_generation(event.unified_msg_origin, 1)
@@ -4931,7 +4981,7 @@ class LinghuiStudioPlugin(Star):
             final_prompt = prompt
 
         await event.send(event.chain_result([Plain("正在以你的 QQ 头像作为参考图生成...")]))
-        model = self.conf.get("model", "")
+        model = ""
         await self._register_pending_generation(event.unified_msg_origin, 1)
         await self._run_background_task(
             event,
@@ -5116,16 +5166,15 @@ class LinghuiStudioPlugin(Star):
         # 删除这个预设绑定的参考图，避免列表里没有预设但参考图索引还残留。
         ref_count = await self.data_mgr.clear_preset_ref_images(name)
 
-        self.conf["preset_channel_bindings"] = [
-            item for item in self.conf.get("preset_channel_bindings", []) or []
-            if not isinstance(item, dict) or str(item.get("preset", "")).strip() != name
-        ]
+        remaining_settings = [row for row in effective_preset_settings(self.conf)
+                              if row["preset"] != name]
+        remaining_bindings = [{"preset": row["preset"], "channel_ids": row["channel_ids"]}
+                              for row in remaining_settings if row["channel_ids"]]
+        changed_settings = store_preset_settings(
+            self.conf, options=remaining_settings, bindings=remaining_bindings,
+        )
         self.data_mgr.reload_prompts()
-        self.conf["preset_generation_options"] = [
-            item for item in self.conf.get("preset_generation_options", []) or []
-            if isinstance(item, dict) and str(item.get("preset", "") or "").strip() != name
-        ]
-        self._save_config(["prompt_list", "preset_channel_bindings", "preset_generation_options"])
+        self._save_config(["prompt_list", *changed_settings])
 
         details = []
         if removed_runtime:
@@ -5256,25 +5305,6 @@ class LinghuiStudioPlugin(Star):
         self._save_config(["global_total_limit"])
         yield event.chain_result([Plain(f"已增加 {args} 次。{self._global_quota_text()}。所有会话立即生效。")])
 
-    @filter.command("接口模式", alias={"切换API模式"}, prefix_optional=True)
-    @_direct_command_only
-    async def on_switch_mode(self, event: AstrMessageEvent, ctx=None):
-        if not self.is_admin(event): return
-        mode = event.message_str.split()[-1].strip().lower()
-        aliases = {
-            "generic": "openai_chat",
-            "gemini": "gemini_official",
-        }
-        mode = aliases.get(mode, mode)
-        if mode in ["auto", "openai_image", "openai_chat", "gemini_official", "custom_endpoint"]:
-            self.conf["interface_mode"] = mode
-            self._save_config(["interface_mode"])
-            yield event.chain_result([Plain(f"✅ 已切换为 {mode}")])
-        else:
-            yield event.chain_result([Plain(
-                "模式无效 (auto / openai_image / openai_chat / gemini_official / custom_endpoint；旧 generic 仍兼容)"
-            )])
-
     def _session_override_scope(self, event: AstrMessageEvent) -> Tuple[str, str]:
         """Describe the current session so overrides are readable in the Dashboard."""
 
@@ -5330,82 +5360,45 @@ class LinghuiStudioPlugin(Star):
     @filter.command("模型", alias={"切换模型"}, prefix_optional=True)
     @_direct_command_only
     async def on_switch_model(self, event: AstrMessageEvent, ctx=None):
-        """查看或切换绘图模型。默认只影响当前会话，加“全局”才改默认配置。"""
+        """View channel models or choose a model for the current conversation."""
         if not self.is_admin(event):
             yield event.chain_result([Plain("❌ 只有管理员可以切换模型。")])
             return
-
-        all_m = normalize_model_list(self.conf.get("model_list", []))
+        all_models = self._configured_channel_models()
         session_id = event.unified_msg_origin
-        session_enabled = self._session_override_enabled("enable_session_model_override")
-        session_model = ""
-        if session_enabled:
-            session_model = self.session_overrides.get_model(session_id)
-
+        enabled = self._session_override_enabled("enable_session_model_override")
+        session_model = self.session_overrides.get_model(session_id) if enabled else ""
         parts = event.message_str.strip().split(maxsplit=1)
-        raw_argument = parts[1].strip() if len(parts) > 1 else ""
-        scope, target = self._strip_scope_keyword(raw_argument)
-
+        scope, target = self._strip_scope_keyword(parts[1].strip() if len(parts) > 1 else "")
+        command = self._command_example("模型", event)
         if not target:
-            global_model = self.conf.get("model", "nano-banana")
-            effective = session_model or global_model
-            if all_m:
-                msg = "📋 可用模型:\n" + "\n".join(
-                    [f"{i + 1}. {m} {'✅' if m == effective else ''}" for i, m in enumerate(all_m)]
-                )
-            else:
-                msg = f"📋 当前生效模型: {effective}\n模型列表为空，可直接输入模型名称切换。"
-            msg += f"\n\n🌐 全局默认: {global_model}"
-            if session_enabled:
-                msg += f"\n💬 本会话: {session_model or '跟随全局'}"
-            model_command = self._command_example("模型", event)
-            msg += f"\n\n💡 用法: {model_command} <序号|模型名> —— 只改当前会话"
-            if session_enabled:
-                msg += f"\n　　　 {model_command} 全局 <序号|模型名> —— 改全局默认"
-                msg += f"\n　　　 {model_command} 取消 —— 清除本会话的模型选择"
-            yield event.chain_result([Plain(msg)])
+            listed = "\n".join(f"{index}. {model}" for index, model in enumerate(all_models, 1))
+            text = "📋 渠道模型：\n" + (listed or "尚未配置渠道模型。")
+            text += f"\n\n💬 本会话：{session_model or '跟随渠道'}"
+            text += f"\n用法：{command} <序号|模型名>；{command} 取消恢复渠道默认。"
+            yield event.chain_result([Plain(text)])
             return
-
-        if target.lower() in {"取消", "清除", "重置", "reset", "clear", "默认", "跟随全局"}:
-            if not session_enabled:
-                yield event.chain_result([Plain("会话级模型选择当前已关闭，无需清除。")])
-                return
+        if scope == "global":
+            yield event.chain_result([Plain("默认模型按渠道管理，请在绘图渠道中修改；此命令只切换当前会话模型。")])
+            return
+        if not enabled:
+            yield event.chain_result([Plain("会话模型选择已关闭，请在绘图渠道中设置模型。")])
+            return
+        if target.lower() in {"取消", "清除", "重置", "reset", "clear", "默认", "跟随全局", "跟随渠道"}:
             self.session_overrides.set_model(session_id, "")
-            yield event.chain_result([Plain("✅ 已清除本会话的模型选择，重新跟随全局默认。")])
+            yield event.chain_result([Plain("✅ 已清除本会话的模型选择，重新跟随渠道默认。")])
             return
-
         if target.isdigit():
-            idx = int(target) - 1
-            if not (0 <= idx < len(all_m)):
-                yield event.chain_result(
-                    [Plain(f"❌ 模型序号超出范围，请先发送 {self._command_example('模型', event)} 查看列表。")]
-                )
+            index = int(target) - 1
+            if not 0 <= index < len(all_models):
+                yield event.chain_result([Plain(f"❌ 模型序号超出范围，请先发送 {command} 查看列表。")])
                 return
-            resolved_model = all_m[idx]
-            kind = "预设模型"
-        else:
-            resolved_model = target
-            kind = "自定义模型"
-
-        use_global = scope == "global" or not session_enabled
-        if use_global:
-            self.conf["model"] = resolved_model
-            self._save_config(["model"])
-            note = "" if session_enabled else "（会话级选择已关闭，本次直接写入全局）"
-            yield event.chain_result([Plain(f"✅ 已把全局默认{kind}设为: {resolved_model}{note}")])
-            return
-
+            target = all_models[index]
         session_scope, session_label = self._session_override_scope(event)
-        self.session_overrides.set_model(
-            session_id, resolved_model, label=session_label, scope=session_scope
-        )
+        self.session_overrides.set_model(session_id, target, label=session_label, scope=session_scope)
         ttl = self.session_overrides.ttl_minutes
         ttl_text = f"，{ttl} 分钟内有效" if ttl > 0 else ""
-        yield event.chain_result([Plain(
-            f"✅ 本会话{kind}已设为: {resolved_model}{ttl_text}\n"
-            f"（全局默认仍是 {self.conf.get('model', 'nano-banana')}；"
-            f"要改全局请用 {self._command_example('模型', event)} 全局 {resolved_model}）"
-        )])
+        yield event.chain_result([Plain(f"✅ 本会话模型已设为：{target}{ttl_text}")])
 
     @filter.command("通道", alias={"渠道"}, prefix_optional=True)
     @_direct_command_only
@@ -5418,7 +5411,7 @@ class LinghuiStudioPlugin(Star):
         argument = self._command_args(event, "通道", "渠道")
         channels = self.api_mgr.channels()
         if not channels:
-            yield event.chain_result([Plain("当前未配置绘图渠道，将使用兼容的单接口配置。")])
+            yield event.chain_result([Plain("当前未配置绘图渠道，请先在绘图渠道页添加并启用渠道。")])
             return
 
         session_id = event.unified_msg_origin
@@ -5600,65 +5593,6 @@ class LinghuiStudioPlugin(Star):
             if not self.conf.get("enable_group_limit", False):
                 yield event.chain_result([Plain(
                     "⚠️ 注意：当前配置中 enable_group_limit=False，群组次数不会生效。请在配置中开启 enable_group_limit。")])
-
-    @filter.command("添加密钥", alias={"手办化添加key"}, prefix_optional=True)
-    @_direct_command_only
-    async def on_add_key(self, event: AstrMessageEvent, ctx=None):
-        if not self.is_admin(event): return
-        parts = event.message_str.split()
-        if len(parts) < 2: return
-
-        keys = parts[1:]
-
-        field = "api_keys"
-        curr_keys = self.api_mgr._normalize_keys(self.conf.get(field, []))
-        curr_keys.extend(keys)
-        self.conf[field] = "\n".join(curr_keys)
-        self._save_config([field])
-        yield event.chain_result([Plain(f"✅ 已向 {field} 添加 {len(keys)} 个 Key")])
-
-    @filter.command("密钥列表", alias={"手办化key列表"}, prefix_optional=True)
-    @_direct_command_only
-    async def on_list_keys(self, event: AstrMessageEvent, ctx=None):
-        if not self.is_admin(event): return
-        mode = self.conf.get("interface_mode", self.conf.get("api_mode", "openai_chat"))
-        nk = self.api_mgr._normalize_keys(self.conf.get("api_keys", []))
-        if not nk:
-            legacy_field = "gemini_api_keys" if mode == "gemini_official" else "generic_api_keys"
-            nk = self.api_mgr._normalize_keys(self.conf.get(legacy_field, []))
-        msg = f"🔑 模式: {mode}\n📌 普通池 ({len(nk)}):\n" + "\n".join([f"{k[:8]}..." for k in nk])
-        yield event.chain_result([Plain(msg)])
-
-    @filter.command("删除密钥", alias={"手办化删除key"}, prefix_optional=True)
-    @_direct_command_only
-    async def on_delete_key(self, event: AstrMessageEvent, ctx=None):
-        if not self.is_admin(event): return
-        parts = event.message_str.split()
-        if len(parts) < 2: yield event.chain_result([Plain(f"用法: {self._command_example('删除密钥', event)} <all/序号>")]); return
-
-        idx_str = parts[1]
-
-        mode = self.conf.get("interface_mode", self.conf.get("api_mode", "openai_chat"))
-        field = "api_keys"
-        store_as_text = True
-        if not self.api_mgr._normalize_keys(self.conf.get(field, [])):
-            legacy_field = "gemini_api_keys" if mode == "gemini_official" else "generic_api_keys"
-            if self.api_mgr._normalize_keys(self.conf.get(legacy_field, [])):
-                field = legacy_field
-                store_as_text = False
-
-        if idx_str == "all":
-            self.conf[field] = "" if store_as_text else []
-            self._save_config([field])
-            yield event.chain_result([Plain("✅ 已清空")])
-        elif idx_str.isdigit():
-            keys = self.api_mgr._normalize_keys(self.conf.get(field, []))
-            idx = int(idx_str) - 1
-            if 0 <= idx < len(keys):
-                keys.pop(idx);
-                self.conf[field] = "\n".join(keys) if store_as_text else keys
-                self._save_config([field])
-                yield event.chain_result([Plain("✅ 已删除")])
 
     @filter.command("预设图片清理", prefix_optional=True)
     @_direct_command_only
@@ -6638,7 +6572,7 @@ class LinghuiStudioPlugin(Star):
                     images = ref_images + images
 
             # 调用 API
-            model = self.conf.get("model", "nano-banana")
+            model = ""
             start_time = datetime.now()
 
             res = await self.api_mgr.call_api(
@@ -6951,7 +6885,7 @@ class LinghuiStudioPlugin(Star):
             event=event,
             prompt=final_prompt,
             preset_name=preset_name,
-            model=self.conf.get("model", ""),
+            model="",
         )
 
         # 7. 启动批量处理任务
@@ -6999,7 +6933,7 @@ class LinghuiStudioPlugin(Star):
                                     ref_images = await self._load_preset_ref_images(preset_name)
                                     if ref_images:
                                         images = ref_images + images
-                                model = self.conf.get("model", "nano-banana")
+                                model = ""
                                 res = await self.api_mgr.call_api(
                                     images, final_prompt, model, False, self.img_mgr.proxy,
                                     session_id=event.unified_msg_origin,
@@ -7257,7 +7191,7 @@ class LinghuiStudioPlugin(Star):
             event=event,
             prompt=final_prompt,
             preset_name=preset_name,
-            model=self.conf.get("model", ""),
+            model="",
         )
 
         # 7. 使用信号量控制并发
@@ -7310,7 +7244,7 @@ class LinghuiStudioPlugin(Star):
                                     ref_images = await self._load_preset_ref_images(preset_name)
                                     if ref_images:
                                         images = ref_images + images
-                                model = self.conf.get("model", "nano-banana")
+                                model = ""
                                 res = await self.api_mgr.call_api(
                                     images, final_prompt, model, False, self.img_mgr.proxy,
                                     session_id=event.unified_msg_origin,
@@ -7510,7 +7444,7 @@ class LinghuiStudioPlugin(Star):
 
         【比例由你按构图决定】
         用户指定比例时必须遵守；未指定时可按主体和场景自主选择 aspect_ratio，例如全身照用 2:3、横向合影用 16:9。
-        无法判断时保持 auto；提示词中也未指定比例时使用渠道默认比例，渠道留空则用全局配置，不沿用人设参考图比例。
+        无法判断时保持 auto；提示词中也未指定比例时使用实际执行渠道的默认比例，不沿用人设参考图比例。
 
         【调用前与完成后发言】
         识别到请求后请直接调用本工具，不要先在同一条回复中套用“嗯嗯，稍等”等固定等待语。插件会按配置使用当前 AstrBot 人格单独生成开始前承接话；工具完成后的最终回复也必须继续使用同一个 AstrBot 人格、称呼习惯和上下文关系。
@@ -7730,7 +7664,7 @@ class LinghuiStudioPlugin(Star):
                 suppress_user_error=True, llm_tool_call=True,
                 record_sink=generation_records,
                 aspect_ratio=requested_aspect_ratio, negative_prompt=negative_prompt,
-                prefer_config_aspect_ratio=True,
+                prefer_config_aspect_ratio=True, routing_profile="persona",
             )
             generation_coro = self._run_persona_photo(plan_token, 0, generation_coro)
             if self._background_generation_enabled():
@@ -7772,7 +7706,7 @@ class LinghuiStudioPlugin(Star):
                     record_sink=generation_records,
                     photo_prompts=photo_prompts, photo_completion=completed,
                     aspect_ratio=requested_aspect_ratio, negative_prompt=negative_prompt,
-                    prefer_config_aspect_ratio=True,
+                    prefer_config_aspect_ratio=True, routing_profile="persona",
                 )
             finally:
                 await self.persona_planner.release(plan_token)
@@ -7884,61 +7818,24 @@ class LinghuiStudioPlugin(Star):
         feedback += "\n⏳ 请稍候..."
         yield event.chain_result([Plain(feedback)])
 
-        # 扣费
-        try:
-            await self._charge_quota(deduction, uid, gid, 1)
-        except QuotaDeniedError as exc:
-            yield event.chain_result([Plain(str(exc))])
-            return
-
         plan_token, photo_prompts = await self._plan_persona_photos(
             event, ref_text, full_prompt, 1,
-            user_request=str(getattr(event, "message_str", "") or ""), visual_request=extra_request, scene_request=scene_prompt,
+            user_request=str(getattr(event, "message_str", "") or ""),
+            visual_request=extra_request, scene_request=scene_prompt,
         )
-        full_prompt = photo_prompts[0]
-        negative_prompt = self._get_persona_negative_prompt()
-
-        # 调用 API
-        model = self.conf.get("model", "nano-banana")
-        start = datetime.now()
+        await self._register_pending_generation(event.unified_msg_origin, 1)
         try:
-            res = await self.api_mgr.call_api(
-                final_images, full_prompt, model, False, self.img_mgr.proxy,
-                session_id=event.unified_msg_origin,
-                negative_prompt=negative_prompt, prefer_config_aspect_ratio=True,
+            success, _ = await self._run_background_task(
+                event=event, images=final_images, prompt=photo_prompts[0],
+                preset_name=f"人设-{scene_name}", deduction=deduction,
+                uid=uid, gid=gid, cost=1, extra_rules=extra_request,
+                task_type_override="人设拍照", routing_profile="persona",
+                negative_prompt=self._get_persona_negative_prompt(),
+                prefer_config_aspect_ratio=True,
             )
-            await self.persona_planner.complete_photo(plan_token, 0, isinstance(res, bytes))
+            await self.persona_planner.complete_photo(plan_token, 0, success)
         finally:
             await self.persona_planner.release(plan_token)
-
-        if isinstance(res, bytes):
-            route_metrics = self._snapshot_generation_route_metrics()
-            res = await self._prepare_send_image_bytes(res)
-            elapsed = (datetime.now() - start).total_seconds()
-            await self._record_generation_result(
-                event.unified_msg_origin,
-                res,
-                user_id=uid,
-                group_id=gid,
-                prompt=append_negative_prompt(full_prompt, negative_prompt),
-                model=model,
-                preset_name=scene_name or "人设",
-                task_type="人设拍照",
-                reference_images=final_images,
-                route_metrics=route_metrics,
-                event=event,
-            )
-
-            quota_str = self._get_quota_str(deduction, uid, gid)
-            timing_text = self._format_success_timing(elapsed)
-            info = f"\n{self._requester_prefix_text(event)}✅ 生成成功 ({timing_text})"
-            if scene_name:
-                info += f" | 场景: {scene_name}"
-            info += f" | 剩余: {quota_str}"
-            await self._send_generated_result(event, event.chain_result([Image.fromBytes(res), Plain(info)]))
-        else:
-            await self._refund_quota(deduction, uid, gid, 1)
-            yield event.chain_result(self._notice_nodes(event, f"没弄好：\n{self._resolve_debug_error_message(res, '这次没弄好，请稍后再试。')}"))
 
     @filter.command("人设参考图添加", alias={"添加人设图"}, prefix_optional=True)
     @_direct_command_only
@@ -8055,7 +7952,7 @@ class LinghuiStudioPlugin(Star):
         用法: #批量<预设名> [追加规则]
         示例: #批量手办化 皮肤白一点
         """
-        if self.conf.get("prefix", True) and not event.is_at_or_wake_command:
+        if not event.is_at_or_wake_command:
             return
 
         text = getattr(event, "_linghui_command_text", None)

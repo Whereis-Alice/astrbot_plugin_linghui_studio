@@ -42,8 +42,6 @@ class ApiManager:
     def __init__(self, config: dict):
         self.config = config
         self.key_lock = asyncio.Lock()
-        self.generic_idx = 0
-        self.gemini_idx = 0
         self.unified_idx = 0
         self._session = None # 保持 Session 持久化，复用 TCP/SSL 连接
         self._last_metrics = {}
@@ -293,66 +291,24 @@ class ApiManager:
         return [str(keys).strip()] if str(keys).strip() else []
 
     def _get_interface_mode(self) -> str:
-        """读取新版接口模式，并兼容旧版 generic 配置。"""
-        mode = str(self.config.get("interface_mode", "") or "").strip().lower()
+        """Read the channel's protocol selection; unspecified channels use auto."""
+        mode = str(self.config.get("interface_mode", "auto") or "auto").strip().lower()
         valid_modes = {"auto", "openai_image", "openai_chat", "gemini_official", "custom_endpoint"}
-        if mode in valid_modes:
-            return mode
+        return mode if mode in valid_modes else "auto"
 
-        legacy_mode = str(self.config.get("api_mode", "generic") or "generic").strip().lower()
-        if legacy_mode == "gemini_official":
-            return "gemini_official"
-        if legacy_mode == "openai_image":
-            return "openai_image"
-        if legacy_mode == "custom_endpoint":
-            return "custom_endpoint"
-        return "openai_image" if self.config.get("generic_prefer_images_api", False) else "openai_chat"
+    def _get_base_url(self, mode: str) -> str:
+        base = str(self.config.get("base_url", "") or "").strip()
+        return base or ("https://generativelanguage.googleapis.com" if mode == "gemini_official" else "")
 
-    def _get_base_url(self, mode: str, use_text_to_image_api: bool = False) -> str:
-        unified_base = str(self.config.get("base_url", "") or "").strip()
-        if unified_base:
-            return unified_base
-
-        if use_text_to_image_api and self.config.get("text_to_image_api_url"):
-            return str(self.config.get("text_to_image_api_url") or "").strip()
-
-        if mode == "gemini_official":
-            legacy_url = str(self.config.get("gemini_api_url", "") or "").strip()
-            return legacy_url or "https://generativelanguage.googleapis.com"
-        return str(self.config.get("generic_api_url", "") or "").strip()
-
-    async def get_key(self, mode: str, use_text_to_image_api: bool = False) -> str | None:
-        """获取轮询 Key"""
+    async def get_key(self) -> str | None:
+        """Rotate only the current channel's key pool."""
         async with self.key_lock:
             keys = self._normalize_keys(self.config.get("api_keys", []))
-            if keys:
-                k = keys[self.unified_idx % len(keys)]
-                self.unified_idx += 1
-                return k
-
-            if use_text_to_image_api:
-                keys = self._normalize_keys(self.config.get("text_to_image_api_keys", []))
-                if keys:
-                    k = keys[self.unified_idx % len(keys)]
-                    self.unified_idx += 1
-                    return k
-
-            if mode == "gemini_official":
-                keys = self._normalize_keys(self.config.get("gemini_api_keys", []))
-
-                if not keys:
-                    return None
-                k = keys[self.gemini_idx % len(keys)]
-                self.gemini_idx += 1
-                return k
-            else:
-                keys = self._normalize_keys(self.config.get("generic_api_keys", []))
-
-                if not keys:
-                    return None
-                k = keys[self.generic_idx % len(keys)]
-                self.generic_idx += 1
-                return k
+            if not keys:
+                return None
+            key = keys[self.unified_idx % len(keys)]
+            self.unified_idx += 1
+            return key
 
     @staticmethod
     def _base64_image_uri(value: str) -> str:
@@ -1391,12 +1347,12 @@ class ApiManager:
         self._reset_metrics()
         call_start = asyncio.get_running_loop().time()
 
-        base_url = self._get_base_url("openai_image", use_text_to_image_api=use_text_to_image_api)
+        base_url = self._get_base_url("openai_image")
         base_url = (base_url or "").strip() or default_base_url(protocol)
         if not base_url:
             return f"{label} 渠道缺少 API 地址，请在渠道配置里填写 base_url"
 
-        key = await self.get_key("openai_image", use_text_to_image_api=use_text_to_image_api)
+        key = await self.get_key()
         if not key:
             return "无可用 API Key"
 
@@ -1549,9 +1505,9 @@ class ApiManager:
                 interface_mode = "openai_image"
             interfaces = [interface_mode, "openai_chat" if interface_mode == "openai_image" else "openai_image"]
 
-        if not self._get_base_url(interfaces[0], use_text_to_image_api=use_text_to_image_api):
+        if not self._get_base_url(interfaces[0]):
             return "API URL 未配置"
-        key = await self.get_key(interfaces[0], use_text_to_image_api=use_text_to_image_api)
+        key = await self.get_key()
         if not key:
             return "无可用 API Key"
         for index, transport in enumerate(interfaces):
@@ -1584,7 +1540,7 @@ class ApiManager:
         mode = "gemini_official" if interface_mode == "gemini_official" else "generic"
 
         # 1. 确定 URL
-        base = self._get_base_url(interface_mode, use_text_to_image_api=use_text_to_image_api)
+        base = self._get_base_url(interface_mode)
 
         if not base:
             return "API URL 未配置"

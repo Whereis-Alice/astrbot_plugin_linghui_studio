@@ -13,6 +13,32 @@ DEFAULTS = {
 
 
 class DynamicConfigPolicyTest(unittest.TestCase):
+    def test_old_pending_preset_options_survive_injected_empty_channel_default(self):
+        previous = [{"preset": "动图画", "image_output_format": "png"}]
+        current = [{**previous[0], "channel_ids": []}]
+        pending = [{"preset": "动图画", "image_output_format": "gif"}]
+        result = should_restore_fallback_value(
+            "preset_generation_options", pending,
+            dynamic_keys={"preset_generation_options"}, legacy_restore_keys=set(),
+            current_config={"preset_generation_options": current, "preset_config_version": 0},
+            has_override_meta=True, schema_defaults={}, has_native_snapshot=True,
+            native_value_at_fallback=previous,
+        )
+        self.assertEqual(result, (True, "fallback-value"))
+        self.assertEqual(pending, [{"preset": "动图画", "image_output_format": "gif"}])
+
+    def test_migrated_native_channel_clearing_wins_over_old_fallback(self):
+        previous = [{"preset": "动图画", "channel_ids": ["miku"]}]
+        current = [{"preset": "动图画", "channel_ids": []}]
+        result = should_restore_fallback_value(
+            "preset_generation_options", previous,
+            dynamic_keys={"preset_generation_options"}, legacy_restore_keys=set(),
+            current_config={"preset_generation_options": current, "preset_config_version": 1},
+            has_override_meta=True, schema_defaults={}, has_native_snapshot=True,
+            native_value_at_fallback=previous,
+        )
+        self.assertEqual(result, (False, "native-changed"))
+
     def _resolve(
         self,
         key,

@@ -10,6 +10,10 @@ from test_error_redaction_and_requester_tag import load_module
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY_MESSAGE = "非常抱歉，生成的图片可能违反了关于裸露、色情或情色内容的防护限制。如果你认为此判断有误，请重试或修改提示语。"
+SAFETY_STOP_MARKER = "（内容审核拦截，未继续切换渠道）"
+SAFETY_STOP_ADVICE = "内容审核已拦截，本次未继续切换渠道。请调整提示词或参考图后重试。"
+STOPPED_SAMPLE = ('绘图渠道均失败（最终分类：内容审核）：'
+                  'orb[内容审核]: HTTP 400: content_policy_violation' + SAFETY_STOP_MARKER)
 SAMPLE = (
     '绘图渠道均失败（最终分类：上游服务异常）：'
     'orb[请求参数或格式错误]: Images API Multipart Error 400: '
@@ -81,6 +85,39 @@ class GenerationErrorPresentationTest(unittest.TestCase):
         self.assertEqual(result.splitlines()[:3], ["• orb：内容审核未通过", "• m：内容审核未通过", "• miku：请求超时"])
         self.assertNotIn("HTTP", result)
 
+    def test_moderation_stop_explains_why_other_channels_were_not_used(self):
+        self.assertEqual(self.format(STOPPED_SAMPLE).splitlines(), [
+            "• orb：内容审核未通过（HTTP 400）", SAFETY_STOP_ADVICE,
+        ])
+
+    def test_moderation_stop_preserves_prior_channel_failures(self):
+        error = ('绘图渠道均失败（最终分类：内容审核）：'
+                 'miku[请求超时]: HTTP 524: timed out '
+                 '| orb[内容审核]: HTTP 400: content_policy_violation' + SAFETY_STOP_MARKER)
+        self.assertEqual(self.format(error).splitlines(), [
+            "• miku：请求超时（HTTP 524）",
+            "• orb：内容审核未通过（HTTP 400）", SAFETY_STOP_ADVICE,
+        ])
+
+    def test_stop_metadata_does_not_reclassify_a_channel_payload(self):
+        error = ('绘图渠道均失败（最终分类：请求超时）：'
+                 'orb[请求超时]: HTTP 524: timed out' + SAFETY_STOP_MARKER)
+        self.assertEqual(self.format(error).splitlines()[0], "• orb：请求超时（HTTP 524）")
+
+    def test_old_moderation_diagnostics_do_not_claim_fallback_stopped(self):
+        result = self.format(STOPPED_SAMPLE.removesuffix(SAFETY_STOP_MARKER))
+        self.assertEqual(result.splitlines()[-1], "请调整提示词或参考图后重试。")
+        self.assertNotIn("未继续切换渠道", result)
+
+    def test_timeout_without_stop_metadata_keeps_retry_advice(self):
+        for error in ('HTTP 524: timed out',
+                      '绘图渠道均失败（最终分类：请求超时）：orb[请求超时]: HTTP 524: timed out'):
+            with self.subTest(error=error):
+                result = self.format(error)
+                self.assertIn("请求超时", result)
+                self.assertEqual(result.splitlines()[-1], "请稍后重试；持续失败可查看任务详情。")
+                self.assertNotIn("内容审核", result)
+
     def test_url_diagnostics_are_not_mistaken_for_extra_channels(self):
         error = ('绘图渠道均失败（最终分类：上游服务异常）：'
                  'a[上游服务异常]: HTTP 503: unavailable | URL: https://private.example.com/v1/images '
@@ -144,6 +181,15 @@ class MainFailureNoticeTest(unittest.TestCase):
         result = self.plugin._resolve_debug_error_message(SAMPLE)
         self.assertEqual(result.count("•"), 3)
         self.assertNotIn("HTTP", result)
+
+    def test_moderation_stop_notice_uses_real_line_breaks(self):
+        for debug in (True, False):
+            with self.subTest(debug=debug):
+                self.plugin._should_show_debug_errors = lambda: debug
+                result = self.plugin._resolve_debug_error_message(STOPPED_SAMPLE)
+                self.assertEqual(result.splitlines()[-1], SAFETY_STOP_ADVICE)
+                self.assertEqual(len(result.splitlines()), 2)
+                self.assertNotIn("\\", result)
 
 
 if __name__ == "__main__":

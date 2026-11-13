@@ -23,7 +23,7 @@
 
 优先级：请求显式指定渠道 → 预设有序渠道列表 → 当前会话渠道 → 全局默认。预设使用各渠道配置的模型，不受会话模型切换影响；显式指定的模型仍优先。渠道被删除、禁用或不允许参考图时明确提示修复绑定；额度耗尽时可尝试其余所选渠道。
 
-配置示例：`preset_channel_bindings: [{"preset": "动图画", "channel_id": "miku", "channel_ids": ["miku", "orb"]}]`。`channel_id` 保留首项以兼容旧版，`channel_ids` 为有序列表。
+原生配置在“【提示词与预设】预设设置”中同时维护渠道和图片参数。配置示例：`preset_generation_options: [{"preset": "动图画", "channel_ids": ["miku", "orb"], "image_output_format": "gif", "image_frame_count": 12, "image_frame_duration_ms": 170}]`。`channel_ids` 为有序列表，空列表表示跟随会话和默认路由。旧版 `preset_channel_bindings` 会自动迁移，旧导出仍可导入。
 
 预设可独立设置输出格式与 GIF 帧参数，保存在 `preset_generation_options`，无需复制渠道。将输出格式设为 GIF 即在该预设的每次请求中传递动画参数；自动表示跟随渠道设置。详见 [GIF 预设配置](GIF.md)。完整配置导入导出会保留参数和渠道顺序，预设改名时同步迁移。
 

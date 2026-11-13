@@ -91,9 +91,10 @@ class PresetImageOptionsDashboardTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(response["success"])
         self.assertEqual(self.row()["channel_ids"], ["orb", "miku"])
         self.assertEqual(self.row()["channel_id"], "orb")
-        saved = self.conf["preset_channel_bindings"][0]
+        saved = self.conf["preset_generation_options"][0]
         self.assertEqual(saved["channel_ids"], ["orb", "miku"])
-        self.assertEqual(saved["channel_id"], "orb")
+        self.assertNotIn("preset_channel_bindings", self.conf)
+        self.assertEqual(self.conf["preset_config_version"], 1)
         self.assertEqual(self.row()["image_output_format"], "gif")
         response = await self.save({"presets": [
             {"name": "改名动图", "original_name": "动图画", "prompt": "make a loop"},
@@ -146,16 +147,19 @@ class PresetImageOptionsDashboardTest(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(self.row()["channel_ids"], ["miku"])
         exported = self.api._export_config_document()
-        self.assertEqual(exported["config"]["preset_channel_bindings"][0]["channel_ids"], ["miku"])
+        self.assertNotIn("preset_channel_bindings", exported["config"])
+        self.assertEqual(exported["config"]["preset_generation_options"][0]["channel_ids"], ["miku"])
         normalized, _, _ = self.api._normalize_import_config({"preset_channel_bindings": [
             {"preset": "动图画", "channel_id": "miku", "channel_ids": []},
         ]})
-        self.assertEqual(normalized["preset_channel_bindings"][0]["channel_ids"], ["miku"])
+        self.assertEqual(normalized["preset_generation_options"][0]["channel_ids"], ["miku"])
+        self.assertNotIn("preset_channel_bindings", normalized)
         result = await self.save({"preset_channel_bindings": [
             {"preset": "动图画", "channel_id": "miku", "channel_ids": []},
         ]})
         self.assertTrue(result["success"])
-        self.assertEqual(self.conf["preset_channel_bindings"], [])
+        self.assertNotIn("preset_channel_bindings", self.conf)
+        self.assertEqual(self.api._preset_channels_map(), {})
 
     async def test_top_level_parameter_list_roundtrip_and_explicit_clear(self):
         response = await self.save({"preset_generation_options": [self.options()]})
@@ -169,6 +173,99 @@ class PresetImageOptionsDashboardTest(unittest.IsolatedAsyncioTestCase):
         response = await self.save({"preset_generation_options": []})
         self.assertTrue(response["success"])
         self.assertIn("preset_generation_options", self.conf)
+
+    async def test_unified_payload_saves_ordered_routes_and_options_once_then_clears_routes(self):
+        self.conf["preset_channel_bindings"] = [{"preset": "动图画", "channel_id": "miku"}]
+        response = await self.save({"preset_generation_options": [
+            self.options(channel_ids=["orb", "miku"]),
+        ]})
+        self.assertTrue(response["success"])
+        self.assertNotIn("preset_channel_bindings", self.conf)
+        self.assertEqual(self.conf["preset_config_version"], 1)
+        self.assertEqual(self.row()["channel_ids"], ["orb", "miku"])
+        self.assertEqual(self.row()["image_frame_count"], 12)
+        response = await self.save({"preset_generation_options": [self.options(channel_ids=[])]})
+        self.assertTrue(response["success"])
+        self.assertEqual(self.row()["channel_ids"], [])
+        self.assertEqual(self.row()["image_output_format"], "gif")
+
+    async def test_image_only_legacy_payload_preserves_canonical_ordered_routes(self):
+        self.conf.update(preset_config_version=1, preset_generation_options=[
+            self.options(channel_ids=["miku", "orb"]),
+        ])
+        response = await self.save({"preset_generation_options": [self.options(image_frame_count=8)]})
+        self.assertTrue(response["success"])
+        self.assertEqual(self.row()["channel_ids"], ["miku", "orb"])
+        self.assertEqual(self.row()["image_frame_count"], 8)
+        response = await self.save({"preset_generation_options": []})
+        self.assertTrue(response["success"])
+        self.assertEqual(self.row()["channel_ids"], ["miku", "orb"])
+        self.assertEqual(self.row()["image_output_format"], "auto")
+
+    async def test_unified_invalid_routes_and_channel_disable_are_atomic(self):
+        self.conf.update(preset_config_version=1, preset_generation_options=[
+            self.options(channel_ids=["miku", "orb"]),
+        ])
+        before = copy.deepcopy(self.conf)
+        for selected in (["orb", "missing"], ["orb", "orb"], "orb", ["orb", 1]):
+            with self.subTest(selected=selected):
+                _, status = await self.save({"preset_generation_options": [self.options(channel_ids=selected)],
+                                            "settings": {"model": "must-not-change"}})
+                self.assertEqual(status, 400)
+                self.assertEqual(self.conf, before)
+        _, status = await self.save({"channels": [{"id": "miku"}, {"id": "orb", "enabled": False}]})
+        self.assertEqual(status, 400)
+        self.assertEqual(self.conf, before)
+        with self.assertRaises(ValueError):
+            self.api._normalize_import_config({"preset_generation_options": [self.options(channel_ids=["missing"])]})
+
+    async def test_renaming_and_deleting_unified_preset_preserves_then_removes_all_settings(self):
+        self.conf.update(preset_config_version=1, preset_generation_options=[
+            self.options(channel_ids=["miku", "orb"]),
+        ])
+        response = await self.save({"presets": [
+            {"name": "新名字", "original_name": "动图画", "prompt": "loop"},
+            {"name": "静态", "prompt": "still"},
+        ]})
+        self.assertTrue(response["success"])
+        self.assertEqual(self.row("新名字")["channel_ids"], ["miku", "orb"])
+        self.assertEqual(self.row("新名字")["image_frame_count"], 12)
+        self.assertEqual([row["preset"] for row in self.conf["preset_generation_options"]], ["新名字"])
+        response = await self.save({"presets": [{"name": "静态", "prompt": "still"}]})
+        self.assertTrue(response["success"])
+        self.assertEqual(self.conf["preset_generation_options"], [])
+
+    def test_old_native_default_channels_migrate_but_versioned_empty_selection_wins(self):
+        old = {"preset_generation_options": [self.options(channel_ids=[])],
+               "preset_channel_bindings": [{"preset": "动图画", "channel_id": "miku"}]}
+        normalized, ignored, _ = self.api._normalize_import_config(old)
+        self.assertEqual(ignored, [])
+        self.assertEqual(normalized["preset_generation_options"][0]["channel_ids"], ["miku"])
+        self.assertNotIn("preset_channel_bindings", normalized)
+        normalized, _, _ = self.api._normalize_import_config({**old, "preset_config_version": 1})
+        self.assertEqual(normalized["preset_generation_options"][0]["channel_ids"], [])
+        old["preset_channel_bindings"][0]["channel_id"] = "removed"
+        normalized, _, _ = self.api._normalize_import_config({**old, "preset_config_version": 1})
+        self.assertEqual(normalized["preset_generation_options"][0]["channel_ids"], [])
+        with self.assertRaises(ValueError):
+            self.api._normalize_import_config(old)
+
+    async def test_import_apply_removes_legacy_binding_and_failure_restores_exact_snapshot(self):
+        self.conf["preset_channel_bindings"] = [{"preset": "动图画", "channel_id": "miku"}]
+        self.plugin.img_mgr = types.SimpleNamespace(max_retries=3)
+        before = copy.deepcopy(self.conf)
+        payload = {"action": "apply", "config": {"preset_generation_options": [self.options(channel_ids=["orb", "miku"])]}}
+        self.api._json_body = AsyncMock(return_value=payload)
+        self.plugin.api_mgr.refresh.side_effect = RuntimeError("refresh failed")
+        _, status = await self.api.config_import()
+        self.assertEqual(status, 500)
+        self.assertEqual(self.conf, before)
+        self.plugin.api_mgr.refresh.side_effect = None
+        result = await self.api.config_import()
+        self.assertTrue(result["success"])
+        self.assertNotIn("preset_channel_bindings", self.conf)
+        self.assertEqual(self.conf["preset_config_version"], 1)
+        self.assertEqual(self.row()["channel_ids"], ["orb", "miku"])
 
     async def test_invalid_row_options_reject_before_channel_prompt_or_setting_changes(self):
         self.conf["preset_generation_options"] = [self.options()]
@@ -281,11 +378,12 @@ class PresetImageOptionsDashboardTest(unittest.IsolatedAsyncioTestCase):
         ]
         document = self.api._export_config_document()
         normalized, _, _ = self.api._normalize_import_config(document["config"])
-        self.assertEqual(normalized["preset_channel_bindings"][0]["channel_ids"], ["orb", "miku"])
-        self.assertEqual(normalized["preset_channel_bindings"][0]["channel_id"], "orb")
+        self.assertEqual(normalized["preset_generation_options"][0]["channel_ids"], ["orb", "miku"])
+        self.assertNotIn("preset_channel_bindings", normalized)
         # Importing only generation parameters must leave selected channels untouched.
         normalized, _, _ = self.api._normalize_import_config({"preset_generation_options": [self.options()]})
         self.assertNotIn("preset_channel_bindings", normalized)
+        self.assertEqual(normalized["preset_generation_options"][0]["channel_ids"], ["orb", "miku"])
 
     async def test_export_includes_chat_preset_prompt_so_its_gif_options_import_on_another_instance(self):
         await self.manager.add_user_prompt("聊天动图", "chat-created loop")

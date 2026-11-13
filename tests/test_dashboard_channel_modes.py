@@ -79,7 +79,9 @@ class DashboardChannelModesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(public["interface_mode"], "auto")
         self.assertTrue(public["has_api_keys"])
         self.assertNotIn("api_keys", public)
-        self.plugin._save_config.assert_called_once_with(["drawing_channels"])
+        self.plugin._save_config.assert_called_once_with([
+            "drawing_channels", "preset_channel_bindings", "preset_config_version", "preset_generation_options",
+        ])
         self.plugin.api_mgr.refresh.assert_awaited_once()
 
     async def test_renaming_channel_keeps_key_and_template_with_auto_mode(self):

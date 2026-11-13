@@ -45,7 +45,7 @@ class PresetRoutingTest(unittest.IsolatedAsyncioTestCase):
         ))
 
     async def test_bound_preset_overrides_session_channel_and_model(self):
-        result = await self.router.call_api([], "cat blinks", "text-default",
+        result = await self.router.call_api([], "cat blinks", "",
             use_text_to_image_api=True, session_id="chat", preset_name="动图")
         self.assertEqual(result, b"generated")
         self.assertEqual(self.calls, [("b", "gif-model", "cat blinks")])
@@ -56,7 +56,7 @@ class PresetRoutingTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_explicit_channel_wins_over_preset_binding(self):
         self.router.bind_session_store(None)
-        await self.router.call_api([], "cat", "default", preset_name="动图",
+        await self.router.call_api([], "cat", "", preset_name="动图",
             preferred_channel_id="a", allow_fallback=False)
         self.assertEqual(self.calls, [("a", "still-model", "cat")])
         self.assertEqual(self.router.get_last_metrics()["preset_channel_binding"], "")
@@ -67,7 +67,7 @@ class PresetRoutingTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_unbound_preset_keeps_session_overrides_and_channel_fallback(self):
         self.outcomes[("a", "session-still-model")] = "API Error 503"
-        await self.router.call_api([], "cat", "default", preset_name="静态", session_id="chat")
+        await self.router.call_api([], "cat", "", preset_name="静态", session_id="chat")
         self.assertEqual([call[:2] for call in self.calls], [
             ("a", "session-still-model"), ("b", "session-still-model"),
         ])
@@ -75,7 +75,7 @@ class PresetRoutingTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_bound_failure_never_switches_channel_and_refunds_channel_quota(self):
         self.outcomes[("b", "gif-model")] = "API Error 503"
-        result = await self.router.call_api([], "cat", "default", preset_name="动图")
+        result = await self.router.call_api([], "cat", "", preset_name="动图")
         self.assertIn("均失败", result)
         self.assertEqual([call[0] for call in self.calls], ["b"])
         self.assertEqual(self.router.daily_quota.snapshot({"id": "b"})["daily_used"], 0)
@@ -83,7 +83,7 @@ class PresetRoutingTest(unittest.IsolatedAsyncioTestCase):
     async def test_bound_channel_can_try_its_configured_models(self):
         self.config["drawing_channels"][1]["models"] = ["first-gif", "second-gif"]
         self.outcomes[("b", "first-gif")] = "API Error 404 model_not_found"
-        await self.router.call_api([], "cat", "default", preset_name="动图")
+        await self.router.call_api([], "cat", "", preset_name="动图")
         self.assertEqual([call[:2] for call in self.calls], [("b", "first-gif"), ("b", "second-gif")])
 
     async def test_missing_disabled_reference_disabled_and_exhausted_bindings_fail_closed(self):
@@ -97,14 +97,14 @@ class PresetRoutingTest(unittest.IsolatedAsyncioTestCase):
             with self.subTest(change=change):
                 channel.update(change)
                 self.router._set_last_metrics({"channel_id": "previous"})
-                result = await self.router.call_api(images, "cat", "default", preset_name="动图")
+                result = await self.router.call_api(images, "cat", "", preset_name="动图")
                 self.assertIn(expected, result)
                 self.assertEqual(self.router.get_last_metrics(), {})
                 self.assertEqual(self.calls, [])
 
     async def test_binding_does_not_use_legacy_when_channels_are_empty(self):
         self.config["drawing_channels"] = []
-        result = await self.router.call_api([], "cat", "default", preset_name="动图")
+        result = await self.router.call_api([], "cat", "", preset_name="动图")
         self.assertIn("不存在", result)
         self.assertEqual(self.calls, [])
 
@@ -117,7 +117,7 @@ class PresetRoutingTest(unittest.IsolatedAsyncioTestCase):
         ]:
             with self.subTest(entries=entries):
                 self.config["preset_channel_bindings"] = entries
-                result = await self.router.call_api([], "cat", "default", preset_name="动图")
+                result = await self.router.call_api([], "cat", "", preset_name="动图")
                 self.assertIsInstance(result, str)
                 self.assertIn("预设", result)
                 self.assertEqual(self.calls, [])
@@ -128,7 +128,7 @@ class PresetRoutingTest(unittest.IsolatedAsyncioTestCase):
             return prompt
 
         self.router.prompt_processor.prepare = remove_channel
-        result = await self.router.call_api([], "cat", "default", preset_name="动图")
+        result = await self.router.call_api([], "cat", "", preset_name="动图")
         self.assertIn("不存在", result)
         self.assertEqual(self.calls, [])
 
@@ -137,7 +137,7 @@ class PresetRoutingTest(unittest.IsolatedAsyncioTestCase):
         self.config["preset_channel_bindings"].append({"preset": "照片", "channel_id": "a"})
 
         async def generate(preset):
-            result = await self.router.call_api([], preset, "default", preset_name=preset)
+            result = await self.router.call_api([], preset, "", preset_name=preset)
             return result, self.router.get_last_metrics()
 
         first, second = await asyncio.gather(generate("动图"), generate("照片"))
@@ -148,9 +148,9 @@ class PresetRoutingTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_binding_is_read_again_after_configuration_changes(self):
         self.router.bind_session_store(None)
-        await self.router.call_api([], "cat", "default", preset_name="动图")
+        await self.router.call_api([], "cat", "", preset_name="动图")
         self.config["preset_channel_bindings"][0]["channel_id"] = "a"
-        await self.router.call_api([], "cat", "default", preset_name="动图")
+        await self.router.call_api([], "cat", "", preset_name="动图")
         self.assertEqual([call[0] for call in self.calls], ["b", "a"])
 
     def test_channel_animation_options_override_globals_including_auto(self):
@@ -167,7 +167,7 @@ class PresetRoutingTest(unittest.IsolatedAsyncioTestCase):
         self.config["drawing_channels"].append({"id": "c", "base_url": "c", "model": "other", "api_keys": "c-key", "priority": 999})
         self.config["preset_channel_bindings"] = [{"preset": "动图", "channel_id": "b", "channel_ids": ["b", "a"]}]
         self.outcomes[("b", "gif-model")] = "API Error 503 unavailable"
-        result = await self.router.call_api([], "loop", "default", session_id="chat", preset_name="动图")
+        result = await self.router.call_api([], "loop", "", session_id="chat", preset_name="动图")
         self.assertEqual(result, b"generated")
         self.assertEqual([call[0] for call in self.calls], ["b", "a"])
         self.assertEqual(self.router.get_last_metrics()["preset_channel_bindings"], ["b", "a"])
@@ -179,7 +179,7 @@ class PresetRoutingTest(unittest.IsolatedAsyncioTestCase):
         self.config["drawing_channels"].append({"id": "c", "model": "not-allowed", "api_keys": "key"})
         self.config["preset_channel_bindings"] = [{"preset": "动图", "channel_ids": ["b", "a"]}]
         self.outcomes.update({("b", "gif-model"): "HTTP 503 unavailable", ("a", "still-model"): "HTTP 524 timeout"})
-        result = await self.router.call_api([], "loop", "default", preset_name="动图")
+        result = await self.router.call_api([], "loop", "", preset_name="动图")
         self.assertIsInstance(result, str)
         self.assertEqual([call[0] for call in self.calls], ["b", "a"])
 
@@ -188,21 +188,21 @@ class PresetRoutingTest(unittest.IsolatedAsyncioTestCase):
         self.config["drawing_channels"][0]["fallback_enabled"] = False
         self.config["preset_channel_bindings"] = [{"preset": "动图", "channel_ids": ["b", "a"]}]
         self.outcomes[("b", "gif-model")] = "HTTP 503 unavailable"
-        await self.router.call_api([], "loop", "default", preset_name="动图")
+        await self.router.call_api([], "loop", "", preset_name="动图")
         self.assertEqual([call[0] for call in self.calls], ["b", "a"])
 
     async def test_exhausted_selected_primary_uses_next_selected_channel(self):
         self.router.bind_session_store(None)
         self.config["drawing_channels"][1]["daily_limit"] = 0
         self.config["preset_channel_bindings"] = [{"preset": "动图", "channel_ids": ["b", "a"]}]
-        await self.router.call_api([], "loop", "default", preset_name="动图")
+        await self.router.call_api([], "loop", "", preset_name="动图")
         self.assertEqual([call[0] for call in self.calls], ["a"])
 
     async def test_invalid_multi_channel_binding_fails_before_generation(self):
         for ids in (["b", "missing"], ["b", "b"], "b", ["b", None]):
             with self.subTest(ids=ids):
                 self.config["preset_channel_bindings"] = [{"preset": "动图", "channel_ids": ids}]
-                result = await self.router.call_api([], "loop", "default", preset_name="动图")
+                result = await self.router.call_api([], "loop", "", preset_name="动图")
                 self.assertIsInstance(result, str)
                 self.assertEqual(self.calls, [])
 

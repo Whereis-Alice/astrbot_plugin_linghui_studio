@@ -22,7 +22,7 @@ GIF 是预设的请求参数，不需要为已有服务复制一个渠道。同�
 | `image_frame_duration_ms` | `200` | GIF：每帧 20–2000 毫秒，为 10 的倍数。12 帧 × 170ms 约为 2.04 秒。 |
 | `image_complexity` | `auto` | `low`、`medium`、`high` 或 `auto`，以渠道支持为准。 |
 
-配置保存在 `preset_generation_options`，渠道选择保存在 `preset_channel_bindings` 的有序 `channel_ids`；旧版 `channel_id` 单选仍兼容。预设的显式输出格式优先于渠道默认，`auto` 完整跟随渠道参数。预设多渠道顺序优先于会话、全局路由；会话模型选择不会覆盖已绑定预设的渠道模型。每个渠道自身的模型回退仍然生效。
+渠道选择和图片参数统一保存在 `preset_generation_options`，原生配置只显示一个“预设设置”入口；其中 `channel_ids` 为主用到备用的有序列表。旧版分离保存的绑定会自动迁移，旧导出仍可导入。预设的显式输出格式优先于渠道默认，`auto` 完整跟随渠道参数。预设多渠道顺序优先于会话、全局路由；会话模型选择不会覆盖已绑定预设的渠道模型。每个渠道自身的模型回退仍然生效。
 
 模型名原样透传，没有只允许 2.6 的白名单。OpenAI 官方文档明确列出 GPT Image 2.6 Sunburst / Flare 的 GIF 能力；中转渠道可能使用其他名称或能力映射，例如已实测支持 GIF 的 `gpt-image-2.5-sunburst`，按服务商实际结果配置即可。
 

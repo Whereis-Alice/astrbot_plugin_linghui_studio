@@ -42,7 +42,7 @@
 | --- | --- | --- | --- |
 | `prompt` | string | 必填 | 图片描述，也可以包含预设名和追加要求。 |
 | `count` | integer | `1` | 输出数量，最多受配置限制；只有用户明确要求多张时才增加。 |
-| `aspect_ratio` | string | `auto` | 用户指定优先，未指定时可按构图选择，如 `1:1`、`16:9`、`9:16`；无法判断时用 `auto`，从提示词识别，否则沿用渠道/全局默认。 |
+| `aspect_ratio` | string | `auto` | 用户指定优先，未指定时可按构图选择，如 `1:1`、`16:9`、`9:16`；无法判断时用 `auto`，从提示词识别，否则沿用渠道配置。 |
 | `resolution` | string | `auto` | 清晰度，如 `1K`、`2K`、`4K`。 |
 
 只用于生成其他角色、物体或场景。用户要 Bot 自拍、人设照片或合影时，必须改用 `linghui_persona_photo`；用户要修改已有图片时，必须改用 `linghui_edit_image`。
@@ -69,7 +69,7 @@
 
 ### `linghui_persona_photo`
 
-可选 `aspect_ratio`（默认 `auto`）：LLM 根据主体、场景和构图选择比例，用户明确要求优先。单张和多张均支持；未选且提示词未给出比例时，使用渠道默认比例，渠道留空时用全局配置，不受人设参考图比例影响。`persona_negative_prompt` 会作用于本工具的所有照片，翻译/优化后统一追加，不增加 LLM 规划请求。
+可选 `aspect_ratio`（默认 `auto`）：LLM 根据主体、场景和构图选择比例，用户明确要求优先。单张和多张均支持；未选且提示词未给出比例时，使用实际执行渠道的默认比例，不受人设参考图比例影响。自拍渠道顺序留空时沿用普通参考图路由。`persona_negative_prompt` 会作用于本工具的所有照片，翻译/优化后统一追加，不增加 LLM 规划请求。
 
 参数：`scene_hint`（场景）、`extra_request`（其他要求）、`outfit`（衣着）、`expression`（表情）、`gaze`（视线）、`pose`（动作）均为可选字符串；`count` 默认 1；`photo_plan` 为可选的逐张方向 JSON 字符串。只有用户明确要求 Bot/人设角色的自拍、照片、外貌、穿搭、动作或合影时使用。LLM 根据当前人格和上下文安排未指定的方向，用户明确要求始终优先。衣着按本次用户要求、LLM 决定、今日穿搭、配置默认衣着的顺序补齐，不叠加互相冲突的服装。具体场景优先于旧场景预设，自由文本不重复复制到衣着和表情字段，不增加第二次 LLM 规划请求。
 
@@ -77,7 +77,7 @@
 
 ### 批量工具
 
-`linghui_batch_process` 和 `linghui_batch_process_concurrent` 都支持 `prompt`、`max_images`、`output_as_pdf`；并发版本额外接受 `concurrency`，但实际并发数仍受插件配置限制。批量失败策略可设置为“立即停止”“跳过继续”或“跳过但限次”，跳过的图片会按规则退还额度。
+`linghui_batch_process` 和 `linghui_batch_process_concurrent` 都支持 `prompt`、`max_images`、`output_as_pdf`；并发版本额外接受 `concurrency`，但实际并发数仍受插件配置限制。批量工具也能提取消息中的受支持 PDF 图片。批量失败策略可设置为“立即停止”“跳过继续”或“跳过但限次”，跳过的图片会按规则退还额度。
 
 `linghui_batch_process` 当前会转交给并发批量流程；`linghui_batch_process_concurrent` 会提交后台任务并立即返回，完成后逐张发回或生成 PDF。
 
@@ -96,7 +96,7 @@
 
 ## 生成图片的文件路径
 
-配置项“【智能工具与批量处理】向模型补送生成图片的缓存路径”（`llm_report_image_path`，默认开启）控制是否把刚生成图片的缓存位置告诉模型。
+配置项“向模型补送生成图片的缓存路径”（`llm_report_image_path`，默认开启）控制是否把刚生成图片的缓存位置告诉模型。
 
 开启后：
 1. `wait` 模式下，工具结果里会附带该图片缓存文件的文件名与完整绝对路径。

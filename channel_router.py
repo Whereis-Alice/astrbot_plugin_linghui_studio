@@ -18,7 +18,8 @@ from .api_manager import ApiManager
 from .error_classify import GenerationError, classify_generation_error, safe_error_summary
 from .prompt_processor import PromptProcessor
 from .utils import append_final_instruction, append_negative_prompt
-from .preset_options import resolve_preset_generation_options
+from .preset_options import preset_channels_map, resolve_preset_generation_options
+from .configuration_cleanup import REMOVED_CONFIG_KEYS
 
 
 class DrawingChannelRouter:
@@ -88,22 +89,11 @@ class DrawingChannelRouter:
     def channels(self) -> List[Dict[str, Any]]:
         return self._raw_channels()
 
-    def _shared_keys(self) -> List[str]:
-        return (
-            self._normalize_keys(self.config.get("api_keys"))
-            or self._normalize_keys(self.config.get("generic_api_keys"))
-            or self._normalize_keys(self.config.get("gemini_api_keys"))
-        )
-
     def _channel_keys(self, channel: Dict[str, Any]) -> List[str]:
-        return self._normalize_keys(channel.get("api_keys")) or self._shared_keys()
+        return self._normalize_keys(channel.get("api_keys"))
 
     def has_available_keys(self) -> bool:
-        channels = self._raw_channels()
-        shared_keys = self._shared_keys()
-        if channels:
-            return any(self._normalize_keys(channel.get("api_keys")) or shared_keys for channel in channels)
-        return bool(shared_keys)
+        return any(self._channel_keys(channel) for channel in self._raw_channels())
 
     def _health_state(self, channel_id: str) -> Dict[str, Any]:
         state = self._health.get(channel_id)
@@ -196,7 +186,7 @@ class DrawingChannelRouter:
         return [earliest]
 
     def _channel_config(self, channel: Dict[str, Any]) -> Dict[str, Any]:
-        merged = dict(self.config)
+        merged = {key: value for key, value in self.config.items() if key not in REMOVED_CONFIG_KEYS}
         for key in (
             "interface_mode",
             "base_url",
@@ -204,11 +194,7 @@ class DrawingChannelRouter:
             "model",
             "image_edit_model",
             "text_to_image_model",
-            "text_to_image_api_url",
-            "text_to_image_api_keys",
             "timeout",
-            "use_stream",
-            "generic_prefer_images_api",
             "image_edit_transport",
             "protocol",
             "image_resolution",
@@ -222,10 +208,6 @@ class DrawingChannelRouter:
             value = channel.get(key)
             if value not in (None, "", []):
                 merged[key] = value
-        if channel.get("base_url"):
-            # A global dedicated text endpoint must not redirect a named channel.
-            merged["text_to_image_api_url"] = channel.get("text_to_image_api_url", "")
-            merged["text_to_image_api_keys"] = channel.get("text_to_image_api_keys", "")
         return merged
 
     @staticmethod
@@ -239,34 +221,22 @@ class DrawingChannelRouter:
         return classification.try_next_channel
 
     def _resolve_model(
-        self,
-        requested: str,
-        channel: Dict[str, Any],
-        text_to_image: bool,
-        has_input_image: bool = False,
+        self, requested: str, channel: Dict[str, Any], text_to_image: bool, has_input_image: bool = False,
     ) -> str:
-        global_default = str(self.config.get("model", "") or "").strip()
-        global_t2i = str(self.config.get("text_to_image_model", "") or "").strip()
-        channel_default = str(channel.get("model", "") or "").strip()
-        channel_image_edit = str(channel.get("image_edit_model", "") or "").strip()
-        channel_t2i = str(channel.get("text_to_image_model", "") or "").strip()
         requested = str(requested or "").strip()
-        if has_input_image and channel_image_edit and (
-            not requested or requested in {global_default, global_t2i}
-        ):
-            return channel_image_edit
-        if text_to_image and channel_t2i and (not requested or requested in {global_default, global_t2i}):
-            return channel_t2i
-        if channel_default and (not requested or requested in {global_default, global_t2i}):
-            return channel_default
-        return requested or channel_t2i or channel_default or global_t2i or global_default
+        if requested:
+            return requested
+        if has_input_image and channel.get("image_edit_model"):
+            return str(channel["image_edit_model"]).strip()
+        if text_to_image and channel.get("text_to_image_model"):
+            return str(channel["text_to_image_model"]).strip()
+        return str(channel.get("model", "") or "").strip()
 
     def bind_daily_quota(self, data_dir: Path) -> None:
         self.daily_quota = ChannelDailyQuota(Path(data_dir) / "channel_daily_quota.json")
 
     def _models_for(self, requested: str, channel: Dict[str, Any], text_to_image: bool, has_input_image: bool) -> List[str]:
-        defaults = {str(self.config.get(key, "") or "").strip() for key in ("model", "text_to_image_model")}
-        if requested and requested not in defaults:
+        if requested:
             return [requested]
         models = normalize_model_list(channel.get("models", []))
         specialized = str(channel.get("image_edit_model" if has_input_image else "text_to_image_model", "") or "").strip()
@@ -352,9 +322,7 @@ class DrawingChannelRouter:
         if not store or not session_id or not self._flag("enable_session_model_override", True):
             return ""
         requested = str(requested or "").strip()
-        global_default = str(self.config.get("model", "") or "").strip()
-        global_t2i = str(self.config.get("text_to_image_model", "") or "").strip()
-        if requested and requested not in {global_default, global_t2i}:
+        if requested:
             return ""
         try:
             return str(store.get_model(session_id) or "").strip()
@@ -368,37 +336,8 @@ class DrawingChannelRouter:
         self._metrics_context.set(copied)
 
     def _preset_channel_bindings(self, preset_name: str) -> List[str]:
-        """Resolve the preset's ordered allowlist; legacy single bindings still work."""
-        if not preset_name:
-            return []
-        bindings = self.config.get("preset_channel_bindings", [])
-        if not isinstance(bindings, list):
-            raise ValueError("预设渠道绑定配置无效，请在 WebUI 重新保存预设。")
-        matches = [item for item in bindings
-                   if isinstance(item, dict) and str(item.get("preset", "") or "").strip() == preset_name]
-        if not matches:
-            return []
-        if len(matches) > 1:
-            raise ValueError(f"预设 [{preset_name}] 存在重复的渠道绑定，请在 WebUI 修正。")
-        row = matches[0]
-        if "channel_ids" in row and row["channel_ids"] != []:
-            channel_ids = row["channel_ids"]
-            if (not isinstance(channel_ids, list) or not channel_ids or len(channel_ids) > 8
-                    or any(not isinstance(value, str) or not value.strip() for value in channel_ids)):
-                raise ValueError(f"预设 [{preset_name}] 的渠道列表无效，请重新选择渠道。")
-            result = [value.strip() for value in channel_ids]
-            if len(set(result)) != len(result):
-                raise ValueError(f"预设 [{preset_name}] 的渠道列表重复，请在 WebUI 修正。")
-            return result
-        channel_id = row.get("channel_id", "")
-        if not isinstance(channel_id, str) or not channel_id.strip():
-            raise ValueError(f"预设 [{preset_name}] 的绑定渠道为空或无效，请重新选择渠道。")
-        return [channel_id.strip()]
-
-    def _preset_channel_binding(self, preset_name: str) -> str:
-        """Return the first channel for callers using the older single-binding API."""
-        channels = self._preset_channel_bindings(preset_name)
-        return channels[0] if channels else ""
+        """Resolve the unified ordered allowlist, including unmigrated old configs."""
+        return preset_channels_map(self.config).get(preset_name, []) if preset_name else []
 
     async def call_api(
         self,
@@ -417,24 +356,36 @@ class DrawingChannelRouter:
         session_id: str = "",
         prefer_config_aspect_ratio: bool = False,
         preset_name: str = "",
+        routing_profile: str = "",
     ) -> bytes | str:
         self._set_last_metrics({})
         explicit_channel = str(preferred_channel_id or "").strip()
         preset_name = str(preset_name or "").strip()
+        routing_profile = str(routing_profile or "").strip()
         try:
             preset_channels = [] if explicit_channel else self._preset_channel_bindings(preset_name)
+            profile_channels = []
+            if routing_profile == "persona" and not explicit_channel and not preset_channels:
+                raw = self.config.get("persona_channel_ids", [])
+                if (not isinstance(raw, list) or len(raw) > 8
+                        or any(not isinstance(value, str) or not value.strip() for value in raw)):
+                    raise ValueError("自拍渠道列表无效，请重新选择主用和备用渠道。")
+                profile_channels = [value.strip() for value in raw]
+                if len(set(profile_channels)) != len(profile_channels):
+                    raise ValueError("自拍渠道列表重复，请重新选择主用和备用渠道。")
+            selected_channels = preset_channels or profile_channels
             preset_channel = preset_channels[0] if preset_channels else ""
             image_options = resolve_preset_generation_options(self.config, preset_name)
         except ValueError as exc:
             return str(exc)
-        strict_channel = explicit_channel or preset_channel
-        strict_label = f"预设 [{preset_name}] 绑定的渠道" if preset_channel else "指定渠道"
-        required_channels = preset_channels or ([explicit_channel] if explicit_channel else [])
+        strict_channel = explicit_channel or (selected_channels[0] if selected_channels else "")
+        strict_label = f"预设 [{preset_name}] 绑定的渠道" if preset_channel else ("自拍配置的渠道" if profile_channels else "指定渠道")
+        required_channels = selected_channels or ([explicit_channel] if explicit_channel else [])
         enabled_ids = {channel["id"] for channel in self._raw_channels()}
         for channel_id in required_channels:
             if channel_id not in enabled_ids:
                 return f"{strict_label} {channel_id} 不存在或已被手动禁用，请检查 WebUI 的渠道 ID。"
-        if len(preset_channels) == 1:
+        if len(selected_channels) == 1:
             allow_fallback = False
         prepared_prompt = await self.prompt_processor.prepare(prompt)
         parameter_prompt = prepared_prompt
@@ -450,7 +401,7 @@ class DrawingChannelRouter:
         if not channel_override:
             session_scoped_channel = self._session_channel_override(session_key)
             channel_override = session_scoped_channel
-        session_scoped_model = "" if preset_channel else self._session_model_override(session_key, model)
+        session_scoped_model = "" if selected_channels else self._session_model_override(session_key, model)
         if session_scoped_model:
             model = session_scoped_model
         override_meta = {
@@ -458,6 +409,8 @@ class DrawingChannelRouter:
             "session_channel_override": session_scoped_channel,
             "session_model_override": session_scoped_model,
             "preset_name": preset_name,
+            "routing_profile": routing_profile,
+            "profile_channel_ids": list(profile_channels),
             "preset_channel_binding": preset_channel,
             "preset_channel_bindings": list(preset_channels),
             "preset_image_options": dict(image_options),
@@ -473,7 +426,7 @@ class DrawingChannelRouter:
             requires_input_image=bool(images),
             selected_override=channel_override,
             allow_fallback=allow_fallback,
-            allowed_channel_ids=preset_channels or None,
+            allowed_channel_ids=selected_channels or None,
         )
         if images and not channels and self._raw_channels() and not any(c.get("reference_image_enabled", True) is not False for c in self._raw_channels()):
             return (
@@ -488,53 +441,13 @@ class DrawingChannelRouter:
             target = f"{strict_label} {strict_channel} 的" if strict_channel else "绘图渠道的"
             return f"{target}每日总额度已用完或没有启用的可用渠道；日额度在北京时间次日 00:00 自动恢复。"
         if not channels:
-            client = await self._client_for({"id": "legacy"})
-            started = time.monotonic()
-            if prefer_config_aspect_ratio:
-                params = resolve_image_generation_params(
-                    parameter_prompt, self.config.get("image_resolution", "1K"),
-                    self.config.get("image_aspect_ratio", "1:1"),
-                    resolution=resolution, aspect_ratio=aspect_ratio,
-                )
-                aspect_ratio, resolution = params["aspect_ratio"], params["resolution"]
-            result = await client.call_api(
-                images, prepared_prompt, model, legacy_use_power_or_proxy, proxy,
-                use_text_to_image_api=use_text_to_image_api,
-                aspect_ratio=aspect_ratio,
-                resolution=resolution,
-                **({"image_options": image_options} if image_options else {}),
-            )
-            duration = time.monotonic() - started
-            classification = None if self._is_success(result) else classify_generation_error(result)
-            metrics = {
-                **client.get_last_metrics(),
-                "channel_id": "legacy",
-                "channel_name": "兼容单接口",
-                "model": model,
-                "fallback_count": 0,
-                **override_meta,
-                "has_input_image": bool(images),
-                "attempt_chain": [{
-                    "channel_id": "legacy",
-                    "channel_name": "兼容单接口",
-                    "model": model,
-                    "duration": duration,
-                    "success": self._is_success(result),
-                    "error_category": classification.category if classification else "",
-                    "error_label": classification.label if classification else "",
-                    "error": safe_error_summary(result, 240) if classification else "",
-                    "key_attempt": 1,
-                }],
-                "route_duration": duration,
-                "error_category": classification.category if classification else "",
-            }
-            self._set_last_metrics(metrics)
-            return result
+            return "未配置可用绘图渠道，请在绘图渠道中添加并启用渠道。"
 
         failures: List[str] = []
         attempt_chain: List[Dict[str, Any]] = []
         route_started = time.monotonic()
         final_classification: Optional[GenerationError] = None
+        safety_stopped = False
 
         for channel_index, channel in enumerate(channels):
             client = await self._client_for(channel)
@@ -554,8 +467,8 @@ class DrawingChannelRouter:
                 continue
             succeeded = False
             params = resolve_image_generation_params(parameter_prompt,
-                channel.get("image_resolution") or self.config.get("image_resolution", "1K"),
-                channel.get("image_aspect_ratio") or self.config.get("image_aspect_ratio", "1:1"),
+                channel.get("image_resolution") or "1K",
+                channel.get("image_aspect_ratio") or "1:1",
                 resolution=resolution, aspect_ratio=aspect_ratio)
             effective_ratio = params["aspect_ratio"] if channel.get("image_aspect_ratio") or prefer_config_aspect_ratio else aspect_ratio
             effective_resolution = params["resolution"] if channel.get("image_resolution") or prefer_config_aspect_ratio else resolution
@@ -657,12 +570,17 @@ class DrawingChannelRouter:
                 "error_category": classification.category,
                 "error_label": classification.label,
             }
+            if classification.category == "safety" and not self._should_try_fallback(classification):
+                safety_stopped = True
+                metrics["fallback_stop_reason"] = "safety"
+                metrics["fallback_stopped"] = True
             self._set_last_metrics(metrics)
             if not self._should_try_fallback(classification):
                 break
 
         final_label = final_classification.label if final_classification else "未知错误"
-        return f"绘图渠道均失败（最终分类：{final_label}）：" + " | ".join(failures)
+        stop_notice = "（内容审核拦截，未继续切换渠道）" if safety_stopped else ""
+        return f"绘图渠道均失败（最终分类：{final_label}）：" + " | ".join(failures) + stop_notice
 
     def get_last_metrics(self) -> Dict[str, Any]:
         contextual = self._metrics_context.get()

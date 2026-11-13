@@ -694,6 +694,11 @@ h3 { color: var(--subtle); font-size: 14px; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .field { display: grid; min-width: 0; gap: 6px; color: var(--subtle); font-size: 13px; }
 .field.full { grid-column: 1 / -1; }
+.persona-advanced.full { grid-column: 1 / -1; }
+.persona-advanced > summary { color: var(--ink); padding: 10px 0; cursor: pointer; }
+.persona-advanced[open] > summary { margin-bottom: 8px; }
+.persona-advanced > .form-grid { padding-top: 4px; }
+
 .field.compact { width: min(360px, 100%); margin-bottom: 14px; }
 .field input, .field select, .field textarea, .credit-form input, .credit-form select, .preset-row input, .preset-row select, .preset-row textarea {
   width: 100%;

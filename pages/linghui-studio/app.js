@@ -1,5 +1,5 @@
 import { createImageViewer } from "./image-viewer.js?v=3.14.0";
-import { capturePresetDrafts, createPresetDialog, handlePresetChannelPickerEvent, normalizePresetGenerationOptions, presetChannelIds, presetChannelPicker, presetGenerationFields, sortedPresetEntries } from "./preset-editor.js?v=3.18.0";
+import { capturePresetDrafts, createPresetDialog, handlePresetChannelPickerEvent, normalizePresetGenerationOptions, presetChannelIds, presetChannelPicker, presetGenerationFields, selectedPresetChannels, sortedPresetEntries } from "./preset-editor.js?v=3.19.0";
 
 const bridge = window.AstrBotPluginPage || {
   ready: async () => ({}),
@@ -82,7 +82,7 @@ const titles = {
   access: ["权限与额度", "把访问权限与无限次数名单分开管理。"],
   prompts: ["提示词与预设", "维护快捷预设，并选择可选的翻译和优化模型。"],
   persona: ["人设与参考图", "维护人设图片和每个预设的参考图集合。"],
-  settings: ["运行设置", "调整兼容单接口模式和通用图像参数。"],
+  settings: ["运行设置", "管理命令、图片发送、任务策略与缓存。"],
 };
 
 const byId = (id) => document.getElementById(id);
@@ -284,7 +284,7 @@ function updateStatusBar() {
       : 0;
     const historySummary = state.history?.summary || {};
     const parts = [
-      channels.length ? `渠道 ${online}/${channels.length} 在线` : "兼容单接口模式",
+      channels.length ? `渠道 ${online}/${channels.length} 在线` : "尚未配置绘图渠道",
       `今日出图 ${daily} 张`,
       `档案 ${Number(historySummary.total || 0)} 条`,
       `缓存 ${formatBytes(historySummary.size_bytes)}`,
@@ -296,7 +296,7 @@ function updateStatusBar() {
   const dispatchTarget = byId("status-dispatch");
   if (dispatchTarget) {
     if (!channels.length) {
-      dispatchTarget.textContent = "调度 · 兼容单接口模式";
+      dispatchTarget.textContent = "调度 · 请配置绘图渠道";
     } else {
       const activeId = config.active_drawing_channel || "";
       const enabledChannels = channels.filter((item) => item.enabled).sort((a, b) => Number(b.priority || 0) - Number(a.priority || 0));
@@ -463,13 +463,13 @@ function channelTemplate(channel = {}, index = 0) {
         ${item.api_keys_masked ? '<label class="toggle-field full"><input data-channel="clear_api_keys" type="checkbox" /><span class="toggle-copy"><span>清除已保存的 API Key</span><small class="field-hint">保存后永久删除该渠道的所有 Key。</small></span></label>' : ""}
         <label class="field"><span>优先级</span><input data-channel="priority" type="number" min="-1000000" max="1000000" value="${item.priority}" /><small class="field-hint">数值越大越先调用，同值按列表顺序。明确指定的主渠道仍优先。</small></label>
         <label class="field"><span>每日总额度（次数）</span><input data-channel="daily_limit" type="number" min="-1" max="2147483647" value="${item.daily_limit}" /><small class="field-hint">全会话共用；-1 不限，0 停用。成功扣 1 次，失败退回；北京时间次日 0 点恢复。</small></label>
-        <label class="field"><span>生图分辨率</span><select data-channel="image_resolution">${["", "1K", "2K", "4K"].map(v => `<option value="${v}" ${item.image_resolution === v ? "selected" : ""}>${v || "跟随全局"}</option>`).join("")}</select><small class="field-hint">仅为本渠道默认值；显式参数及提示词尺寸优先。</small></label>
-        <label class="field"><span>Images API 质量</span><select data-channel="image_quality">${["", "auto", "low", "medium", "high", "xhigh", "max"].map(v => `<option value="${v}" ${item.image_quality === v ? "selected" : ""}>${v || "跟随全局"}</option>`).join("")}</select><small class="field-hint">仅用于 gpt-image-* 的 Images 请求；质量与分辨率独立，高质量通常增加耗时与用量。xhigh/max 需要模型与渠道支持。</small></label>
-        <label class="field"><span>输出格式</span><select data-channel="image_output_format">${["auto", "png", "jpeg", "webp", "gif"].map(v => `<option value="${v}" ${item.image_output_format === v ? "selected" : ""}>${v === "auto" ? "auto（模型默认）" : v}</option>`).join("")}</select><small class="field-hint">GIF 需要模型及 Images 渠道支持，例如 GPT Image 2.6；使用自动尺寸并保留完整动画。auto 不发送格式参数，可覆盖全局 GIF 设置。</small></label>
+        <label class="field"><span>生图分辨率</span><select data-channel="image_resolution">${["", "1K", "2K", "4K"].map(v => `<option value="${v}" ${item.image_resolution === v ? "selected" : ""}>${v || "自动"}</option>`).join("")}</select><small class="field-hint">仅为本渠道默认值；显式参数及提示词尺寸优先。</small></label>
+        <label class="field"><span>Images API 质量</span><select data-channel="image_quality">${["", "auto", "low", "medium", "high", "xhigh", "max"].map(v => `<option value="${v}" ${item.image_quality === v ? "selected" : ""}>${v || "自动"}</option>`).join("")}</select><small class="field-hint">仅用于 gpt-image-* 的 Images 请求；质量与分辨率独立，高质量通常增加耗时与用量。xhigh/max 需要模型与渠道支持。</small></label>
+        <label class="field"><span>输出格式</span><select data-channel="image_output_format">${["auto", "png", "jpeg", "webp", "gif"].map(v => `<option value="${v}" ${item.image_output_format === v ? "selected" : ""}>${v === "auto" ? "auto（模型默认）" : v}</option>`).join("")}</select><small class="field-hint">GIF 需要模型及 Images 渠道支持，例如 GPT Image 2.6；使用自动尺寸并保留完整动画。auto 不发送格式参数；需要特定效果时可在预设中指定。</small></label>
         <label class="field"><span>GIF 帧数</span><input data-channel="image_frame_count" type="number" min="2" max="16" step="1" value="${item.image_frame_count}" /><small class="field-hint">仅 GIF 请求生效，2–16 帧；更多帧通常增加用量与耗时。</small></label>
         <label class="field"><span>GIF 每帧时长（毫秒）</span><input data-channel="image_frame_duration_ms" type="number" min="20" max="2000" step="10" value="${item.image_frame_duration_ms}" /><small class="field-hint">仅 GIF 请求生效，20–2000，必须为 10 的倍数。</small></label>
         <label class="field"><span>Images API 复杂度</span><select data-channel="image_complexity">${["auto", "low", "medium", "high"].map(v => `<option value="${v}" ${item.image_complexity === v ? "selected" : ""}>${v}</option>`).join("")}</select><small class="field-hint">auto 不发送复杂度参数；仅支持此参数的模型和渠道可用。</small></label>
-        <label class="field"><span>默认比例</span><select data-channel="image_aspect_ratio">${["", "1:1", "16:9", "9:16", "5:4", "4:5", "4:3", "3:4", "3:2", "2:3", "21:9"].map(v => `<option value="${v}" ${item.image_aspect_ratio === v ? "selected" : ""}>${v || "跟随全局"}</option>`).join("")}</select><small class="field-hint">本渠道指定比例也适用于参考图；提示词及显式参数优先。</small></label>
+        <label class="field"><span>默认比例</span><select data-channel="image_aspect_ratio">${["", "1:1", "16:9", "9:16", "5:4", "4:5", "4:3", "3:4", "3:2", "2:3", "21:9"].map(v => `<option value="${v}" ${item.image_aspect_ratio === v ? "selected" : ""}>${v || "自动"}</option>`).join("")}</select><small class="field-hint">本渠道指定比例也适用于参考图；提示词及显式参数优先。</small></label>
         <label class="field full"><span>模型回退顺序（每行一个）</span><textarea data-channel="models" rows="3" placeholder="model-a&#10;model-b">${escapeHtml(item.models.join("\n"))}</textarea><small class="field-hint">按顺序尝试完才换渠道。带参考图/文生图专用模型优先，然后此列表；留空沿用默认模型。手动指定模型时只用指定模型。</small></label>
         <label class="field"><span>默认模型</span><input data-channel="model" list="${modelListId}" value="${escapeHtml(item.model)}" /><small class="field-hint">图生图和未指定模型的请求使用此模型。</small></label>
         <label class="field"><span>带参考图模型（可选）</span><input data-channel="image_edit_model" list="${modelListId}" value="${escapeHtml(item.image_edit_model)}" /><small class="field-hint">人设拍照、头像图生图和参考图请求优先使用；留空时用默认模型。应填写该渠道实际支持的图片编辑/多模态模型。</small></label>
@@ -622,7 +622,7 @@ function renderOverview() {
       <small>${escapeHtml(channel.model || channel.name || channel.interface_mode || "未填模型")}</small>
       <span>${role}</span>
     </div>`;
-  }).join("") || '<span class="overview-dispatch-empty">未配置绘图渠道，当前使用兼容单接口模式。</span>';
+  }).join("") || '<span class="overview-dispatch-empty">尚未配置绘图渠道，请先添加渠道。</span>';
   renderDailyUsage("overview-usage", dailyStats);
   renderOverviewRecent();
   updateStatusBar();
@@ -759,10 +759,9 @@ function formatGenerationChannel(record) {
   }
 
   if (channelId.toLowerCase() === "legacy") {
-    const legacyName = channelName || "兼容单接口";
     return {
-      label: `${legacyName} · legacy`,
-      title: `本次成功使用：${legacyName}（兼容单接口）`,
+      label: "旧版记录",
+      title: "这条记录生成于统一渠道配置之前。",
       known: true,
     };
   }
@@ -1249,7 +1248,7 @@ async function loadSessionOverrides() {
 async function clearSessionOverride(sessionId) {
   const target = String(sessionId || "").trim();
   if (!target) return;
-  const ok = await confirmAction({ title: "清除会话覆盖", message: "该会话会立刻回到全局默认渠道和模型。", confirmLabel: "清除" });
+  const ok = await confirmAction({ title: "清除会话覆盖", message: "该会话会恢复普通渠道路由，并使用渠道配置的模型。", confirmLabel: "清除" });
   if (!ok) return;
   const response = await bridge.apiPost("session_overrides", { action: "clear", session_id: target });
   if (!response?.success) throw new Error(response?.message || "清除失败");
@@ -1258,7 +1257,7 @@ async function clearSessionOverride(sessionId) {
 }
 
 async function clearAllSessionOverrides() {
-  const ok = await confirmAction({ title: "清除全部会话覆盖", message: "所有群聊和私聊都会回到全局默认渠道和模型，此操作不可撤销。", confirmLabel: "全部清除" });
+  const ok = await confirmAction({ title: "清除全部会话覆盖", message: "所有群聊和私聊都会恢复普通渠道路由，并使用渠道配置的模型。", confirmLabel: "全部清除" });
   if (!ok) return;
   const response = await bridge.apiPost("session_overrides", { action: "clear_all" });
   if (!response?.success) throw new Error(response?.message || "清除失败");
@@ -1659,29 +1658,16 @@ function hydrateFields() {
   byId("persona-daily-moods").value = (persona.daily_moods || []).join("\n");
   byId("persona-time-periods").value = (persona.time_period_prompts || []).join("\n");
   state.personaState = persona.daily_state || {};
-  byId("default-model").value = settings.model || "";
-  byId("default-t2i-model").value = settings.text_to_image_model || "";
-  byId("resolution").value = settings.image_resolution || "1K";
-  byId("image-quality").value = settings.image_quality || "auto";
-  byId("image-output-format").value = settings.image_output_format || "auto";
-  byId("image-frame-count").value = settings.image_frame_count ?? 9;
-  byId("image-frame-duration-ms").value = settings.image_frame_duration_ms ?? 200;
-  byId("image-complexity").value = settings.image_complexity || "auto";
   byId("qq-image-delivery-mode").value = settings.qq_image_delivery_mode || "auto";
   byId("qq-image-delivery-max-mb").value = settings.qq_image_delivery_max_mb ?? 2;
   byId("qq-image-delivery-max-edge").value = settings.qq_image_delivery_max_edge ?? 4096;
   byId("qq-image-delivery-jpeg-quality").value = settings.qq_image_delivery_jpeg_quality ?? 95;
   byId("qq-image-send-concurrency").value = settings.qq_image_send_concurrency ?? 1;
-  byId("aspect-ratio").value = settings.image_aspect_ratio || "1:1";
-  byId("default-timeout").value = settings.timeout ?? 120;
   byId("generation-cache-retention").value = settings.generation_cache_retention_days ?? 7;
   byId("show-model-info").checked = bool(settings.show_model_info);
   byId("debug-mode").checked = bool(settings.debug_mode);
   byId("requester-tag-mode").value = settings.requester_tag_mode || "name";
   byId("enable-preset-refs").checked = bool(settings.enable_preset_ref_images);
-  byId("enable-binary-image-response").checked = bool(settings.enable_binary_image_response);
-  byId("enable-bare-base64-response").checked = bool(settings.enable_bare_base64_response);
-  byId("stream-heartbeat-tolerant").checked = bool(settings.stream_heartbeat_tolerant);
   byId("route-failure-threshold").value = routePolicy.failure_threshold ?? 3;
   byId("route-cooldown-seconds").value = routePolicy.cooldown_seconds ?? 90;
   byId("route-key-retry-count").value = routePolicy.key_retry_count ?? 1;
@@ -1693,6 +1679,7 @@ function hydrateFields() {
   byId("batch-failure-policy").value = tasks.batch_failure_policy || "skip";
   byId("batch-max-skips").value = tasks.batch_max_skips ?? 3;
   renderChannels();
+  renderPersonaChannels(settings.persona_channel_ids || []);
   renderPresets();
   renderReferenceSelector();
   renderPersonaImages();
@@ -1703,6 +1690,19 @@ function hydrateFields() {
   renderStudio();
   renderPersonaState();
   renderStudioChannelOptions();
+}
+
+function personaChannelCandidates(channels = state.config?.channels || []) {
+  return channels.filter((channel) => channel.enabled !== false && channel.reference_image_enabled !== false);
+}
+
+function renderPersonaChannels(selected = selectedPresetChannels(byId("persona-channel-picker"))) {
+  byId("persona-channel-picker").innerHTML = presetChannelPicker(personaChannelCandidates(readChannels()), selected);
+}
+
+function updatePersonaChannelPicker(event) {
+  if (event.type === "click" && !event.target.closest?.("[data-preset-channel-move]")) return;
+  if (handlePresetChannelPickerEvent(event, personaChannelCandidates(readChannels()))) setSaveState("自拍渠道有未保存修改");
 }
 
 function renderReferenceSelector() {
@@ -1740,21 +1740,12 @@ function buildPayload() {
   const clearProcessorApiKey = checked("clear-processor-api-key");
   return {
     settings: {
-      model: value("default-model").trim(),
-      text_to_image_model: value("default-t2i-model").trim(),
-      image_resolution: value("resolution"),
-      image_quality: value("image-quality"),
-      image_output_format: value("image-output-format"),
-      image_frame_count: Number(value("image-frame-count")),
-      image_frame_duration_ms: Number(value("image-frame-duration-ms")),
-      image_complexity: value("image-complexity"),
+      persona_channel_ids: selectedPresetChannels(byId("persona-channel-picker")),
       qq_image_delivery_mode: value("qq-image-delivery-mode"),
       qq_image_delivery_max_mb: Number(value("qq-image-delivery-max-mb")),
       qq_image_delivery_max_edge: Number(value("qq-image-delivery-max-edge")),
       qq_image_delivery_jpeg_quality: Number(value("qq-image-delivery-jpeg-quality")),
       qq_image_send_concurrency: Number(value("qq-image-send-concurrency")),
-      image_aspect_ratio: value("aspect-ratio"),
-      timeout: Number(value("default-timeout")) || 120,
       command_cooldown_seconds: Math.max(0, Math.min(3600, Number(value("command-image-cooldown")) || 0)),
       generation_cache_retention_days: Number(value("generation-cache-retention")) || 7,
       show_model_info: checked("show-model-info"),
@@ -1762,9 +1753,6 @@ function buildPayload() {
       requester_tag_mode: value("requester-tag-mode"),
       enable_preset_ref_images: checked("enable-preset-refs"),
       enable_persona_mode: checked("enable-persona"),
-      enable_binary_image_response: checked("enable-binary-image-response"),
-      enable_bare_base64_response: checked("enable-bare-base64-response"),
-      stream_heartbeat_tolerant: checked("stream-heartbeat-tolerant"),
     },
     channels: readChannels(),
     active_drawing_channel: value("active-channel"),
@@ -2149,6 +2137,7 @@ function switchTab(tab) {
     item.setAttribute("aria-selected", String(selected));
   });
   document.querySelectorAll(".tab-pane").forEach((pane) => pane.classList.toggle("active", pane.id === `tab-${contentTab}`));
+  if (tab === "persona") renderPersonaChannels();
   const [title, subtitle] = titles[tab] || titles.overview;
   byId("page-title").textContent = title;
   byId("page-subtitle").textContent = subtitle;
@@ -2419,6 +2408,8 @@ byId("preset-sort").addEventListener("change", (event) => {
   try { window.localStorage.setItem(PRESET_SORT_KEY, state.presetSort); } catch { /* 忽略存储不可用 */ }
   renderPresets();
 });
+byId("persona-channel-picker").addEventListener("change", updatePersonaChannelPicker);
+byId("persona-channel-picker").addEventListener("click", updatePersonaChannelPicker);
 byId("reference-preset").addEventListener("change", renderReferenceImages);
 byId("theme-select").addEventListener("change", (event) => { void changeTheme(event.target.value); });
 byId("history-group-filter").addEventListener("change", async (event) => {

@@ -176,19 +176,19 @@ class PersonaConfigAndQualityTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             _load_module("channel_policy").normalize_policy({"image_quality": "ultra"})
 
-    async def test_global_quality_is_saved_and_invalid_value_does_not_change_config(self):
+    async def test_retired_global_quality_cannot_be_written_back(self):
         self.api._json_body = AsyncMock(return_value={"settings": {"image_quality": "high"}})
         with patch.object(self.module, "jsonify", side_effect=lambda payload: payload):
             response = await self.api.save_config()
         self.assertTrue(response["success"])
-        self.assertEqual(self.plugin.conf["image_quality"], "high")
-        self.plugin._save_config.assert_called_once_with(["image_quality"])
+        self.assertNotIn("image_quality", self.plugin.conf)
+        self.plugin._save_config.assert_not_called()
         self.api._json_body = AsyncMock(return_value={"settings": {"image_quality": "ultra"}})
         with patch.object(self.module, "jsonify", side_effect=lambda payload: payload):
-            response, status = await self.api.save_config()
-        self.assertEqual(status, 400)
-        self.assertFalse(response["success"])
-        self.assertEqual(self.plugin.conf["image_quality"], "high")
+            response = await self.api.save_config()
+        self.assertTrue(response["success"])
+        self.assertNotIn("image_quality", self.plugin.conf)
+        self.plugin._save_config.assert_not_called()
 
 
 if __name__ == "__main__":

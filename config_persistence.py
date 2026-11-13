@@ -9,6 +9,15 @@ def is_empty_config_value(value: Any) -> bool:
     return value is None or value == "" or value == [] or value == {}
 
 
+def _preset_comparison_value(key: str, value: Any, current_config: Mapping[str, Any]) -> Any:
+    """Old template defaults must not look like a later administrator change."""
+    if (key != "preset_generation_options" or str(current_config.get("preset_config_version", 0)) == "1"
+            or not isinstance(value, list)):
+        return value
+    return [{k: v for k, v in row.items() if k != "channel_ids" or v != []}
+            if isinstance(row, dict) else row for row in value]
+
+
 def merge_native_fallback_snapshots(
     previous_snapshots: Mapping[str, Any],
     *,
@@ -71,13 +80,17 @@ def should_restore_fallback_value(
     # the same way, otherwise a schema migration can look like a user save.
     if (not current_exists or current_value is None) and has_default:
         current_value = schema_defaults.get(key)
-    current_is_default = has_default and current_value == schema_defaults.get(key)
+    current_value = _preset_comparison_value(key, current_value, current_config)
+    dynamic_value = _preset_comparison_value(key, dynamic_value, current_config)
+    default_value = _preset_comparison_value(key, schema_defaults.get(key), current_config)
+    current_is_default = has_default and current_value == default_value
 
     if has_override_meta:
         if has_native_snapshot:
             snapshot_value = native_value_at_fallback
             if snapshot_value is None and has_default:
                 snapshot_value = schema_defaults.get(key)
+            snapshot_value = _preset_comparison_value(key, snapshot_value, current_config)
             if current_value != snapshot_value:
                 return False, "native-changed"
             if current_exists and current_value == dynamic_value:
@@ -96,7 +109,7 @@ def should_restore_fallback_value(
         return False, "legacy-url-or-unsupported"
     if is_empty_config_value(dynamic_value):
         return False, "legacy-empty"
-    if has_default and dynamic_value == schema_defaults.get(key):
+    if has_default and dynamic_value == default_value:
         return False, "legacy-default"
     if native_config_is_newer is True:
         return False, "newer-native-config"

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>灵绘工坊</title>
     <link rel="icon" type="image/svg+xml" href="./assets/linghui-logo.svg" />
-    <link rel="stylesheet" href="./style.css?v=3.18.0" />
+    <link rel="stylesheet" href="./style.css?v=3.19.0" />
   </head>
   <body>
     <main class="shell">
@@ -160,10 +160,10 @@
             <div class="section-heading"><div><h2>绘图渠道</h2><p>优先级数值越大越先尝试，同值按列表顺序。日额度用完自动跳过，次日恢复。</p></div><button id="add-channel" class="quiet-action">添加渠道</button></div>
             <div class="channel-routing-grid">
               <label class="field"><span>当前主渠道</span><select id="active-channel"></select><small class="field-hint">留在“自动”时按优先级开始尝试；指定渠道后会优先使用该渠道，失败时仍可回退。</small></label>
-              <label class="field"><span>带参考图优先渠道</span><select id="reference-image-channel"></select><small class="field-hint">仅用于人设拍照、QQ 头像图生图、预设参考图和普通图生图。留在“跟随主渠道”时会复用当前主渠道；请为此路径选择实际支持带图请求的渠道。</small></label>
+              <label class="field"><span>带参考图优先渠道</span><select id="reference-image-channel"></select><small class="field-hint">用于 QQ 头像图生图、预设参考图和普通图生图；自拍已选独立渠道时使用自拍顺序。留在“跟随主渠道”时会复用当前主渠道；请为此路径选择实际支持带图请求的渠道。</small></label>
             </div>
             <div class="config-transfer-actions"><button id="channels-export" class="quiet-action" type="button">导出渠道</button><button id="channels-import" class="quiet-action" type="button">导入渠道</button><input id="channels-import-file" type="file" accept=".json,application/json" hidden /></div>
-            <p class="field-hint">导出已保存的渠道及实际 API Key（含继承的 Key），请妥善保管。导入会替换所有渠道及主渠道选择，保留本服务器的用量和其他设置。</p>
+            <p class="field-hint">导出已保存的渠道、实际 API Key、主渠道、参考图优先渠道和自拍渠道顺序，请妥善保管。导入替换这些设置，保留本服务器用量；预设与 GIF 参数请通过设置页迁移，参考图素材另行复制。</p>
             <div id="channel-list" class="channel-list"></div>
           </section>
           <section class="section-block route-policy-block">
@@ -176,9 +176,9 @@
             </div>
           </section>
           <section class="section-block session-override-block">
-            <div class="section-heading"><div><h2>会话级模型与渠道</h2><p>群聊或私聊可用 <code>#模型</code> / <code>#通道</code> 指令只改本会话，不影响全局默认值。带“全局”二字才会写入全局配置。</p></div><div class="session-override-actions"><button id="session-override-refresh" class="quiet-action" type="button">刷新</button><button id="session-override-clear-all" class="danger-action" type="button">全部清除</button></div></div>
+            <div class="section-heading"><div><h2>会话级模型与渠道</h2><p>管理员可用 <code>#模型</code> / <code>#通道</code> 只改当前群聊或私聊。<code>#通道 全局</code> 修改全局主渠道，默认模型在渠道条目中维护。</p></div><div class="session-override-actions"><button id="session-override-refresh" class="quiet-action" type="button">刷新</button><button id="session-override-clear-all" class="danger-action" type="button">全部清除</button></div></div>
             <div class="form-grid">
-              <label class="toggle-field"><input id="enable-session-model-override" type="checkbox" /><span class="toggle-copy"><span>允许会话级切换模型</span><small class="field-hint">关闭后 <code>#模型</code> 只能由管理员修改全局默认模型。</small></span></label>
+              <label class="toggle-field"><input id="enable-session-model-override" type="checkbox" /><span class="toggle-copy"><span>允许会话级切换模型</span><small class="field-hint">关闭后统一使用渠道配置的模型；需要调整时直接编辑渠道。</small></span></label>
               <label class="toggle-field"><input id="enable-session-channel-override" type="checkbox" /><span class="toggle-copy"><span>允许会话级切换渠道</span><small class="field-hint">关闭后 <code>#通道</code> 只能由管理员修改全局主渠道。</small></span></label>
               <label class="field"><span>会话覆盖有效期（分钟）</span><input id="session-override-ttl" type="number" min="0" max="43200" /><small class="field-hint">默认 720 分钟（12 小时），到期自动回到全局设置。设为 0 表示永久保留，直到手动清除。</small></label>
             </div>
@@ -289,15 +289,17 @@
               <div class="form-grid">
                 <label class="toggle-field"><input id="enable-persona" type="checkbox" /><span class="toggle-copy"><span>启用人设拍照</span><small class="field-hint">关闭后不会响应人设拍照入口，也不会使用人设参考图。</small></span></label>
                 <label class="field"><span>人设名称</span><input id="persona-name" /><small class="field-hint">用于人设提示词中的称呼，不会修改插件名称。</small></label>
+                <div class="field full"><span>自拍渠道顺序</span><div id="persona-channel-picker"></div><small class="field-hint">为自拍选择主用和备用渠道，用 ↑ ↓ 排序。失败只在所选渠道中回退；全部取消则跟随普通绘图路由。只可选支持参考图的已启用渠道。</small></div>
                 <label class="field full"><span>外观描述</span><textarea id="persona-description" rows="5"></textarea><small class="field-hint">只填写脸型、发型、发色和身份等稳定特征。现有描述保留原样，请将其中的默认服装自行移到下方。</small></label>
                 <label class="field full"><span>默认衣着描述</span><textarea id="persona-default-outfit" rows="4"></textarea><small class="field-hint">优先级最低，只在用户、LLM 本次方向和今日穿搭都未决定衣着时兜底。明确服装出现后不会追加这段描述。</small></label>
                 <label class="field full"><span>照片风格</span><input id="persona-style" /><small class="field-hint">附加到人设拍照请求的视觉风格，例如自然光、胶片或棚拍风格。</small></label>
                 <label class="field full"><span>人设照片反向提示词</span><textarea id="persona-negative-prompt" rows="4" placeholder="例如：水印、字幕、多余人物、模糊、畸形手指"></textarea><small class="field-hint">仅用于人设自拍、写真和合影，工具调用、指令拍照及多张照片均生效；留空关闭。</small></label>
-                <p class="field-hint full">LLM 可按构图自主选择照片比例；用户指定优先，未选择则用绘图渠道的默认比例，渠道留空时用全局配置。</p>
+                <p class="field-hint full">LLM 可按构图自主选择照片比例；用户指定优先，未选择则用绘图渠道的默认比例，渠道留空时由本次构图和参考图决定。</p>
                 <label class="field full"><span>触发关键词</span><input id="persona-keywords" placeholder="用逗号分隔" /><small class="field-hint">用逗号分隔。用于智能识别与人设相关的拍照意图。</small></label>
                 <label class="field full"><span>默认场景提示词</span><textarea id="persona-default-prompt" rows="3"></textarea><small class="field-hint">未指定场景时使用的默认环境与构图要求。</small></label>
                 <label class="field full"><span>场景预设</span><textarea id="persona-scene-prompts" rows="5" placeholder="每行一个：场景名:提示词"></textarea><small class="field-hint">每行一个“场景名:提示词”，例如“咖啡馆:窗边自然光人像”。</small></label>
                 <label class="field"><span>形象类型</span><select id="persona-character-type"><option value="auto">自动识别真人 / 动漫</option><option value="real">真人形象</option><option value="anime">动漫 / 插画形象</option></select><small class="field-hint">用于稳定保留素材的视觉类型，避免真人与动漫互相转换。</small></label>
+                <details class="persona-advanced full"><summary>穿搭、表情与每日状态</summary><div class="form-grid">
                 <label class="toggle-field"><input id="persona-daily-enabled" type="checkbox" /><span class="toggle-copy"><span>启用每日稳定状态</span><small class="field-hint">保存今天的穿搭和心情基调；是否固定由下方模式决定，明确要求优先。</small></span></label>
                 <label class="field"><span>自拍穿搭</span><select id="persona-outfit-mode"><option value="llm">LLM 按聊天决定</option><option value="daily">每日固定穿搭</option></select><small class="field-hint">LLM 模式结合人格与聊天安排，保持连续场景的衣服连贯；日穿搭只作参考。</small></label>
                 <label class="field"><span>自拍表情</span><select id="persona-expression-mode"><option value="context">随聊天变化</option><option value="diverse">多样化</option><option value="fixed">固定今日心情</option></select><small class="field-hint">直接使用 LLM 在工具参数里决定的神态，日心情仅作基调；明确要求优先。</small></label>
@@ -306,6 +308,7 @@
                 <label class="field full"><span>每日穿搭候选</span><textarea id="persona-daily-outfits" rows="4" placeholder="每行一套穿搭"></textarea></label>
                 <label class="field full"><span>每日心情候选</span><textarea id="persona-daily-moods" rows="4" placeholder="每行一种心情状态"></textarea></label>
                 <label class="field full"><span>时间段状态</span><textarea id="persona-time-periods" rows="4" placeholder="早晨:提示词&#10;白天:提示词&#10;傍晚:提示词&#10;夜间:提示词"></textarea></label>
+                </div></details>
               </div>
               <div class="asset-toolbar"><label class="upload-action">上传人设图<input id="persona-upload" type="file" accept="image/*" multiple /></label><button class="quiet-action" type="button" data-clear-ref="_persona_">清空人设图</button></div>
               <p class="field-hint">点击参考图或“查看”可放大、缩放；“下载”保留上传的原始文件。</p>
@@ -313,6 +316,7 @@
             </section>
             <section class="section-block">
               <div class="section-heading"><div><h2>预设参考图</h2><p>预设命中时会把对应参考图加入请求。可直接在这里上传和删除。</p></div></div>
+              <label class="toggle-field"><input id="enable-preset-refs" type="checkbox" /><span class="toggle-copy"><span>启用预设参考图</span><small class="field-hint">开启后，调用预设会自动附带该预设在“人设与参考图”中保存的图片。</small></span></label>
               <label class="field"><span>预设</span><select id="reference-preset"></select></label>
               <div class="asset-toolbar"><label class="upload-action">上传参考图<input id="reference-upload" type="file" accept="image/*" multiple /></label><button id="reference-clear" class="quiet-action">清空当前预设图</button></div>
               <div id="reference-images" class="image-grid"></div>
@@ -326,46 +330,42 @@
 
         <section id="tab-settings" class="tab-pane">
           <section class="section-block narrow">
-              <div class="section-heading"><div><h2>运行设置</h2><p>渠道为空时会使用兼容单接口配置；正常使用建议配置“绘图渠道”。</p></div></div>
+            <div class="section-heading"><div><h2>命令与冷却</h2><p>命令遵循 AstrBot 唤醒词。接口、模型和图片参数在绘图渠道或预设中设置。</p></div></div>
             <div class="form-grid">
               <label class="field"><span>可选命令命名空间</span><input id="command-namespace" placeholder="留空则直接使用 #文生图" /><small class="field-hint">设置为“绘图”后可用 #绘图 文生图；与同类插件共存时建议同时关闭直接命令。</small></label>
               <label class="toggle-field"><input id="enable-direct-commands" type="checkbox" /><span class="toggle-copy"><span>启用不带命名空间的直接命令</span><small class="field-hint">关闭后仅响应“命名空间 + 空格 + 命令”，用于避免与其他插件冲突。</small></span></label>
-              <label class="field"><span>兼容默认模型</span><input id="default-model" /><small class="field-hint">仅在未配置绘图渠道时使用，主要用于图生图和通用请求。</small></label>
-              <label class="field"><span>兼容文生图模型</span><input id="default-t2i-model" /><small class="field-hint">仅在未配置绘图渠道时使用；留空则沿用兼容默认模型。</small></label>
-              <label class="field"><span>默认分辨率</span><select id="resolution"><option>1K</option><option>2K</option><option>4K</option></select><small class="field-hint">发送给支持该参数的文生图接口；不支持时由渠道服务端自行处理。</small></label>
-              <label class="field"><span>Images API 默认质量</span><select id="image-quality"><option>auto</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select><small class="field-hint">gpt-image-* 的质量参数，与分辨率独立；渠道可单独覆盖。high 适合精细成图，xhigh/max 需要模型和渠道支持。</small></label>
-              <label class="field"><span>Images API 默认输出格式</span><select id="image-output-format"><option>auto</option><option>png</option><option>jpeg</option><option>webp</option><option>gif</option></select><small class="field-hint">auto 由模型决定；GIF 需要相应模型与渠道支持，例如 GPT Image 2.6。建议在独立 GIF 渠道设置，再将 GIF 预设绑定该渠道。</small></label>
-              <label class="field"><span>GIF 帧数</span><input id="image-frame-count" type="number" min="2" max="16" step="1" /><small class="field-hint">仅 GIF 请求生效，默认 9，范围 2–16。</small></label>
-              <label class="field"><span>GIF 每帧时长（毫秒）</span><input id="image-frame-duration-ms" type="number" min="20" max="2000" step="10" /><small class="field-hint">仅 GIF 请求生效，默认 200；20–2000 且为 10 的倍数。</small></label>
-              <label class="field"><span>Images API 默认复杂度</span><select id="image-complexity"><option>auto</option><option>low</option><option>medium</option><option>high</option></select><small class="field-hint">auto 不发送参数；其他值需要模型及渠道支持。</small></label>
+              <label class="field"><span>手动指令生图冷却（秒）</span><input id="command-image-cooldown" type="number" min="0" max="3600" /><small class="field-hint">仅限制手动绘图指令和预设指令；按“QQ 用户 ID + 群号”独立计时，不同群互不影响。私聊按用户单独计时；0 表示关闭，不影响 LLM 工具。</small></label>
+            </div>
+          </section>
+          <section class="section-block narrow">
+            <div class="section-heading"><div><h2>QQ 图片发送</h2><p>生成原图保存在记录中；这里只调整发送到 QQ 的副本和上传并发。</p></div></div>
+            <div class="form-grid">
               <label class="field"><span>QQ 图片发送方式</span><select id="qq-image-delivery-mode"><option value="auto">自动优化发送副本</option><option value="original">发送原图</option></select><small class="field-hint">仅用于 OneBot QQ。大图使用高质量副本降低上传量；成功记录、下载和 PDF 保留完整原图，透明图和动图保留特性。</small></label>
               <label class="field"><span>QQ 发送副本目标大小（MB）</span><input id="qq-image-delivery-max-mb" type="number" min="1" max="20" /><small class="field-hint">默认 2 MB，尽量达到；不会为了体积过度降低画质。透明图片可能超过目标。</small></label>
               <label class="field"><span>QQ 发送副本最长边（像素）</span><input id="qq-image-delivery-max-edge" type="number" min="512" max="8192" /><small class="field-hint">默认 4096；仅缩小超过设定尺寸的静态图片，等比例处理。</small></label>
               <label class="field"><span>QQ 发送 JPEG 质量</span><input id="qq-image-delivery-jpeg-quality" type="number" min="80" max="100" /><small class="field-hint">默认 95，最多降低 5 点以接近目标体积；此项不改变模型生图质量。</small></label>
               <label class="field"><span>QQ 同时上传图片数</span><input id="qq-image-send-concurrency" type="number" min="1" max="4" /><small class="field-hint">默认 1，批量生成仍可并行；指令、LLM 和重发共用每个机器人的上传队列。</small></label>
-              <label class="field"><span>默认比例</span><select id="aspect-ratio"><option>1:1</option><option>16:9</option><option>9:16</option><option>4:3</option><option>3:4</option><option>3:2</option><option>2:3</option></select><small class="field-hint">文生图的默认画面比例，可在具体请求中被渠道能力限制。</small></label>
-              <label class="field"><span>兼容超时（秒）</span><input id="default-timeout" type="number" min="5" /><small class="field-hint">仅在未配置绘图渠道时使用，超过时间后请求会失败并返回错误。</small></label>
-              <label class="field"><span>手动指令生图冷却（秒）</span><input id="command-image-cooldown" type="number" min="0" max="3600" /><small class="field-hint">仅限制手动绘图指令和预设指令；按“QQ 用户 ID + 群号”独立计时，不同群互不影响。私聊按用户单独计时；0 表示关闭，不影响 LLM 工具。</small></label>
-              <label class="field"><span>成功记录缓存保留天数</span><input id="generation-cache-retention" type="number" min="1" max="365" /><small class="field-hint">默认 7 天。启动时及每 24 小时检查并清理过期缓存；收藏或锁定的图片和提示词不会被自动清理。</small></label>
-              <label class="toggle-field"><input id="show-model-info" type="checkbox" /><span class="toggle-copy"><span>成功消息显示模型</span><small class="field-hint">在生成成功消息中附带实际使用的模型名称，便于排查渠道路由。</small></span></label>
-              <label class="toggle-field"><input id="enable-preset-refs" type="checkbox" /><span class="toggle-copy"><span>启用预设参考图</span><small class="field-hint">开启后，调用预设会自动附带该预设在“人设与参考图”中保存的图片。</small></span></label>
             </div>
           </section>
           <section class="section-block narrow">
-            <div class="section-heading"><div><h2>报错提示与请求者标注</h2><p>人多的群里用来看清上游到底报了什么，以及每条结果和报错分别属于谁。</p></div></div>
+            <div class="section-heading"><div><h2>结果与失败提示</h2><p>设置模型标注、请求者标注和聊天中的错误提示。</p></div></div>
             <div class="form-grid">
-              <label class="toggle-field"><input id="debug-mode" type="checkbox" /><span class="toggle-copy"><span>向用户显示上游错误详情</span><small class="field-hint">失败提示会附带上游状态码与报错正文；接口地址、主机名和 API Key 会自动替换成 ***，不会暴露你接的是哪家服务。</small></span></label>
+              <label class="toggle-field"><input id="show-model-info" type="checkbox" /><span class="toggle-copy"><span>成功消息显示模型</span><small class="field-hint">在生成成功消息中附带实际使用的模型名称，便于排查渠道路由。</small></span></label>
+              <label class="toggle-field"><input id="debug-mode" type="checkbox" /><span class="toggle-copy"><span>向用户显示上游错误详情</span><small class="field-hint">聊天中按渠道显示简短失败原因；脱敏诊断保存在任务详情中。</small></span></label>
               <label class="field"><span>群聊结果标注请求者</span><select id="requester-tag-mode"><option value="off">不标注</option><option value="name">标注昵称与 QQ 号</option><option value="at">标注并 @ 请求者</option></select><small class="field-hint">多人抢着生图时用来分清归属：结果图、成功信息、排队进度和各类报错都会带上标注。私聊不标注；昵称只用于显示，识别始终按 QQ 号。</small></label>
             </div>
           </section>
           <section class="section-block narrow">
-            <div class="section-heading"><div><h2>响应解析与批量策略</h2><p>兼容返回格式不标准的上游。若某个渠道总是“成功但没图”，可以在这里放宽解析条件。</p></div></div>
+            <div class="section-heading"><div><h2>批量任务</h2><p>决定单张失败后是否继续处理后续图片。</p></div></div>
             <div class="form-grid">
-              <label class="toggle-field"><input id="enable-binary-image-response" type="checkbox" /><span class="toggle-copy"><span>接受裸图片二进制响应</span><small class="field-hint">上游直接返回 PNG/JPEG/WebP 字节流（而非 JSON）时也识别为成功。建议保持开启。</small></span></label>
-              <label class="toggle-field"><input id="enable-bare-base64-response" type="checkbox" /><span class="toggle-copy"><span>接受裸 Base64 文本响应</span><small class="field-hint">上游返回纯 Base64 字符串（没有 JSON 包裹、没有 data URI 前缀）时也尝试解码。少数镜像站需要。</small></span></label>
-              <label class="toggle-field"><input id="stream-heartbeat-tolerant" type="checkbox" /><span class="toggle-copy"><span>容忍流式心跳与混合响应</span><small class="field-hint">上游以 SSE 心跳、空行或“文字 + 图片链接”混排返回时，从中提取有效图片。</small></span></label>
               <label class="field"><span>批量任务失败策略</span><select id="batch-failure-policy"><option value="skip">跳过继续</option><option value="stop">立即停止</option><option value="skip_limit">跳过但限次</option></select><small class="field-hint">“跳过继续”会尽力画完剩下的；“立即停止”一失败就中止后续；“跳过但限次”达到下面的上限后中止。被跳过的张数会退还额度。</small></label>
               <label class="field"><span>最多跳过张数</span><input id="batch-max-skips" type="number" min="0" max="200" /><small class="field-hint">仅在策略为“跳过但限次”时生效，默认 3 张。设为 0 表示一失败就中止。</small></label>
+            </div>
+          </section>
+          <section class="section-block narrow">
+            <div class="section-heading"><div><h2>记录缓存</h2><p>收藏或锁定的图片不受自动过期清理影响。</p></div></div>
+            <div class="form-grid">
+              <label class="field"><span>成功记录缓存保留天数</span><input id="generation-cache-retention" type="number" min="1" max="365" /><small class="field-hint">默认 7 天。启动时及每 24 小时检查并清理过期缓存；收藏或锁定的图片和提示词不会被自动清理。</small></label>
             </div>
           </section>
           <section class="section-block narrow config-transfer-block">
@@ -441,6 +441,6 @@
       </footer>
     </dialog>
     <div id="toast" class="toast" role="status"></div>
-    <script type="module" src="./app.js?v=3.18.0"></script>
+    <script type="module" src="./app.js?v=3.19.0"></script>
   </body>
 </html>

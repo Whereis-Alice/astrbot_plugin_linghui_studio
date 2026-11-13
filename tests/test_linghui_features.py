@@ -117,7 +117,7 @@ class ConfigurationDocumentationTest(unittest.TestCase):
                 for field_name, field in (template.get("items") or {}).items():
                     self.assertTrue(field.get("hint"), f"{name}.{field_name} is missing a configuration hint")
 
-    def test_all_upstream_runtime_settings_remain_configurable(self):
+    def test_current_runtime_settings_remain_configurable_and_retired_settings_are_gone(self):
         schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
         expected = {
             "interface_mode", "base_url", "api_keys", "model_list", "model",
@@ -140,7 +140,11 @@ class ConfigurationDocumentationTest(unittest.TestCase):
             "persona_default_prompt", "persona_photo_style", "enable_rebellious_mode",
             "rebellious_probability", "prompt_list",
         }
-        self.assertTrue(expected.issubset(schema))
+        retired = set(_load_module("configuration_cleanup").REMOVED_CONFIG_KEYS)
+        self.assertTrue((expected - retired | {"drawing_channels", "persona_channel_ids"}).issubset(schema))
+        self.assertTrue(retired.isdisjoint(schema))
+        channel_fields = schema["drawing_channels"]["templates"]["drawing_channel"]["items"]
+        self.assertTrue({"base_url", "api_keys", "model", "image_resolution", "image_aspect_ratio"}.issubset(channel_fields))
 
     def test_default_presets_keep_upstream_pack_and_linghui_additions(self):
         schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
@@ -168,9 +172,9 @@ class ConfigurationDocumentationTest(unittest.TestCase):
         aliases = {
             "lm列表", "lmlist", "lm添加", "lma", "lm删除", "lmd", "lm查看", "lmv",
             "lm删", "删除预设", "lm预览",
-            "手办化签到", "手办化查询次数", "切换API模式", "切换模型", "手办化今日统计",
-            "手办化增加用户次数", "手办化增加群组次数", "手办化添加key", "手办化key列表",
-            "手办化删除key", "手办化帮助", "lmh", "lmref添加", "lmref查看", "lmref清除",
+            "手办化签到", "手办化查询次数", "切换模型", "手办化今日统计",
+            "手办化增加用户次数", "手办化增加群组次数",
+            "手办化帮助", "lmh", "lmref添加", "lmref查看", "lmref清除",
             "lmref删除", "lmref统计", "lmref列表", "添加参考图", "查看参考图",
             "清除参考图", "删除参考图", "参考图统计", "参考图列表", "图片转PDF",
             "合成PDF", "添加人设图", "查看人设图", "清除人设图", "场景列表",
@@ -315,7 +319,7 @@ class DrawingChannelRouterTest(unittest.IsolatedAsyncioTestCase):
             ],
         })
         self.assertEqual([item["id"] for item in router._ordered_channels(True)], ["image-route"])
-        result = await router.call_api([b"reference"], "portrait", "global-model")
+        result = await router.call_api([b"reference"], "portrait", "")
         self.assertEqual(result, b"reference result")
         self.assertEqual(self.fake_api_manager.calls, ["image-route"])
         self.assertEqual(router.get_last_metrics()["model"], "reference-model")
@@ -334,12 +338,12 @@ class DrawingChannelRouterTest(unittest.IsolatedAsyncioTestCase):
         channel_config = router._channel_config(router.channels()[0])
         self.assertEqual(channel_config["image_edit_transport"], "multipart")
 
-    def test_channels_without_own_key_can_use_the_shared_legacy_pool(self):
+    def test_channels_without_own_key_cannot_use_removed_global_key_pool(self):
         router = self._router({
             "api_keys": "shared-key",
             "drawing_channels": [{"id": "primary", "base_url": "primary"}],
         })
-        self.assertTrue(router.has_available_keys())
+        self.assertFalse(router.has_available_keys())
 
     async def test_custom_negative_prompt_is_added_after_prompt_preparation(self):
         self.fake_api_manager.outcomes = {"primary": "primary failed", "backup": b"result"}
@@ -588,6 +592,9 @@ class DashboardSaveTest(unittest.IsolatedAsyncioTestCase):
             [[
                 "active_drawing_channel",
                 "drawing_channels",
+                "preset_channel_bindings",
+                "preset_config_version",
+                "preset_generation_options",
                 "reference_image_drawing_channel",
             ]],
         )

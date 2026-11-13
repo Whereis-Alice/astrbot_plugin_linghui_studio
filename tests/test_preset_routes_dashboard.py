@@ -32,6 +32,7 @@ class PresetRoutesDashboardTest(unittest.IsolatedAsyncioTestCase):
 
     def bind(self, name="动画", channel="gif"):
         self.conf["preset_channel_bindings"] = [{"preset": name, "channel_id": channel}]
+        self.conf.pop("preset_config_version", None)
 
     async def test_bulk_save_and_legacy_payload_preserve_binding_and_name_rename(self):
         response = await self.save({"presets": [
@@ -52,11 +53,13 @@ class PresetRoutesDashboardTest(unittest.IsolatedAsyncioTestCase):
         self.bind()
         response = await self.save({"presets": [{"name": "动画", "prompt": "loop", "channel_id": ""}]})
         self.assertTrue(response["success"])
-        self.assertEqual(self.conf["preset_channel_bindings"], [])
+        self.assertNotIn("preset_channel_bindings", self.conf)
+        self.assertEqual(self.api._preset_channels_map(), {})
         self.bind()
         response = await self.save({"presets": []})
         self.assertTrue(response["success"])
-        self.assertEqual(self.conf["preset_channel_bindings"], [])
+        self.assertNotIn("preset_channel_bindings", self.conf)
+        self.assertEqual(self.conf["preset_generation_options"], [])
 
     async def test_renaming_channel_updates_binding(self):
         self.bind()
@@ -84,7 +87,8 @@ class PresetRoutesDashboardTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["channel_id"], "removed")
         response = await self.save({"presets": [{"name": "动画", "prompt": "loop", "channel_id": ""}]})
         self.assertTrue(response["success"])
-        self.assertEqual(self.conf["preset_channel_bindings"], [])
+        self.assertNotIn("preset_channel_bindings", self.conf)
+        self.assertEqual(self.api._preset_channels_map(), {})
 
     async def test_create_preset_binds_only_existing_enabled_channel(self):
         for channel in ("absent", 17, None, ["gif"]):
@@ -108,13 +112,15 @@ class PresetRoutesDashboardTest(unittest.IsolatedAsyncioTestCase):
 
     def test_config_export_import_round_trips_template_binding_and_gif_options(self):
         self.bind()
-        self.conf.update(image_output_format="gif", image_frame_count=12, image_frame_duration_ms=100,
-                         image_complexity="high")
+        self.conf["preset_generation_options"] = [{"preset": "动画", "image_output_format": "gif",
+            "image_frame_count": 12, "image_frame_duration_ms": 100, "image_complexity": "high"}]
         document = self.api._export_config_document()
         normalized, ignored, _ = self.api._normalize_import_config(document["config"])
-        self.assertIsInstance(normalized["preset_channel_bindings"], list)
-        self.assertEqual(normalized["preset_channel_bindings"][0]["channel_id"], "gif")
-        self.assertEqual(normalized["image_frame_duration_ms"], 100)
+        self.assertIsInstance(normalized["preset_generation_options"], list)
+        self.assertEqual(normalized["preset_generation_options"][0]["channel_ids"], ["gif"])
+        self.assertNotIn("preset_channel_bindings", normalized)
+        self.assertEqual(normalized["preset_generation_options"][0]["image_frame_duration_ms"], 100)
+        self.assertNotIn("image_frame_duration_ms", normalized)
         self.assertEqual(ignored, [])
         for malformed in ("not a list", [{"preset": "动画", "channel_id": 4}],
                           [{"preset": "动画", "channel_id": "gif"}] * 2,
@@ -128,11 +134,11 @@ class PresetRoutesDashboardTest(unittest.IsolatedAsyncioTestCase):
                  {"image_frame_duration_ms": 125}, {"image_frame_duration_ms": 2010},
                  {"image_output_format": "svg"}, {"image_complexity": "max"})
         for option in cases:
-            _, status = await self.save({"settings": {"model": "unexpected", **option}})
+            _, status = await self.save({"channels": [{"id": "gif", **option}]})
             self.assertEqual(status, 400)
             self.assertEqual(self.conf, before)
             with self.assertRaises(ValueError):
-                self.api._normalize_import_config(option)
+                self.api._normalize_import_config({"drawing_channels": [{"id": "gif", **option}]})
 
     async def test_dashboard_retry_preserves_preset_and_session_routing(self):
         self.plugin._call_generation_api_task = AsyncMock(return_value="mock upstream failure")
@@ -149,14 +155,14 @@ class PresetRoutesDashboardTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(arguments["session_id"], "qq:GroupMessage:100")
         self.plugin.task_mgr.finish_failure.assert_awaited_once()
 
-    async def test_channel_and_global_gif_options_round_trip(self):
+    async def test_channel_gif_options_round_trip_and_retired_globals_are_ignored(self):
         options = {"image_output_format": "gif", "image_frame_count": 12,
                    "image_frame_duration_ms": 100, "image_complexity": "medium"}
         result = await self.save({"settings": options, "channels": [{"id": "gif", **options}]})
         self.assertTrue(result["success"])
         channel = self.api._public_channel(self.conf["drawing_channels"][0], 0)
         for key, value in options.items():
-            self.assertEqual(self.conf[key], value)
+            self.assertNotIn(key, self.conf)
             self.assertEqual(channel[key], value)
 
 
