@@ -70,7 +70,7 @@ from .utils import (
 )
 from .error_classify import classify_generation_error
 from .error_presentation import format_generation_failure
-from .success_presentation import format_generation_success
+from .success_presentation import format_generation_success, format_quota_receipt
 from .requester_tag import (
     apply_prefix,
     build_prefix_text,
@@ -3900,7 +3900,9 @@ class LinghuiStudioPlugin(Star):
             # 5. 发送完成汇总
             if not hide_text:
                 quota_str = self._get_quota_str(deduction, uid, gid)
-                summary = f"\n📊 批量生成完成: 成功 {results['success']}/{count} 张 | 剩余: {quota_str}"
+                summary = format_quota_receipt(
+                    f"\n📊 批量生成完成: 成功 {results['success']}/{count} 张", quota_str,
+                )
                 if guard.skipped:
                     summary += f"\n⏹️ 跳过 {guard.skipped} 张（{self._batch_policy_hint()}），已退回对应次数"
                 await self._send_task_notice(event, summary)
@@ -4116,7 +4118,9 @@ class LinghuiStudioPlugin(Star):
             # 5. 发送完成汇总
             if not hide_text:
                 quota_str = self._get_quota_str(deduction, uid, gid)
-                summary = f"\n📊 多版本生成完成: 成功 {results['success']}/{count} 张 | 剩余: {quota_str}"
+                summary = format_quota_receipt(
+                    f"\n📊 多版本生成完成: 成功 {results['success']}/{count} 张", quota_str,
+                )
                 if guard.skipped:
                     summary += f"\n⏹️ 跳过 {guard.skipped} 张（{self._batch_policy_hint()}），已退回对应次数"
                 await self._send_task_notice(event, summary)
@@ -8324,7 +8328,7 @@ class LinghuiStudioPlugin(Star):
             summary = f"\n📊 批量处理完成\n"
             summary += f"✅ 成功: {results['success']} 张\n"
             summary += f"失败: {results['fail']} 张\n"
-            summary += f"💰 剩余次数: {quota_str}"
+            summary += format_quota_receipt("💰 额度明细", quota_str)
             if guard_note:
                 summary += f"\n⏹️ {guard_note}（策略：{self._batch_policy_hint()}），已退回对应次数"
 

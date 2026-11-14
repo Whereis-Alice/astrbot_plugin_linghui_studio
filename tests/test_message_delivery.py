@@ -49,6 +49,7 @@ def delivery_harness():
         "Image": Image, "Plain": Plain, "logger": Mock(),
         "safe_error_summary": _load_module("error_classify").safe_error_summary,
         "format_generation_success": _load_module("success_presentation").format_generation_success,
+        "format_quota_receipt": _load_module("success_presentation").format_quota_receipt,
         "QuotaDeniedError": _load_module("quota").QuotaDeniedError}
     namespace.update({name: getattr(utils, name) for name in (
         "is_ambiguous_message_delivery_timeout", "append_negative_prompt", "append_final_instruction",

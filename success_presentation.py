@@ -8,6 +8,16 @@ def _single_line(value: Any) -> str:
     return " ".join(str(value or "").split())
 
 
+def format_quota_receipt(heading: str, quota_text: str) -> str:
+    """Keep balances in the detail line and show exemption beside the result."""
+    summary, _, details = str(quota_text or "").strip().partition("\n")
+    if summary and (not details.strip() or summary == "额度豁免"):
+        heading += f" | 剩余: {summary}"
+    if details.strip():
+        heading += "\n" + details.strip()
+    return heading
+
+
 def format_generation_success(
     timing_text: str,
     preset_name: str,
@@ -36,10 +46,4 @@ def format_generation_success(
     model = _single_line(metrics.get("model") or requested_model)
     if show_model_info and model:
         fields.append(f"模型: {model}")
-    quota_summary, _, quota_details = str(quota_text or "").strip().partition("\n")
-    if quota_summary:
-        fields.append(f"剩余: {quota_summary}")
-    receipt = " | ".join(fields)
-    if quota_details.strip():
-        receipt += "\n" + quota_details.strip()
-    return receipt
+    return format_quota_receipt(" | ".join(fields), quota_text)
