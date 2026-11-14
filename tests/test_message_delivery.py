@@ -45,8 +45,10 @@ def delivery_harness():
         "asyncio": asyncio, "datetime": datetime, "time": time,
         "bounded_int": _load_module("image_delivery").bounded_int,
         "prepare_generated_chain": _load_module("image_delivery").prepare_generated_chain,
+        "prepare_outgoing_messages": _load_module("message_presentation").prepare_outgoing_messages,
         "Image": Image, "Plain": Plain, "logger": Mock(),
         "safe_error_summary": _load_module("error_classify").safe_error_summary,
+        "format_generation_success": _load_module("success_presentation").format_generation_success,
         "QuotaDeniedError": _load_module("quota").QuotaDeniedError}
     namespace.update({name: getattr(utils, name) for name in (
         "is_ambiguous_message_delivery_timeout", "append_negative_prompt", "append_final_instruction",
@@ -101,7 +103,9 @@ class MessageDeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.plugin._is_transient_generation_error = lambda result: False
         self.plugin._should_show_debug_errors = lambda: False
         self.plugin._public_error_message = lambda error, default: str(error) or default
-        self.plugin._send_task_notice = AsyncMock()
+        async def send_notice(event, text):
+            await event.send(event.chain_result([Plain(text)]))
+        self.plugin._send_task_notice = AsyncMock(side_effect=send_notice)
         self.event = types.SimpleNamespace(message_str="#bnn 一只猫",
             message_obj=types.SimpleNamespace(message=[], message_id="message-1"),
             unified_msg_origin="qq:GroupMessage:100", is_at_or_wake_command=True,

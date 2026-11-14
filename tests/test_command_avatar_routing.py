@@ -50,6 +50,7 @@ class CommandAvatarRoutingTest(unittest.IsolatedAsyncioTestCase):
         self.plugin._check_command_image_cooldown = lambda uid, gid: (False, 0)
         self.plugin._check_quota = AsyncMock(return_value={"allowed": True})
         self.plugin._charge_quota = AsyncMock()
+        self.plugin._send_task_notice = AsyncMock()
         self.plugin._get_bot_id = lambda event: "9000"
         self.plugin._remember_session_image_context = AsyncMock(side_effect=StopBeforeGeneration)
         self.plugin.img_mgr.get_avatar = AsyncMock(return_value=b"avatar")

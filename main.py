@@ -22,6 +22,7 @@ from .quota import QuotaDeniedError
 from .data_manager import DataManager
 from .image_manager import ImageManager
 from .image_delivery import bounded_int, prepare_generated_chain
+from .message_presentation import QQ_OFFICIAL_PLATFORMS, prepare_outgoing_messages
 from .access_control import AccessPolicy
 from .channel_router import DrawingChannelRouter
 from .channel_policy import extract_channel_option
@@ -68,6 +69,7 @@ from .utils import (
 )
 from .error_classify import classify_generation_error
 from .error_presentation import format_generation_failure
+from .success_presentation import format_generation_success
 from .requester_tag import (
     apply_prefix,
     build_prefix_text,
@@ -182,6 +184,16 @@ class _CommandEventView:
         return getattr(self._event, name)
 
 
+def _present_command_results(handler):
+    """Use platform-native presentation only for this plugin's command replies."""
+    @wraps(handler)
+    async def presented(self, event: AstrMessageEvent, *args, **kwargs):
+        async for result in handler(self, event, *args, **kwargs):
+            for prepared in prepare_outgoing_messages(result, event=event):
+                yield prepared
+    return presented
+
+
 def _direct_command_only(handler):
     """Let a configured namespace work without reserving direct commands."""
 
@@ -192,7 +204,7 @@ def _direct_command_only(handler):
         async for result in handler(self, event, *args, **kwargs):
             yield result
 
-    return guarded
+    return _present_command_results(guarded)
 
 
 @register(
@@ -1432,7 +1444,9 @@ class LinghuiStudioPlugin(Star):
         generation task or turn into a second error message for the group.
         """
         try:
-            await event.send(event.chain_result(self._notice_nodes(event, text)))
+            chain = event.chain_result(self._notice_nodes(event, text))
+            for prepared in prepare_outgoing_messages(chain, event=event):
+                await event.send(prepared)
         except Exception as exc:
             if is_ambiguous_message_delivery_timeout(exc):
                 logger.warning(
@@ -1677,11 +1691,15 @@ class LinghuiStudioPlugin(Star):
         user_count = self.data_mgr.get_user_count(uid)
         group_count = self.data_mgr.get_group_count(norm_id(gid)) if gid else 0
 
-        if deduction["source"] == "free":
-            reason = str(deduction.get("exemption_reason", "") or "额度豁免")
-            return f"个人/群额度豁免（{reason}） | 用户: {user_count} | 群组: {group_count} | {self._global_quota_text()}"
-
-        return f"用户: {user_count} | 群组: {group_count} | {self._global_quota_text()}"
+        source = deduction.get("source", "")
+        if source == "free":
+            summary = "额度豁免"
+        elif source == "group":
+            summary = f"群组额度 {group_count}"
+        else:
+            summary = f"个人额度 {user_count}"
+        details = f"用户: {user_count} | 群组: {group_count} | {self._global_quota_text()}"
+        return f"{summary}\n{details}"
 
     def _global_quota_text(self) -> str:
         status = self.data_mgr.get_global_quota()
@@ -2911,7 +2929,7 @@ class LinghuiStudioPlugin(Star):
         if not feedback:
             return False
         try:
-            await event.send(event.chain_result([Plain(feedback)]))
+            await self._send_task_notice(event, feedback)
             return True
         except Exception as e:
             logger.debug(f"LinghuiStudio: 人格化进度提示发送失败，静默继续任务: {e}")
@@ -3024,14 +3042,16 @@ class LinghuiStudioPlugin(Star):
         async def deliver() -> str:
             started = time.perf_counter()
             prepared = await prepare_generated_chain(chain, config, platform_name)
+            outgoing = prepare_outgoing_messages(
+                prepared, event=event, platform_name=platform_name
+            )
             sending_at = time.perf_counter()
             status = "failed"
             try:
-                found = await sender(prepared)
+                found = await sender(outgoing[0])
                 if found is False:
                     raise ValueError("未找到任务会话对应的平台")
                 status = "sent"
-                return status
             except Exception as exc:
                 if not is_ambiguous_message_delivery_timeout(exc):
                     raise
@@ -3040,7 +3060,21 @@ class LinghuiStudioPlugin(Star):
                     "Linghui image result has a late QQ send receipt; keeping the completed task successful without retrying: %s",
                     safe_error_summary(exc, 240),
                 )
-                return status
+            else:
+                # The official adapter sends media separately from Markdown.
+                # A receipt failure must never make a delivered image retryable.
+                for notice in outgoing[1:]:
+                    try:
+                        if await sender(notice) is False:
+                            raise ValueError("未找到任务会话对应的平台")
+                    except asyncio.CancelledError:
+                        logger.info("Linghui result receipt cancelled after image delivery")
+                        break
+                    except Exception as exc:
+                        logger.warning(
+                            "Linghui result receipt delivery failed after image delivery: %s",
+                            safe_error_summary(exc, 240),
+                        )
             finally:
                 logger.info(
                     "Linghui image delivery: adapter=%s queue_ms=%.1f prepare_ms=%.1f send_ms=%.1f status=%s",
@@ -3050,6 +3084,7 @@ class LinghuiStudioPlugin(Star):
                     (time.perf_counter() - sending_at) * 1000,
                     status,
                 )
+            return status
 
         if platform_name == "aiocqhttp":
             limit = bounded_int(config.get("qq_image_send_concurrency", 1), 1, 1, 4)
@@ -3604,12 +3639,14 @@ class LinghuiStudioPlugin(Star):
                 if not hide_text:
                     quota_str = self._get_quota_str(deduction, uid, gid)
                     timing_text = self._format_success_timing(elapsed)
-                    info_text = f"\n{self._requester_prefix_text(event)}✅ 生成成功 ({timing_text}) | 预设: {preset_name}"
-                    if extra_rules:
-                        info_text += f" | 规则: {extra_rules[:20]}{'...' if len(extra_rules) > 20 else ''}"
-                    info_text += f" | 剩余: {quota_str}"
-                    if self.conf.get("show_model_info", False):
-                        info_text += f" | {actual_model}"
+                    info_text = "\n" + format_generation_success(
+                        timing_text, preset_name,
+                        requester_prefix=self._requester_prefix_text(event),
+                        quota_text=quota_str, route_metrics=route_metrics,
+                        requested_model=model,
+                        show_model_info=self.conf.get("show_model_info", False),
+                        extra_rules=extra_rules,
+                    )
                     chain_nodes.append(Plain(info_text))
                 elif is_background and result_text_mode == "name":
                     chain_nodes.append(Plain(f"\n{self._requester_prefix_text(event)}✅ 图片完成"))
@@ -3792,9 +3829,13 @@ class LinghuiStudioPlugin(Star):
                                 chain_nodes = [Image.fromBytes(res)]
                                 if not hide_text:
                                     timing_text = self._format_success_timing(elapsed)
-                                    info_text = f"\n{self._requester_prefix_text(event)}✅ [{index}/{count}] 生成成功 ({timing_text}) | 预设: {preset_name}"
-                                    if extra_rules:
-                                        info_text += f" | 规则: {extra_rules[:15]}..."
+                                    info_text = "\n" + format_generation_success(
+                                        timing_text, preset_name,
+                                        requester_prefix=self._requester_prefix_text(event),
+                                        route_metrics=route_metrics, requested_model=model,
+                                        show_model_info=self.conf.get("show_model_info", False),
+                                        extra_rules=extra_rules, position=f"[{index}/{count}]",
+                                    )
                                     chain_nodes.append(Plain(info_text))
 
                                 await self._send_generated_result(event, event.chain_result(chain_nodes))
@@ -3992,9 +4033,14 @@ class LinghuiStudioPlugin(Star):
                                 chain_nodes = [Image.fromBytes(res)]
                                 if not hide_text:
                                     timing_text = self._format_success_timing(elapsed)
-                                    info_text = f"\n{self._requester_prefix_text(event)}✅ [{index}/{count}] 版本生成成功 ({timing_text}) | 预设: {preset_name}"
-                                    if extra_rules:
-                                        info_text += f" | 规则: {extra_rules[:15]}..."
+                                    info_text = "\n" + format_generation_success(
+                                        timing_text, preset_name,
+                                        requester_prefix=self._requester_prefix_text(event),
+                                        route_metrics=route_metrics, requested_model=model,
+                                        show_model_info=self.conf.get("show_model_info", False),
+                                        extra_rules=extra_rules, position=f"[{index}/{count}]",
+                                        version=True,
+                                    )
                                     chain_nodes.append(Plain(info_text))
 
                                 delivery_status = await self._send_generated_result(event, event.chain_result(chain_nodes))
@@ -4610,6 +4656,7 @@ class LinghuiStudioPlugin(Star):
             yield result
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=5)
+    @_present_command_results
     async def on_figurine_request(self, event: AstrMessageEvent, ctx=None):
         if not event.is_at_or_wake_command:
             return
@@ -4715,7 +4762,7 @@ class LinghuiStudioPlugin(Star):
         feedback = template.replace("{preset}", preset_display) if preset_display else template.replace(" [{preset}]",
                                                                                                         "").replace(
             "[{preset}]", "")
-        await event.send(event.chain_result([Plain(feedback)]))
+        await self._send_task_notice(event, feedback)
 
         bot_id = self._get_bot_id(event)
         mentioned_user_ids = self.img_mgr.extract_mentioned_user_ids(
@@ -4884,9 +4931,13 @@ class LinghuiStudioPlugin(Star):
 
             quota_str = self._get_quota_str(deduction, uid, gid)
             timing_text = self._format_success_timing(elapsed)
-            info = f"\n{self._requester_prefix_text(event)}✅ 生成成功 ({timing_text}) | 预设: {preset_name} | 剩余: {quota_str}"
-            if self.conf.get("show_model_info", False):
-                info += f" | {model}"
+            info = "\n" + format_generation_success(
+                timing_text, preset_name,
+                requester_prefix=self._requester_prefix_text(event),
+                quota_text=quota_str, route_metrics=route_metrics,
+                requested_model=model,
+                show_model_info=self.conf.get("show_model_info", False),
+            )
             record_id = str(record.get("id", "") or "") if record else ""
             await self.task_mgr.mark_generated(task_id, metrics=route_metrics, result_record_id=record_id)
             try:
@@ -4943,7 +4994,7 @@ class LinghuiStudioPlugin(Star):
         feedback = template.replace("{preset}", preset_display) if preset_display else template.replace(" [{preset}]",
                                                                                                         "").replace(
             "[{preset}]", "")
-        await event.send(event.chain_result([Plain(feedback)]))
+        await self._send_task_notice(event, feedback)
 
         model = ""
         self._log_prompt_preview("command:文生图", final_prompt)
@@ -4996,7 +5047,7 @@ class LinghuiStudioPlugin(Star):
         if not final_prompt.strip():
             final_prompt = prompt
 
-        await event.send(event.chain_result([Plain("正在以你的 QQ 头像作为参考图生成...")]))
+        await self._send_task_notice(event, "正在以你的 QQ 头像作为参考图生成...")
         model = ""
         await self._register_pending_generation(event.unified_msg_origin, 1)
         await self._run_background_task(
@@ -5026,6 +5077,9 @@ class LinghuiStudioPlugin(Star):
                 f"\n\n预设效果说明：{self._command_example('预设列表', event)} 说明 [关键词]"
                 "；大多数内置预设需要附带图片进行图生图。"
             )
+        if getattr(event, "get_platform_name", lambda: "")() in QQ_OFFICIAL_PLATFORMS:
+            # Official bots cannot send OneBot's merged-forward Nodes.
+            return event.chain_result([Plain(txt)])
         bot_id = self._get_bot_id(event) or "2854196310"
         return event.chain_result([Nodes(nodes=[Node(name="灵绘工坊", uin=bot_id, content=[Plain(txt)])])])
 
@@ -6625,9 +6679,13 @@ class LinghuiStudioPlugin(Star):
                 if not hide_text:
                     # 构建成功文案
                     timing_text = self._format_success_timing(elapsed)
-                    info_text = f"\n{self._requester_prefix_text(event)}✅ [{task_index}/{total_tasks}] 生成成功 ({timing_text}) | 预设: {preset_name}"
-                    if extra_rules:
-                        info_text += f" | 规则: {extra_rules[:15]}..."
+                    info_text = "\n" + format_generation_success(
+                        timing_text, preset_name,
+                        requester_prefix=self._requester_prefix_text(event),
+                        route_metrics=route_metrics, requested_model=model,
+                        show_model_info=self.conf.get("show_model_info", False),
+                        extra_rules=extra_rules, position=f"[{task_index}/{total_tasks}]",
+                    )
                     chain_nodes.append(Plain(info_text))
 
                 # 发送结果
@@ -6705,7 +6763,7 @@ class LinghuiStudioPlugin(Star):
         #    后续的后台生成任务将不再发送单张图片，而是写入暂存列表
         await self._enter_pdf_staging_mode(session_id)
 
-        await event.send(event.chain_result([Plain("📦 正在等待所有图片就绪，请稍候...")]))
+        await self._send_task_notice(event, "📦 正在等待所有图片就绪，请稍候...")
 
         try:
             # 2. 等待所有后台生成任务完成，并收集暂存的图片
@@ -7071,7 +7129,7 @@ class LinghuiStudioPlugin(Star):
                         await self._send_task_notice(event, "抱歉，这批图都没弄好，打包不了 PDF。")
             elif self._get_conf_bool("llm_show_progress", True):
                 summary = "这批图我先整理完了，能发出来的都已经给你了。"
-                await event.send(event.chain_result([Plain(summary)]))
+                await self._send_task_notice(event, summary)
 
         # 启动异步任务
         async def wrapped_process_all():
@@ -7401,7 +7459,7 @@ class LinghuiStudioPlugin(Star):
             elif self._get_conf_bool("llm_show_progress", True):
                 # 发送完成汇总
                 summary = "这批图我先整理完了，能发出来的都已经给你了。"
-                await event.send(event.chain_result([Plain(summary)]))
+                await self._send_task_notice(event, summary)
 
         # 启动异步任务
         async def wrapped_process_all():
@@ -7962,6 +8020,7 @@ class LinghuiStudioPlugin(Star):
         yield event.chain_result([Plain(msg)])
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=4)
+    @_present_command_results
     async def on_batch_process_cmd(self, event: AstrMessageEvent, ctx=None):
         """批量处理上下文中的图片（指令模式）
 
