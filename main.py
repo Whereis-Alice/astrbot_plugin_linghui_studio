@@ -24,6 +24,7 @@ from .image_manager import ImageManager
 from .image_delivery import bounded_int, prepare_generated_chain
 from .message_presentation import QQ_OFFICIAL_PLATFORMS, prepare_outgoing_messages
 from .access_control import AccessPolicy
+from .access_session import access_session_key
 from .channel_router import DrawingChannelRouter
 from .channel_policy import extract_channel_option
 from .configuration_cleanup import REMOVED_CONFIG_KEYS, cleanup_removed_config, restore_legacy_access_snapshot
@@ -230,6 +231,7 @@ class LinghuiStudioPlugin(Star):
     ]
     _DYNAMIC_CONFIG_KEYS = [
         "global_total_limit",
+        "group_whitelist",
         "prompt_list",
         "preset_channel_bindings",
         "preset_generation_options",
@@ -278,6 +280,7 @@ class LinghuiStudioPlugin(Star):
         "active_drawing_channel",
     }
     _COMMAND_ROUTES = (
+        (("会话白名单", "当前会话加白"), "on_session_whitelist", "灵绘会话白名单"),
         (("总次数", "全局次数", "设置总次数"), "on_global_quota", "灵绘总次数"),
         (("增加总次数", "加总次数"), "on_add_global_quota", "灵绘增加总次数"),
         (("预设参考图添加", "lmref添加", "添加参考图"), "on_add_preset_ref", "灵绘预设参考图添加"),
@@ -1330,6 +1333,10 @@ class LinghuiStudioPlugin(Star):
         )
 
     def is_admin(self, event: AstrMessageEvent) -> bool:
+        checker = getattr(event, "is_admin", None)
+        if callable(checker):
+            # Core resolves the active profile and API-key role restrictions.
+            return bool(checker())
         sender_id, _ = self._effective_identity(event)
         context_config = self.context.get_config() or {}
         admins = context_config.get("admins_id", []) or []
@@ -1490,6 +1497,7 @@ class LinghuiStudioPlugin(Star):
         return user_name, group_name
 
     def _save_config(self, changed_keys: Optional[List[str]] = None):
+        saved = False
         try:
             # Keep cooldown values live when Dashboard edits the config.
             self._image_cooldown_seconds = self.conf.get(
@@ -1598,8 +1606,11 @@ class LinghuiStudioPlugin(Star):
             except RuntimeError:
                 pass
 
+            return True
+
         except Exception as e:
             logger.error(f"LinghuiStudio Config Save Failed: {e}")
+            return saved
 
     def _append_preset_safety_suffix(self, prompt: str, preset_name: str = "") -> str:
         """为预设统一追加安全尺度后缀，降低露骨内容导致的失败概率"""
@@ -3486,7 +3497,10 @@ class LinghuiStudioPlugin(Star):
 
     async def _check_quota(self, event: AstrMessageEvent, uid: str, gid: str, cost: int) -> dict:
         uid, gid = self._effective_identity(event, uid, gid)
-        decision = self.access_policy.evaluate(uid, gid, is_admin=self.is_admin(event))
+        decision = self.access_policy.evaluate(
+            uid, gid, is_admin=self.is_admin(event),
+            session_id=access_session_key(event, gid),
+        )
         if not decision.allowed:
             logger.info(f"LinghuiStudio access denied: uid={uid} gid={gid} level={decision.level}")
             return {"allowed": False, "source": None, "msg": decision.message, "access_level": decision.level}
@@ -5077,6 +5091,11 @@ class LinghuiStudioPlugin(Star):
                 f"\n\n预设效果说明：{self._command_example('预设列表', event)} 说明 [关键词]"
                 "；大多数内置预设需要附带图片进行图生图。"
             )
+        if "会话白名单" not in txt:
+            txt += (
+                f"\n\n跨平台会话授权（管理员）：{self._command_example('会话白名单', event)}"
+                f"；查看当前用户 ID：{self._command_example('会话白名单', event)} 查看。"
+            )
         if getattr(event, "get_platform_name", lambda: "")() in QQ_OFFICIAL_PLATFORMS:
             # Official bots cannot send OneBot's merged-forward Nodes.
             return event.chain_result([Plain(txt)])
@@ -5295,13 +5314,69 @@ class LinghuiStudioPlugin(Star):
             return
         yield event.chain_result([Plain(f"没找到 [{kw}]，发 {self._command_example('预设列表', event)} 看看有哪些预设。")])
 
+    @filter.command("会话白名单", alias={"当前会话加白"}, prefix_optional=True)
+    @_direct_command_only
+    async def on_session_whitelist(self, event: AstrMessageEvent, ctx=None):
+        """Authorize this platform's current room/DM without copying opaque IDs."""
+        action = self._command_args(event, "会话白名单", "当前会话加白").strip()
+        if action not in {"", "添加", "加入", "加白", "add", "移除", "删除", "remove", "查看", "状态", "info"}:
+            yield event.chain_result([Plain("用法：会话白名单 [添加/移除/查看]；不写参数时添加当前会话。")])
+            return
+        uid, gid = self._effective_identity(event)
+        session_key = access_session_key(event, gid)
+        if not session_key:
+            yield event.chain_result([Plain("当前平台没有提供完整会话标识，无法安全添加白名单。")])
+            return
+        identity = f"用户 ID: {uid or '未提供'}\n会话标识: {session_key}"
+        raw = self.conf.get("group_whitelist", [])
+        values = re.split(r"[\s,;，；]+", raw) if isinstance(raw, str) else (raw or [])
+        entries = list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+        view_only = action in {"查看", "状态", "info"}
+        if view_only or not self.is_admin(event):
+            decision = self.access_policy.evaluate(
+                uid, gid, is_admin=self.is_admin(event), session_id=session_key,
+            )
+            state = "已加入" if session_key in entries else "未加入"
+            access = "当前允许使用。" if decision.allowed else decision.message
+            text = f"会话白名单：{state}\n{identity}\n{access}"
+            if not view_only:
+                text += "\n只有 AstrBot 管理员能修改白名单。请将上面的用户 ID 加入本平台使用的 AstrBot 管理员列表，再执行本指令。QQ 官 Bot 使用 OpenID，原 QQ 号不适用。"
+            yield event.chain_result([Plain(text)])
+            return
+        removing = action in {"移除", "删除", "remove"}
+        updated = [value for value in entries if value != session_key] if removing else list(dict.fromkeys(entries + [session_key]))
+        if updated != entries:
+            self.conf["group_whitelist"] = updated
+            if self._save_config(["group_whitelist"]) is False:
+                self.conf["group_whitelist"] = raw
+                yield event.chain_result([Plain("白名单保存失败，当前设置未更改，请检查配置文件写入权限后重试。")])
+                return
+        if removing:
+            text = f"✅ 已移除当前会话的精确白名单条目。\n{identity}"
+            if gid and gid in entries:
+                text += "\n现有白名单还包含此群的原始 ID，如需撤销使用权限，请在权限设置中一并移除。"
+        else:
+            text = f"✅ 当前会话已加入白名单。\n{identity}\n本群/频道内所有成员生效。" if gid else f"✅ 当前私聊已加入白名单。\n{identity}\n仅对这一个私聊生效。"
+            text += "仍受用户白名单、黑名单和额度规则限制。"
+        decision = self.access_policy.evaluate(
+            uid, gid, is_admin=self.is_admin(event), session_id=session_key,
+        )
+        if not decision.allowed:
+            text += f"\n当前访问状态：{decision.message}"
+        elif removing:
+            text += "\n当前仍被其他访问设置放行；移除白名单不等于拉黑。"
+        yield event.chain_result([Plain(text)])
+
     @filter.command("签到", alias={"手办化签到"}, prefix_optional=True)
     @_direct_command_only
     async def on_checkin(self, event: AstrMessageEvent, ctx=None):
         if not self.conf.get("enable_checkin", False): yield event.chain_result([Plain("未开启签到")]); return
         uid = norm_id(event.get_sender_id())
         gid = norm_id(event.get_group_id())
-        decision = self.access_policy.evaluate(uid, gid, is_admin=self.is_admin(event))
+        decision = self.access_policy.evaluate(
+            uid, gid, is_admin=self.is_admin(event),
+            session_id=access_session_key(event, gid),
+        )
         if not decision.allowed:
             yield event.chain_result([Plain(decision.message)])
             return

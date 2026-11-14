@@ -51,9 +51,11 @@ class AccessPolicy:
         group_id: str,
         *,
         is_admin: bool = False,
+        session_id: str = "",
     ) -> AccessDecision:
         user_id = str(user_id or "").strip()
         group_id = str(group_id or "").strip()
+        session_id = str(session_id or "").strip()
 
         blocked_users = self._list("blocked_users", "user_blacklist")
         blocked_groups = self._list("group_blacklist")
@@ -68,13 +70,14 @@ class AccessPolicy:
         if allowed_users and user_id not in allowed_users:
             return AccessDecision(False, level="user_not_allowed", message="你不在灵绘用户白名单中。")
 
+        group_whitelist = self._list("group_whitelist")
+        session_allowed = bool(session_id and session_id in group_whitelist)
         if not group_id:
-            if not bool(self.config.get("allow_private_messages", False)):
-                return AccessDecision(False, level="private_disabled", message="灵绘当前只在已授权群聊中开放。")
+            if not session_allowed and not bool(self.config.get("allow_private_messages", False)):
+                return AccessDecision(False, level="private_disabled", message="当前私聊未获授权，请联系管理员添加会话白名单。")
         else:
             group_mode = str(self.config.get("group_access_mode", "whitelist") or "whitelist").strip().lower()
-            group_whitelist = self._list("group_whitelist")
-            if group_mode == "whitelist" and group_id not in group_whitelist:
+            if group_mode == "whitelist" and group_id not in group_whitelist and not session_allowed:
                 return AccessDecision(False, level="group_not_allowed", message="这个群不在灵绘群白名单中。")
 
         if is_admin and bool(self.config.get("admins_unlimited", True)):

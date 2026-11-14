@@ -30,6 +30,7 @@ def command_harness(manager, *, admin=True):
         "AstrMessageEvent": object, "Dict": dict, "Any": object,
         "Plain": str, "QuotaDeniedError": _load_module("quota").QuotaDeniedError,
         "logger": types.SimpleNamespace(info=lambda *a: None, exception=lambda *a: None),
+        "access_session_key": _load_module("access_session").access_session_key,
     }
     code = ast.Module(body=[ast.ClassDef(name="Handlers", bases=[], keywords=[], body=methods, decorator_list=[])], type_ignores=[])
     exec(compile(ast.fix_missing_locations(code), str(ROOT / "main.py"), "exec"), namespace)

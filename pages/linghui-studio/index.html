@@ -213,14 +213,14 @@
           <div class="two-columns">
             <section class="section-block">
               <div class="section-heading"><div><h2>访问控制</h2><p>访问资格和额度是两套规则。先确认能否使用，再决定是否扣除额度。</p></div></div>
-              <div class="access-order" role="note"><strong>判定顺序</strong><span>用户/群黑名单 → 用户白名单 → 群聊访问模式 → 额度。黑名单始终优先，且无限次数名单只免额度。</span></div>
+              <div class="access-order" role="note"><strong>判定顺序</strong><span>用户/群黑名单 → 用户白名单 → 群/会话访问 → 额度。黑名单始终优先，且无限次数名单只免额度。</span></div>
               <div class="form-grid">
                 <label class="field"><span>群聊访问模式</span><select id="group-access-mode"><option value="whitelist">只允许群白名单</option><option value="all">允许所有群聊</option></select><small class="field-hint">“只允许群白名单”时仅白名单内群可用；“允许所有群聊”时除群黑名单外均可用。</small></label>
-                <label class="toggle-field"><input id="allow-private" type="checkbox" /><span class="toggle-copy"><span>允许私聊生图</span><small class="field-hint">关闭时私聊一律不能生图。开启后，私聊仍受用户黑白名单限制。</small></span></label>
+                <label class="toggle-field"><input id="allow-private" type="checkbox" /><span class="toggle-copy"><span>允许私聊生图</span><small class="field-hint">关闭时仅单独加入会话白名单的私聊可用。开启后允许所有私聊，仍受用户黑白名单限制。</small></span></label>
                 <label class="toggle-field"><input id="admins-unlimited" type="checkbox" /><span class="toggle-copy"><span>管理员额度豁免</span><small class="field-hint">管理员不扣个人/群额度，仍受全局总次数上限约束，并须通过黑名单、用户白名单和群聊访问校验。</small></span></label>
                 <label class="field full"><span>允许用户白名单</span><textarea id="allowed-users" rows="3" placeholder="每行一个用户 ID"></textarea><small class="field-hint">每行一个用户 ID。填写后，只有名单内用户可以使用；留空表示不按用户身份限制。</small></label>
                 <label class="field full"><span>禁止用户黑名单</span><textarea id="blocked-users" rows="3" placeholder="每行一个用户 ID"></textarea><small class="field-hint">每行一个用户 ID。名单内用户在私聊和所有群聊中都不能生图，优先于其他名单和额度豁免。</small></label>
-                <label class="field full"><span>允许生图的群白名单</span><textarea id="group-whitelist" rows="3" placeholder="每行一个群号"></textarea><small class="field-hint">每行一个群号。白名单模式下，名单外的群无法生图；留空时所有群都无法生图。加入本名单只授予使用资格，仍会消耗额度。</small></label>
+                <label class="field full"><span>允许生图的群与会话白名单</span><textarea id="group-whitelist" rows="3" placeholder="每行一个群 ID 或带平台实例的会话标识"></textarea><small class="field-hint">管理员在目标群、频道或私聊发送“会话白名单”即可自动添加，支持官 Bot OpenID 和所有平台；私聊只授权当前位置。兼容旧群 ID，加白不免额度，黑名单和用户白名单仍优先。</small></label>
                 <label class="field full"><span>禁止生图的群黑名单</span><textarea id="group-blacklist" rows="3" placeholder="每行一个群号"></textarea><small class="field-hint">每行一个群号。名单内群始终不能生图，优先于群白名单、群无限次数名单和管理员额度豁免。</small></label>
                 <label class="field full"><span>用户无限次数名单</span><textarea id="unlimited-users" rows="3" placeholder="每行一个用户 ID"></textarea><small class="field-hint">每行一个用户 ID。名单内用户不扣个人/群额度，仍受全局总次数上限约束；不会因此获得访问资格或绕过黑名单。</small></label>
                 <label class="field full"><span>群无限次数名单</span><textarea id="unlimited-groups" rows="3" placeholder="每行一个群号"></textarea><small class="field-hint">每行一个群号。名单内群不扣个人/群额度，仍受全局总次数上限约束，并须通过群聊访问与黑名单校验。</small></label>
