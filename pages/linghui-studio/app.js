@@ -1,5 +1,5 @@
 import { createImageViewer } from "./image-viewer.js?v=3.14.0";
-import { capturePresetDrafts, createPresetDialog, handlePresetChannelPickerEvent, normalizePresetGenerationOptions, presetChannelIds, presetChannelPicker, presetGenerationFields, selectedPresetChannels, sortedPresetEntries } from "./preset-editor.js?v=3.19.0";
+import { capturePresetDrafts, createPresetDialog, handlePresetChannelPickerEvent, normalizePresetGenerationOptions, presetChannelIds, presetChannelPicker, presetGenerationFields, selectedPresetChannels, sortedPresetEntries } from "./preset-editor.js?v=3.19.1";
 
 const bridge = window.AstrBotPluginPage || {
   ready: async () => ({}),
@@ -1178,6 +1178,14 @@ function renderRouteHealth() {
   const target = byId("route-health-list");
   if (!target) return;
   const health = state.routeHealth || {};
+  const note = byId("route-health-note");
+  if (note) {
+    let summary = "本服务器累计请求统计，重载后保留；延迟取各渠道最近 200 次成功请求。";
+    if (health.history_records > 0) summary += ` 已从保留记录恢复 ${Number(health.history_records)} 条请求明细，早期未保存的数据无法补齐。`;
+    if (health.persistent === false || health.persistence_ok === false) summary += ` 统计尚未落盘：${health.persistence_error || "数据目录不可写"}，请及时检查。`;
+    else if (health.load_warning) summary += " 部分旧统计读取异常，当前展示可恢复的有效记录。";
+    note.textContent = summary;
+  }
   const channels = Array.isArray(health.channels) ? health.channels : [];
   if (!channels.length) {
     target.innerHTML = '<p class="empty">尚无渠道健康数据。保存渠道并完成至少一次请求后会显示统计。</p>';
@@ -1187,11 +1195,13 @@ function renderRouteHealth() {
     const successes = Math.max(0, Number(channel.successes) || 0);
     const failures = Math.max(0, Number(channel.failures) || 0);
     const rate = successes + failures ? `${(Number(channel.success_rate || 0) * 100).toFixed(1)}%` : "暂无样本";
+    const durationSamples = Math.max(0, Number(channel.duration_sample_count) || 0);
+    const latency = durationSamples ? `${Number(channel.p50_duration || 0).toFixed(1)}s / ${Number(channel.p95_duration || 0).toFixed(1)}s` : "暂无耗时样本";
     const stateLabel = channel.quota_exhausted ? "日额度用完，次日恢复" : channel.cooling_down ? `冷却 ${Number(channel.cooldown_remaining || 0).toFixed(0)}s` : (channel.enabled ? "可调度" : "未启用");
     const stateClass = channel.quota_exhausted ? "disabled" : channel.cooling_down ? "cooling" : (channel.enabled ? "healthy" : "disabled");
     return `<article class="route-health-card ${stateClass}">
       <div class="route-health-title"><div><i class="status-dot ${channel.cooling_down ? "off" : "ok"}"></i><strong>${escapeHtml(channel.name || channel.id)}</strong><small>${escapeHtml(channel.id)}</small></div><span>${escapeHtml(stateLabel)}</span></div>
-      <div class="route-health-metrics"><span><small>成功率</small><strong>${escapeHtml(rate)}</strong></span><span><small>成功 / 失败</small><strong>${successes} / ${failures}</strong></span><span><small>P50 / P95</small><strong>${Number(channel.p50_duration || 0).toFixed(1)}s / ${Number(channel.p95_duration || 0).toFixed(1)}s</strong></span><span><small>回退成功</small><strong>${Math.max(0, Number(channel.fallback_successes) || 0)}</strong></span></div>
+      <div class="route-health-metrics"><span><small>成功率</small><strong>${escapeHtml(rate)}</strong></span><span><small>成功 / 失败</small><strong>${successes} / ${failures}</strong></span><span><small>P50 / P95</small><strong title="${durationSamples} 个成功耗时样本">${escapeHtml(latency)}</strong></span><span><small>回退成功</small><strong>${Math.max(0, Number(channel.fallback_successes) || 0)}</strong></span></div>
       <p>优先级 ${escapeHtml(channel.priority ?? 0)} · 今日已用 ${escapeHtml(channel.daily_used ?? 0)} / ${channel.daily_limit >= 0 ? escapeHtml(channel.daily_limit) : "不限"} · 北京时间 0 点恢复</p>
       ${channel.last_error ? `<p title="${escapeHtml(channel.last_error)}">最近异常 · ${escapeHtml(channel.last_error_category || "未分类")} · ${escapeHtml(channel.last_error)}</p>` : ""}
     </article>`;

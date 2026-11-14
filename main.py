@@ -1178,6 +1178,7 @@ class LinghuiStudioPlugin(Star):
 
         await self.data_mgr.initialize()
         await self.task_mgr.initialize()
+        self.api_mgr.restore_health_history(self.task_mgr.tasks, self.data_mgr.generation_history)
         await self.persona_profile.initialize()
         await self.studio_mgr.initialize()
         await self._cleanup_generation_cache()
@@ -3194,28 +3195,43 @@ class LinghuiStudioPlugin(Star):
             prefer_config_aspect_ratio: bool = False,
             routing_profile: str = "",
     ) -> bytes | str:
-        runtime_task = asyncio.create_task(self.api_mgr.call_api(
-            images,
-            prompt,
-            model,
-            False,
-            self.img_mgr.proxy,
-            use_text_to_image_api=use_text_to_image_api,
-            aspect_ratio=aspect_ratio,
-            resolution=resolution,
-            negative_prompt=negative_prompt,
-            final_instruction=final_instruction,
-            preferred_channel_id=preferred_channel_id,
-            allow_fallback=allow_fallback,
-            session_id=session_id,
-            prefer_config_aspect_ratio=prefer_config_aspect_ratio,
-            preset_name=preset_name,
-            routing_profile=routing_profile,
-        ))
+        route_metrics: Dict[str, Any] = {}
+
+        async def run_with_metrics():
+            nonlocal route_metrics
+            try:
+                return await self.api_mgr.call_api(
+                    images,
+                    prompt,
+                    model,
+                    False,
+                    self.img_mgr.proxy,
+                    use_text_to_image_api=use_text_to_image_api,
+                    aspect_ratio=aspect_ratio,
+                    resolution=resolution,
+                    negative_prompt=negative_prompt,
+                    final_instruction=final_instruction,
+                    preferred_channel_id=preferred_channel_id,
+                    allow_fallback=allow_fallback,
+                    session_id=session_id,
+                    prefer_config_aspect_ratio=prefer_config_aspect_ratio,
+                    preset_name=preset_name,
+                    routing_profile=routing_profile,
+                )
+            finally:
+                getter = getattr(self.api_mgr, "get_last_metrics", None)
+                metrics = getter() if callable(getter) else {}
+                route_metrics = dict(metrics) if isinstance(metrics, dict) else {}
+
+        runtime_task = asyncio.create_task(run_with_metrics())
         await self.task_mgr.attach_runtime_task(task_id, runtime_task)
         try:
             return await runtime_task
         finally:
+            # ContextVar writes in the child task do not propagate to its caller.
+            setter = getattr(self.api_mgr, "_set_last_metrics", None)
+            if callable(setter):
+                setter(route_metrics)
             await self.task_mgr.detach_runtime_task(task_id, runtime_task)
 
     async def _refund_quota(self, deduction: Dict[str, Any], uid: str, gid: str, amount: int) -> None:

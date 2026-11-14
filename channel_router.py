@@ -12,6 +12,7 @@ from pathlib import Path
 from astrbot import logger
 
 from .channel_policy import ChannelDailyQuota
+from .channel_health import ChannelHealthStore
 from .generation_params import resolve_image_generation_params
 from .utils import normalize_model_list
 from .api_manager import ApiManager
@@ -39,7 +40,8 @@ class DrawingChannelRouter:
         self._metrics_context: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
             f"linghui_route_metrics_{id(self)}", default=None
         )
-        self._health: Dict[str, Dict[str, Any]] = {}
+        self._health_store = ChannelHealthStore()
+        self._health: Dict[str, Dict[str, Any]] = self._health_store.channels
         self._lock = asyncio.Lock()
         self._session_store: Any = None
         self.daily_quota = ChannelDailyQuota()
@@ -96,22 +98,7 @@ class DrawingChannelRouter:
         return any(self._channel_keys(channel) for channel in self._raw_channels())
 
     def _health_state(self, channel_id: str) -> Dict[str, Any]:
-        state = self._health.get(channel_id)
-        if state is None:
-            state = {
-                "successes": 0,
-                "failures": 0,
-                "fallback_successes": 0,
-                "consecutive_failures": 0,
-                "cooldown_until": 0.0,
-                "last_error_category": "",
-                "last_error": "",
-                "last_success_at": "",
-                "last_failure_at": "",
-                "durations": [],
-            }
-            self._health[channel_id] = state
-        return state
+        return self._health_store.state(channel_id)
 
     def _cooldown_remaining(self, channel_id: str) -> float:
         state = self._health_state(channel_id)
@@ -234,6 +221,15 @@ class DrawingChannelRouter:
 
     def bind_daily_quota(self, data_dir: Path) -> None:
         self.daily_quota = ChannelDailyQuota(Path(data_dir) / "channel_daily_quota.json")
+        self._health_store = ChannelHealthStore(Path(data_dir) / "channel_health.json")
+        self._health = self._health_store.channels
+
+    def restore_health_history(self, tasks: List[Dict[str, Any]], generation_history: List[Dict[str, Any]]) -> bool:
+        """Recover known channel outcomes once, after task and history loading."""
+        if not self._health_store.needs_history_seed:
+            return False
+        from .channel_health_history import reconstruct_channel_health
+        return self._health_store.seed_history(reconstruct_channel_health(tasks, generation_history))
 
     def _models_for(self, requested: str, channel: Dict[str, Any], text_to_image: bool, has_input_image: bool) -> List[str]:
         if requested:
@@ -272,6 +268,7 @@ class DrawingChannelRouter:
         durations = list(state.get("durations", []))
         durations.append(max(0.0, float(duration)))
         state["durations"] = durations[-200:]
+        self._health_store.changed(timestamp=state["last_success_at"])
 
     def _record_failure(self, channel_id: str, classification: GenerationError, error: Any) -> None:
         state = self._health_state(channel_id)
@@ -291,6 +288,7 @@ class DrawingChannelRouter:
                 self._cooldown_seconds(),
                 state["consecutive_failures"],
             )
+        self._health_store.changed(timestamp=state["last_failure_at"])
 
     def bind_session_store(self, store: Any) -> None:
         """Attach the per-session model/channel override store."""
@@ -589,7 +587,7 @@ class DrawingChannelRouter:
     def get_health_snapshot(self) -> Dict[str, Any]:
         configured = {str(item.get("id") or f"channel_{index + 1}"): item for index, item in enumerate(self.config.get("drawing_channels", []) or []) if isinstance(item, dict)}
         rows: List[Dict[str, Any]] = []
-        channel_ids = list(configured) + [item for item in self._health if item not in configured]
+        channel_ids = list(configured)
         for channel_id in channel_ids:
             channel = configured.get(channel_id, {})
             state = self._health_state(channel_id)
@@ -616,8 +614,10 @@ class DrawingChannelRouter:
                 "p50_duration": round(self._percentile(durations, 0.50), 3),
                 "p95_duration": round(self._percentile(durations, 0.95), 3),
                 "average_duration": round(sum(durations) / len(durations), 3) if durations else 0.0,
+                "duration_sample_count": len(durations),
             })
         return {
+            **self._health_store.metadata(),
             "channels": rows,
             "failure_threshold": self._failure_threshold(),
             "cooldown_seconds": self._cooldown_seconds(),
@@ -632,4 +632,5 @@ class DrawingChannelRouter:
                 await session.close()
 
     async def close(self) -> None:
+        self._health_store.save()
         await self.refresh()

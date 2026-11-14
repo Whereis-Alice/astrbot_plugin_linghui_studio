@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>灵绘工坊</title>
     <link rel="icon" type="image/svg+xml" href="./assets/linghui-logo.svg" />
-    <link rel="stylesheet" href="./style.css?v=3.19.0" />
+    <link rel="stylesheet" href="./style.css?v=3.19.1" />
   </head>
   <body>
     <main class="shell">
@@ -153,7 +153,7 @@
 
         <section id="tab-channels" class="tab-pane">
           <section class="section-block route-health-block">
-            <div class="section-heading"><div><h2>渠道健康</h2><p>展示成功率、延迟、连续失败和冷却状态；指标来自插件启动后的真实请求。</p></div><button id="route-health-refresh" class="quiet-action" type="button">刷新状态</button></div>
+            <div class="section-heading"><div><h2>渠道健康</h2><p id="route-health-note">本服务器累计请求统计，重载后保留；延迟取各渠道最近 200 次成功请求。</p></div><button id="route-health-refresh" class="quiet-action" type="button">刷新状态</button></div>
             <div id="route-health-list" class="route-health-list"></div>
           </section>
           <section class="section-block">
@@ -441,6 +441,6 @@
       </footer>
     </dialog>
     <div id="toast" class="toast" role="status"></div>
-    <script type="module" src="./app.js?v=3.19.0"></script>
+    <script type="module" src="./app.js?v=3.19.1"></script>
   </body>
 </html>
